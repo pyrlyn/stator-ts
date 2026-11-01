@@ -2737,7 +2737,8 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
         if (e.flags & F.enum_member != 0) p.readonly = true;
         m.props.put(c.a, e.name, p) catch oom();
     }
-    if (s.flags & F.enum_any != 0) {
+    // Only numbers have a reverse mapping, so a string enum's values are nothing but its members.
+    if (s.flags & F.enum_any != 0 and (declaredType(c, s).data == .enum_ or hasNumberProp(c, m))) {
         const idx = c.a.alloc(T.Index, 1) catch oom();
         idx[0] = .{ .key = c.t_number, .ty = c.t_string, .readonly = true };
         m.indexes = idx;
@@ -2762,6 +2763,15 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
         m.indexes = indexes.items;
     }
     return m;
+}
+
+fn hasNumberProp(c: *Checker, m: *const T.Members) bool {
+    for (m.props.values()) |p| switch (propType(c, p).data) {
+        .number, .num_lit, .enum_ => return true,
+        .enum_lit => |e| if (e.value != .str) return true,
+        else => {},
+    };
+    return false;
 }
 
 fn eraseArgs(c: *Checker, t: *Type) *Type {

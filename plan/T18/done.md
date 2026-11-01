@@ -4,4 +4,6 @@ Commit d67b14e fixes the nine causes listed in `task.md`, with 16 fixtures. T17'
 
 Checked: `zig build test` passes; `tests/differential.sh` gives 0 false positives over all fixtures and 3 misses, the same 3 as before this task; the TS7 suite passes 8232 of the ratchet with 0 lost, 10 of them new. The VS Code corpus was not run: it is not on this machine.
 
+That check was the one that mattered. Cause 3 gave enums an inferable index while every enum object still had the number index only numeric ones should have, so `Object.values` of a string enum picked up `string`. VS Code at commit c198526d went from 388 of 388 to 425 errors, 37 of them false, and `Record<string, Num> = Num` stopped being an error. The fix is in `decls.zig` and `relate.zig`, `expr.zig` gains TS2476, and `tests/fixtures/enum-object-index` covers them. VS Code is back to 388 of 388 with none extra at `-j` 1, 2, 4, 8 and 16, byte for byte the output of a51f2fc, and the same on a ReleaseSafe build at `-j 8`.
+
 `tests/differential.sh` fails on Node 26 when `TSC` is set: its `node -e` has a top-level `return`. Not changed here.

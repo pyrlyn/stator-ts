@@ -2946,8 +2946,18 @@ fn checkElemAccess(c: *Checker, n: *Node) *Type {
         if (left.data != .any or n.flow() == null or isWriteOnly(n)) return left;
         return flow.flowType(c, n, left, left, containingFunc(n));
     }
+    if (isConstEnumObject(left) and x.index.data != .string_lit and x.index.data != .no_subst_template) {
+        err(c, x.index, 2476, "A const enum member can only be accessed using a string literal.");
+        return c.t_err;
+    }
     const result = elemType(c, n, left, if (isNumericKey(c, x.index)) c.t_number else idx, x.index);
     return if (short_circuits) d.addOptional(c, result) else result;
+}
+
+fn isConstEnumObject(t: *Type) bool {
+    if (t.data != .obj or t.data.obj.kind != .anon) return false;
+    const s = t.data.obj.sym orelse return false;
+    return s.flags & F.const_enum != 0;
 }
 
 /// `for (const i in list) other[i]`: keys of a numeric index are strings only in name.

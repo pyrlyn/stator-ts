@@ -1155,8 +1155,15 @@ fn indexesRelated(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
             if (p.optional and pt.data != .undefined) pt = removeDefinitelyUndefined(c, pt);
             if (!related(c, pt, ti.ty, rel)) return false;
         }
+        for (d.indexesOf(c, s)) |si| {
+            if (indexApplies(c, si.key, ti.key) and !related(c, si.ty, ti.ty, rel)) return false;
+        }
     }
     return true;
+}
+
+fn indexApplies(c: *Checker, key: *Type, target: *Type) bool {
+    return isAssignable(c, key, target) or target == c.t_string and key == c.t_number;
 }
 
 /// Subtyping without an index signature the source only implies, so `{}` and
@@ -1997,7 +2004,7 @@ const Infer = struct {
                     parts.append(c.a, removeDefinitelyUndefined(c, v)) catch oom();
                 };
                 for (d.indexesOf(c, s)) |si| {
-                    if (isAssignable(c, si.key, ti.key) or ti.key == c.t_string and si.key == c.t_number) parts.append(c.a, si.ty) catch oom();
+                    if (indexApplies(c, si.key, ti.key)) parts.append(c.a, si.ty) catch oom();
                 }
                 if (parts.items.len > 0) st.go(c.getUnion(parts.items), ti.ty);
             }
