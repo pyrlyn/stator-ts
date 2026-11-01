@@ -11,6 +11,8 @@ stator-ts test             # compile and run *.test.ts files in parallel on Node
 
 Build with Zig 0.17.0: `zig build -Doptimize=ReleaseFast`.
 
+On macOS, `scripts/pgo.sh` builds `zig-out/bin/stator-ts-pgo` with profile-guided optimization, which needs clang and a project to train on. On VS Code it runs 26% fewer instructions and takes 16-19% less time at `-j 16`, with the same output.
+
 `--all-diagnostics` also shows semantic errors when the project has syntax errors, which the default, like the tsc command line, holds back.
 
 ## Tests
