@@ -171,7 +171,7 @@ const P = struct {
 
     fn name(p: *P, sym: ?*binder.Symbol, args: []const *Type) void {
         p.w(if (sym) |s| symbolName(s) else "?");
-        var shown: std.ArrayList(*Type) = .empty;
+        var shown = p.c.newList(*Type);
         for (args) |a| if (!(a.data == .param and a.data.param.is_this)) shown.append(p.c.a, a) catch oom();
         if (shown.items.len == 0) return;
         p.w("<");
@@ -222,8 +222,8 @@ const P = struct {
             .union_ => |u| {
                 if (t == c.t_boolean) return p.w("boolean");
                 if (t.enum_sym) |s| return p.w(s.name);
-                var tail: std.ArrayList(*Type) = .empty;
-                var head: std.ArrayList(*Type) = .empty;
+                var tail = p.c.newList(*Type);
+                var head = p.c.newList(*Type);
                 var bools: u32 = 0;
                 for (u) |m| {
                     if (m.data == .bool_lit) bools += 1;

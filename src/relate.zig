@@ -468,7 +468,7 @@ fn templateSlot(c: *Checker, v: []const u8, t: *Type) bool {
 /// and every member landed on has to take the rest of the object.
 fn relatedToDiscriminated(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
     const members = t.data.union_;
-    var keys: std.ArrayList(*Prop) = .empty;
+    var keys = c.newList(*Prop);
     var combinations: usize = 1;
     for (d.propsOf(c, s)) |p| {
         if (!isDiscriminant(c, members, p.name)) continue;
@@ -479,7 +479,7 @@ fn relatedToDiscriminated(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
     if (keys.items.len == 0) return false;
     const picks = c.a.alloc(usize, keys.items.len) catch oom();
     @memset(picks, 0);
-    var matching: std.ArrayList(*Type) = .empty;
+    var matching = c.newList(*Type);
     while (true) {
         var matched = false;
         outer: for (members) |m| {
@@ -1200,9 +1200,11 @@ fn keyApplies(_: *Checker, key: *Type, name: []const u8) bool {
 pub fn removeDefinitelyUndefined(c: *Checker, t: *Type) *Type {
     if (t.data == .undefined) return c.t_never;
     if (t.data != .union_) return t;
-    var out: std.ArrayList(*Type) = .empty;
-    for (t.data.union_) |m| if (m.data != .undefined) out.append(c.a, m) catch oom();
-    if (out.items.len == t.data.union_.len) return t;
+    for (t.data.union_) |m| {
+        if (m.data == .undefined) break;
+    } else return t;
+    var out = std.ArrayList(*Type).initCapacity(c.a, t.data.union_.len) catch oom();
+    for (t.data.union_) |m| if (m.data != .undefined) out.appendAssumeCapacity(m);
     return c.getUnion(out.items);
 }
 
@@ -1276,7 +1278,7 @@ pub fn excessProp(c: *Checker, s: *Type, t: *Type) ?*Prop {
 }
 
 pub fn missingProps(c: *Checker, s: *Type, t: *Type) []const []const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
+    var out = c.newList([]const u8);
     if (t.data != .obj and t.data != .inter) return out.items;
     const owner = d.genericMappedOrigin(c, s) orelse s;
     for (d.propsOf(c, t)) |p| {
@@ -1338,8 +1340,8 @@ pub fn newInferCtx(c: *Checker, params: []const *Type, _: u32) *InferCtx {
 
 /// Maps only the parameters that have candidates; null when none has.
 pub fn inferredPart(c: *Checker, ctx: *InferCtx) ?*T.Mapper {
-    var params: std.ArrayList(*Type) = .empty;
-    var sources: std.ArrayList(*T.InferInfo) = .empty;
+    var params = c.newList(*Type);
+    var sources = c.newList(*T.InferInfo);
     for (ctx.infos) |*info| {
         if (info.candidates.items.len == 0 and info.contra.items.len == 0) continue;
         params.append(c.a, info.param) catch oom();
@@ -1395,13 +1397,13 @@ fn primitiveish(c: *Checker, k: *Type) bool {
 
 fn commonSupertype(c: *Checker, list: []const *Type) *Type {
     // Shapes compete on their own: `T[] | undefined` must lose to `readonly T[]`, and its `undefined` comes back at the end.
-    var nulls: std.ArrayList(*Type) = .empty;
-    var primary: std.ArrayList(*Type) = .empty;
+    var nulls = c.newList(*Type);
+    var primary = c.newList(*Type);
     for (list) |x| {
         if (isNullType(x)) {
             nulls.append(c.a, x) catch oom();
         } else if (x.data == .union_) {
-            var kept: std.ArrayList(*Type) = .empty;
+            var kept = c.newList(*Type);
             for (x.data.union_) |m| (if (isNullType(m)) &nulls else &kept).append(c.a, m) catch oom();
             primary.append(c.a, if (kept.items.len == x.data.union_.len) x else c.getUnion(kept.items)) catch oom();
         } else primary.append(c.a, x) catch oom();
@@ -1438,7 +1440,7 @@ pub fn literalBase(c: *Checker, t: *Type) *Type {
         .bool_lit => c.t_boolean,
         .enum_lit => |e| if (e.parent.flags & @import("binder.zig").F.enum_any != 0) d.declaredType(c, e.parent) else t,
         .union_ => |u| {
-            var parts: std.ArrayList(*Type) = .empty;
+            var parts = c.newList(*Type);
             for (u) |m| parts.append(c.a, literalBase(c, m)) catch oom();
             return c.getUnion(parts.items);
         },
@@ -1466,8 +1468,8 @@ fn isObjectLiteral(t: *Type) bool {
 /// Literals written side by side describe one value each, so none has to be a supertype of the rest.
 fn uniteLiteralCandidates(c: *Checker, ctx: *InferCtx, list: []const *Type) []const *Type {
     if (list.len < 2) return list;
-    var literals: std.ArrayList(*Type) = .empty;
-    var out: std.ArrayList(*Type) = .empty;
+    var literals = c.newList(*Type);
+    var out = c.newList(*Type);
     for (list) |x| (if (isObjectLiteral(x) or ctx.array_lits.contains(x)) &literals else &out).append(c.a, x) catch oom();
     if (literals.items.len == 0) return list;
     out.append(c.a, expr.reduceSubtypes(c, literals.items)) catch oom();
@@ -1490,7 +1492,7 @@ fn covariantInference(c: *Checker, ctx: *InferCtx, i: usize) *Type {
 
 fn fittingMembers(c: *Checker, t: *Type, k: *Type) *Type {
     if (t.data != .union_) return if (isAssignable(c, t, k)) t else c.t_never;
-    var kept: std.ArrayList(*Type) = .empty;
+    var kept = c.newList(*Type);
     for (t.data.union_) |m| if (isAssignable(c, m, k)) kept.append(c.a, m) catch oom();
     return c.getUnion(kept.items);
 }
@@ -1776,8 +1778,8 @@ const Infer = struct {
     /// Pairs off members that match, infers between them, and leaves the rest of both sides.
     fn pairOff(st: *Infer, sources: *[]const *Type, targets: *[]const *Type, how: enum { same, identical, close }) void {
         const c = st.c;
-        var hit_s: std.ArrayList(*Type) = .empty;
-        var hit_t: std.ArrayList(*Type) = .empty;
+        var hit_s = c.newList(*Type);
+        var hit_t = c.newList(*Type);
         for (targets.*) |m| {
             // A distributed conditional gives a union as wide as its source, and only itself can
             // match one of its members, so the pairs are not worth trying.
@@ -1799,7 +1801,7 @@ const Infer = struct {
     }
 
     fn without(c: *Checker, list: []const *Type, drop: []const *Type) []const *Type {
-        var out: std.ArrayList(*Type) = .empty;
+        var out = c.newList(*Type);
         for (list) |x| if (std.mem.indexOfScalar(*Type, drop, x) == null) out.append(c.a, x) catch oom();
         return out.items;
     }
@@ -1879,7 +1881,7 @@ const Infer = struct {
             return;
         }
         if (naked_n == 1 and !circular) {
-            var rest: std.ArrayList(*Type) = .empty;
+            var rest = c.newList(*Type);
             for (sources, matched) |x, hit| if (!hit) rest.append(c.a, x) catch oom();
             if (rest.items.len > 0) return st.add(naked.?, c.getUnion(rest.items), top);
         }
@@ -1958,7 +1960,7 @@ const Infer = struct {
         st.signatures(d.ctorSigs(c, s), d.ctorSigs(c, t));
         for (d.indexesOf(c, t)) |ti| {
             if (hasInferableIndex(c, s)) {
-                var parts: std.ArrayList(*Type) = .empty;
+                var parts = c.newList(*Type);
                 for (d.propsOf(c, s)) |p| {
                     if (!keyApplies(c, ti.key, p.name)) continue;
                     const pt = d.propType(c, p);
@@ -2042,7 +2044,7 @@ const Infer = struct {
                 st.add(info, d.getIndexType(c, s), false);
                 st.priority = save;
             }
-            var parts: std.ArrayList(*Type) = .empty;
+            var parts = c.newList(*Type);
             for (d.propsOf(c, s)) |p| parts.append(c.a, d.propType(c, p)) catch oom();
             if (m.type) |tn| if (parts.items.len > 0) st.go(c.getUnion(parts.items), d.instantiate(c, d.typeFromNode(c, tn), mapper));
             return true;
@@ -2169,8 +2171,8 @@ fn restFrom(c: *Checker, s: *Sig, pos: usize) *Type {
         if (pos == fixed) return r;
         if (pos > fixed) return d.arrayOf(c, d.getIndexedAccess(c, r, c.t_number));
     }
-    var elems: std.ArrayList(*Type) = .empty;
-    var flags: std.ArrayList(T.ElemFlag) = .empty;
+    var elems = c.newList(*Type);
+    var flags = c.newList(T.ElemFlag);
     const min = arityOf(c, s).min;
     for (@min(pos, fixed)..fixed) |i| {
         elems.append(c.a, d.paramTypeAt(c, s, i)) catch oom();

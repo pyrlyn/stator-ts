@@ -89,7 +89,7 @@ pub fn reportNodeTypes(c: *Checker, n: *Node, name: []const u8) void {
 }
 
 fn suggestIn(c: *Checker, map: anytype, name: []const u8, meaning: u32, primitives: bool) ?[]const u8 {
-    var list: std.ArrayList([]const u8) = .empty;
+    var list = c.newList([]const u8);
     if (primitives) for ([_][2][]const u8{ .{ "string", "String" }, .{ "number", "Number" }, .{ "boolean", "Boolean" }, .{ "object", "Object" }, .{ "bigint", "BigInt" }, .{ "symbol", "Symbol" } }) |p| {
         if (map.contains(p[1])) list.append(c.a, p[0]) catch oom();
     };
@@ -813,7 +813,7 @@ fn literalReturnContext(c: *Checker, fnode: *Node) ?*Type {
 /// An async function can only ever produce the promise in `Promise<T> | string`.
 fn awaitableMembers(c: *Checker, t: *Type) *Type {
     const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
-    var kept: std.ArrayList(*Type) = .empty;
+    var kept = c.newList(*Type);
     for (members) |m| switch (m.data) {
         .any, .err, .unknown, .void, .param, .access, .cond, .noinfer => kept.append(c.a, m) catch oom(),
         .obj, .inter => if (hasThen(c, m)) kept.append(c.a, m) catch oom(),
@@ -829,7 +829,7 @@ pub const Channel = enum(u2) { yield, ret, next };
 /// leaves the channel unknown, and the body is typed on its own.
 fn iteratorArg(c: *Checker, t: *Type, ch: Channel, is_async: bool) ?*Type {
     if (t.data == .union_) {
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (t.data.union_) |m| if (iteratorArg(c, m, ch, is_async)) |x| parts.append(c.a, x) catch oom();
         return if (parts.items.len == 0) null else c.getUnion(parts.items);
     }
@@ -861,7 +861,7 @@ fn asyncReturnContext(c: *Checker, t: *Type) *Type {
 
 fn typeOfMember(c: *Checker, t: *Type, name: []const u8) ?*Type {
     if (t.data == .union_) {
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (t.data.union_) |m| if (typeOfMember(c, m, name)) |x| parts.append(c.a, x) catch oom();
         if (parts.items.len == 0) return null;
         return c.getContextUnion(parts.items);
@@ -889,7 +889,7 @@ fn computedMemberContext(c: *Checker, t: *Type, name: *Node) ?*Type {
 
 fn typeAtKey(c: *Checker, t: *Type, key: *Type) ?*Type {
     if (t.data == .union_) {
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (t.data.union_) |m| if (typeAtKey(c, m, key)) |x| parts.append(c.a, x) catch oom();
         if (parts.items.len == 0) return null;
         return c.getContextUnion(parts.items);
@@ -900,7 +900,7 @@ fn typeAtKey(c: *Checker, t: *Type, key: *Type) ?*Type {
 
 fn elemOfCtx(c: *Checker, n: *Node, t: *Type, i: usize) ?*Type {
     if (t.data == .union_) {
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (t.data.union_) |m| if (elemOfCtx(c, n, m, i)) |x| parts.append(c.a, x) catch oom();
         if (parts.items.len == 0) return null;
         return c.getContextUnion(parts.items);
@@ -966,7 +966,7 @@ fn viaReturnMapper(c: *Checker, t: *Type, m: *T.Mapper) *Type {
     if (r == t or r.data != .union_) return r;
     const members = r.data.union_;
     if (std.mem.indexOfScalar(*Type, members, c.t_true) == null or std.mem.indexOfScalar(*Type, members, c.t_false) == null) return r;
-    var rest: std.ArrayList(*Type) = .empty;
+    var rest = c.newList(*Type);
     for (members) |x| if (x != c.t_true and x != c.t_false) rest.append(c.a, x) catch oom();
     return c.getUnion(rest.items);
 }
@@ -1210,7 +1210,7 @@ fn discriminate(c: *Checker, obj: *Node, t: *Type) *Type {
         if (relate.isDiscriminant(c, types, x.name)) keepMatching(c, types, keep, x.name, c.t_undefined);
     }
     if (std.mem.indexOfScalar(Keep, keep, .no) == null) return t;
-    var rest: std.ArrayList(*Type) = .empty;
+    var rest = c.newList(*Type);
     for (types, keep) |m, k| if (k == .yes) rest.append(c.a, m) catch oom();
     return if (rest.items.len == 0) t else c.getUnion(rest.items);
 }
@@ -1454,13 +1454,25 @@ pub fn widenFresh(c: *Checker, t: *Type) *Type {
 
 /// The literal `t` with `prop` applied to each property type.
 fn rebuildLiteral(c: *Checker, t: *Type, comptime prop: fn (*Checker, *Type) *Type) *Type {
-    const m = c.emptyMembers();
-    for (d.membersOf(c, t).props.values()) |p| {
+    const src = d.membersOf(c, t);
+    const props = src.props.values();
+    // Most literals hold nothing `prop` changes, and those keep their table.
+    var changed: ?*T.Members = null;
+    for (props, 0..) |p, i| {
+        const before = d.propType(c, p);
+        const after = prop(c, before);
+        if (changed == null and after == before) continue;
+        const m = changed orelse first: {
+            const x = c.membersFor(props.len);
+            for (props[0..i]) |same| x.props.put(c.a, same.name, same) catch oom();
+            changed = x;
+            break :first x;
+        };
         const q = c.create(Prop, p.*);
-        q.ty = prop(c, d.propType(c, p));
+        q.ty = after;
         m.props.put(c.a, p.name, q) catch oom();
     }
-    return settledLiteral(c, t, m);
+    return settledLiteral(c, t, changed orelse src);
 }
 
 fn settledLiteral(c: *Checker, t: *Type, m: *T.Members) *Type {
@@ -1530,7 +1542,7 @@ const Widening = struct {
 
     fn siblings(w: *Widening, c: *Checker) []*Type {
         if (w.kin) |k| return k;
-        var out: std.ArrayList(*Type) = .empty;
+        var out = c.newList(*Type);
         for (w.parent.?.siblings(c)) |t| {
             if (t.data != .obj or !t.data.obj.lit) continue;
             const p = d.membersOf(c, t).props.get(w.prop) orelse continue;
@@ -1843,8 +1855,8 @@ fn restFrom(c: *Checker, sig: *Sig, i: usize) *Type {
     const fixed = if (sig.has_rest) sig.params.len - 1 else sig.params.len;
     const rest = relate.restType(c, sig);
     if (i == fixed) if (rest) |r| return r;
-    var elems: std.ArrayList(*Type) = .empty;
-    var flags: std.ArrayList(T.ElemFlag) = .empty;
+    var elems = c.newList(*Type);
+    var flags = c.newList(T.ElemFlag);
     var k = i;
     while (k < fixed) : (k += 1) {
         elems.append(c.a, relate.typeAt(c, sig, k) orelse break) catch oom();
@@ -1988,7 +2000,7 @@ pub fn returnTypeFromBody(c: *Checker, fnode: *Node) *Type {
     defer c.skip_sensitive = skip;
     c.skip_sensitive = false;
     const is_async = fnode.mods.async;
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     var r = Returns{ .c = c };
     if (body.data != .block) {
         parts.append(c.a, checkExpr(c, body)) catch oom();
@@ -2021,7 +2033,7 @@ pub fn returnTypeFromBody(c: *Checker, fnode: *Node) *Type {
     };
     const t = widenFor(c, fnode, body, reduceSubtypes(c, parts.items), if (f.asterisk) generatorContext(c, fnode, .ret) else literalReturnContext(c, fnode));
     if (f.asterisk) {
-        var ys: std.ArrayList(*Type) = .empty;
+        var ys = c.newList(*Type);
         for (r.yields.items) |y| {
             const x = y.data.yield_expr;
             if (x.star) {
@@ -2054,7 +2066,7 @@ fn valuelessReturn(c: *Checker, fnode: *Node) *Type {
 }
 
 pub fn reduceSubtypes(c: *Checker, parts: []const *Type) *Type {
-    var seen: std.ArrayList(*Type) = .empty;
+    var seen = c.newList(*Type);
     var big: ?T.IdMap(*Type, void) = if (parts.len > 64) .empty else null;
     for (parts) |p| {
         // Members compete one by one, whichever branch brought them.
@@ -2079,7 +2091,7 @@ pub fn reduceSubtypes(c: *Checker, parts: []const *Type) *Type {
         if (p.data == .obj) break true;
     } else false;
     if (!objs or seen.items.len > 16) return c.getUnion(seen.items);
-    var out: std.ArrayList(*Type) = .empty;
+    var out = c.newList(*Type);
     outer: for (seen.items, 0..) |p, i| {
         for (seen.items, 0..) |q, j| {
             if (i == j or p.data != .obj or q.data != .obj) continue;
@@ -2155,7 +2167,7 @@ fn awaited(c: *Checker, t: *Type, depth: u32) *Type {
     if (T.isAny(pt)) return pt;
     const sigs = d.callSigs(c, pt);
     if (sigs.len == 0) return t;
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     for (sigs) |s| {
         const cb = relate.typeAt(c, s, 0) orelse continue;
         const inner = relate.removeDefinitelyUndefined(c, cb);
@@ -2203,7 +2215,7 @@ pub fn iteratedOf(c: *Checker, n: *Node, t: *Type, is_await: bool) *Type {
         if (is_await) r = awaitedOf(c, r);
         // IteratorResult is a union; the yielded side is the one with `done?: false`.
         const members: []const *Type = if (r.data == .union_) r.data.union_ else &.{r};
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (members) |m| {
             const dp = d.getProp(c, m, "done");
             if (dp) |x| {
@@ -2250,7 +2262,7 @@ pub fn destructuredType(c: *Checker, parent: *Type, pat: *Node, el: *Node) *Type
     if (T.isAny(parent)) return parent;
     if (pat.data == .object_pattern) {
         if (e.dotdotdot) {
-            var skip: std.ArrayList([]const u8) = .empty;
+            var skip = c.newList([]const u8);
             for (pat.data.object_pattern.elems) |o| {
                 if (o == el or o.data != .binding_elem) continue;
                 const key = o.data.binding_elem.prop_name orelse o.data.binding_elem.name;
@@ -2436,7 +2448,7 @@ pub fn nonNull(c: *Checker, t: *Type) *Type {
     if (isNullish(t)) return c.t_never;
     if (t.data == .unknown) return c.t_empty;
     if (t.data != .union_) return definite(c, t);
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     for (t.data.union_) |m| if (!isNullish(m)) parts.append(c.a, definite(c, m)) catch oom();
     return c.getUnion(parts.items);
 }
@@ -2868,7 +2880,7 @@ fn elemType(c: *Checker, n: *Node, left: *Type, idx: *Type, index_node: *Node) *
     }
     // An object literal is known in full: any key gives one of its values or nothing.
     if (isLiteralObject(ap) and (idx.data == .string or idx.data == .number)) {
-        var values: std.ArrayList(*Type) = .empty;
+        var values = c.newList(*Type);
         for (d.propsOf(c, ap)) |p| values.append(c.a, d.propType(c, p)) catch oom();
         values.append(c.a, c.t_undefined) catch oom();
         return c.getUnion(values.items);
@@ -2893,8 +2905,8 @@ fn checkArrayLit(c: *Checker, n: *Node) *Type {
     const is_const = isConstContext(c, n);
     const ctx = contextualType(c, n);
     const tuple_ctx = is_const or isDestructuringTarget(n) or (ctx != null and tupleLike(c, ctx.?));
-    var elems: std.ArrayList(*Type) = .empty;
-    var flags: std.ArrayList(T.ElemFlag) = .empty;
+    var elems = c.newList(*Type);
+    var flags = c.newList(T.ElemFlag);
     for (items) |e| {
         switch (e.data) {
             .spread_elem => |x| {
@@ -2925,7 +2937,7 @@ fn checkArrayLit(c: *Checker, n: *Node) *Type {
     }
     if (tuple_ctx) return writtenArray(c, c.makeTuple(elems.items, flags.items, is_const and !(ctx != null and mutableArrayCtx(c, ctx.?)), &.{}));
     if (elems.items.len == 0) return writtenArray(c, d.arrayOf(c, c.t_err));
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     for (elems.items, flags.items) |e, f| {
         if (f == .variadic) {
             parts.append(c.a, c.t_err) catch oom();
@@ -2982,17 +2994,17 @@ fn inferFromSite(c: *Checker, n: *Node, t: *Type) void {
 fn checkObjectLit(c: *Checker, n: *Node) *Type {
     const items = n.data.object_lit.props;
     const is_const = isConstContext(c, n);
-    var m = c.emptyMembers();
+    var m = c.membersFor(items.len);
     var open = false;
     var vars = false;
     var has_spread = false;
     var pending = false;
     var spreads_any = false;
     // What has been spread from a type parameter, and the objects around it.
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     // What was written since the last spread, which is what a computed key can stand for.
     var run_start: usize = 0;
-    var computed: std.ArrayList(ComputedKey) = .empty;
+    var computed = c.newList(ComputedKey);
     var split: ?SplitSpread = null;
     for (items, 0..) |p, i| {
         switch (p.data) {
@@ -3135,7 +3147,7 @@ fn spreadIndexes(c: *Checker, m: *T.Members, s: *Type, first: bool) void {
 
 /// `{ ...rec }` keeps its index signature, `{ ...rec, a }` does not: an index has to hold on both sides.
 fn sharedIndexes(c: *Checker, left: []T.Index, right: []T.Index) []T.Index {
-    var kept: std.ArrayList(T.Index) = .empty;
+    var kept = c.newList(T.Index);
     for (left) |x| for (right) |y| if (x.key == y.key) {
         kept.append(c.a, .{ .key = x.key, .ty = c.getUnion(&.{ x.ty, y.ty }), .decl = x.decl }) catch oom();
     };
@@ -3162,13 +3174,13 @@ fn closeRun(c: *Checker, m: *T.Members, run: []*Node, computed: []const Computed
 
 /// A computed key could be any of the names written beside it, so its index covers them all.
 fn literalIndexes(c: *Checker, m: *T.Members, run: []*Node, computed: []const ComputedKey, readonly: bool) []T.Index {
-    var out: std.ArrayList(T.Index) = .empty;
+    var out = c.newList(T.Index);
     for ([_]*Type{ c.t_string, c.t_number, c.t_symbol }) |key| {
         const used = for (computed) |x| {
             if (x.key == key) break true;
         } else false;
         if (!used) continue;
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (computed) |x| {
             if (coveredByKey(c, key, x.key == c.t_number, x.key == c.t_symbol)) parts.append(c.a, x.ty) catch oom();
         }
@@ -3793,7 +3805,7 @@ fn elemAt(c: *Checker, s: *Type, i: usize) ?*Type {
 
 fn targetProp(c: *Checker, t: *Type, name: []const u8) ?*Type {
     if (t.data == .union_) {
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (t.data.union_) |m| if (m.data == .obj or m.data == .inter) if (targetProp(c, m, name)) |x| parts.append(c.a, x) catch oom();
         return if (parts.items.len == 0) null else c.getUnion(parts.items);
     }
@@ -3802,7 +3814,7 @@ fn targetProp(c: *Checker, t: *Type, name: []const u8) ?*Type {
 }
 
 fn joinNames(c: *Checker, names: []const []const u8) []const u8 {
-    var out: std.ArrayList(u8) = .empty;
+    var out = c.newList(u8);
     for (names, 0..) |x, i| {
         if (i > 0) out.appendSlice(c.a, ", ") catch oom();
         out.appendSlice(c.a, x) catch oom();
@@ -3924,7 +3936,7 @@ fn propNameNode(p: *Node) *Node {
 const Arg = struct { node: ?*Node, ty: ?*Type = null, spread: bool = false };
 
 fn effectiveArgs(c: *Checker, nodes: []*Node) []Arg {
-    var out: std.ArrayList(Arg) = .empty;
+    var out = std.ArrayList(Arg).initCapacity(c.a, nodes.len) catch oom();
     for (nodes) |a| {
         if (a.data == .spread_elem) {
             const t = checkExpr(c, a.data.spread_elem.expr);
@@ -4044,8 +4056,8 @@ fn fromPattern(c: *Checker, n: *Node, t: *Type) bool {
 }
 
 fn inferRest(c: *Checker, ctx: *InferCtx, rest: *Type, args: []Arg) void {
-    var elems: std.ArrayList(*Type) = .empty;
-    var flags: std.ArrayList(T.ElemFlag) = .empty;
+    var elems = c.newList(*Type);
+    var flags = c.newList(T.ElemFlag);
     for (args, 0..) |a, i| {
         const want = d.getIndexedAccess(c, rest, c.numLit(@floatFromInt(i)));
         const at = argType(c, a, want, ctx);
@@ -4110,7 +4122,7 @@ fn explicitTypeArgs(c: *Checker, s: *Sig, nodes: []*Node) ?*Sig {
 }
 
 fn appliedSigs(c: *Checker, sigs: []*Sig, nodes: []*Node) []*Sig {
-    var out: std.ArrayList(*Sig) = .empty;
+    var out = c.newList(*Sig);
     for (sigs) |s| if (s.tparams.len > 0) if (explicitTypeArgs(c, s, nodes)) |x| out.append(c.a, x) catch oom();
     return out.items;
 }
@@ -4258,7 +4270,7 @@ fn hasLiteralParam(s: *Sig) bool {
 fn resolveCall(c: *Checker, n: *Node, sigs: []*Sig, node_args: []*Node, type_args: []*Node, is_decor: bool) ?*Sig {
     _ = is_decor;
     const args = effectiveArgs(c, node_args);
-    var cands: std.ArrayList(*Sig) = .empty;
+    var cands = std.ArrayList(*Sig).initCapacity(c.a, sigs.len) catch oom();
     for (reorderCandidates(c, sigs)) |s| {
         if (arityOk(c, s, args)) cands.append(c.a, s) catch oom();
     }
@@ -4271,6 +4283,7 @@ fn resolveCall(c: *Checker, n: *Node, sigs: []*Sig, node_args: []*Node, type_arg
         if (a.node != null and a.ty == null and sensitiveArg(c, a.node.?)) break true;
     } else false;
     const passes: []const bool = if (any_sensitive) &.{ false, true } else &.{true};
+    // Most calls fit their first candidate and never touch these.
     var failed: std.ArrayList(Failure) = .empty;
     var failed_sigs: std.ArrayList(*Sig) = .empty;
     c.silent += 1;
@@ -4557,7 +4570,7 @@ fn argsFor(c: *Checker, nodes: []*Node) []Arg {
 }
 
 pub fn similarProp(c: *Checker, name: []const u8, t: *Type) ?[]const u8 {
-    var names: std.ArrayList([]const u8) = .empty;
+    var names = c.newList([]const u8);
     if (t.data == .obj or t.data == .inter or t.data == .union_) {
         for (d.propsOf(c, t)) |p| {
             if (p.private) continue;
@@ -4588,7 +4601,7 @@ fn checkSuperCall(c: *Checker, n: *Node) *Type {
 
 fn instantiateBase(c: *Checker, sigs: []*Sig, e: *Node) []*Sig {
     const targs = e.data.expr_with_type_args.type_args.items;
-    var out: std.ArrayList(*Sig) = .empty;
+    var out = c.newList(*Sig);
     for (sigs) |s| {
         if (s.tparams.len > 0 and targs.len <= s.tparams.len and targs.len >= d.minArgs(c, s.tparams)) {
             const vals = c.a.alloc(*Type, s.tparams.len) catch oom();
@@ -4783,7 +4796,7 @@ pub fn isExhaustive(c: *Checker, sw: *Node) bool {
     const t = checkSilent(c, x.expr);
     const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
     if (members.len == 0 or t.data == .never) return true;
-    var values: std.ArrayList(*Type) = .empty;
+    var values = c.newList(*Type);
     for (x.clauses) |cl| {
         if (cl.data != .case_clause) continue;
         const v = checkSilent(c, cl.data.case_clause.expr);
@@ -4826,7 +4839,7 @@ fn constantText(c: *Checker, n0: *Node, depth: u32) ?[]const u8 {
             return integerText(c, v.data.num_lit);
         },
         .template_expr => |x| {
-            var out: std.ArrayList(u8) = .empty;
+            var out = c.newList(u8);
             out.appendSlice(c.a, x.head) catch oom();
             for (x.spans) |sp| {
                 const v = constantText(c, sp.data.template_span.expr, depth + 1) orelse return null;
@@ -4872,8 +4885,8 @@ fn integerText(c: *Checker, v: f64) ?[]const u8 {
 
 fn checkTemplate(c: *Checker, n: *Node) *Type {
     const x = n.data.template_expr;
-    var texts: std.ArrayList([]const u8) = .empty;
-    var types: std.ArrayList(*Type) = .empty;
+    var texts = c.newList([]const u8);
+    var types = c.newList(*Type);
     texts.append(c.a, x.head) catch oom();
     for (x.spans) |sp| {
         const v = checkExpr(c, sp.data.template_span.expr);

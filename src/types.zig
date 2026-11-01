@@ -154,7 +154,6 @@ pub const Prop = struct {
     name: []const u8,
     sym: ?*Symbol = null,
     ty: ?*Type = null,
-    write_ty: ?*Type = null,
     mapper: ?*Mapper = null,
     optional: bool = false,
     readonly: bool = false,
@@ -528,6 +527,12 @@ pub const Checker = struct {
         return p;
     }
 
+    /// `std.ArrayList` reserves a cache line of items on the first append, 17 pointers for a list
+    /// that mostly holds two, and an arena never gets them back.
+    pub fn newList(c: *Checker, comptime T: type) std.ArrayList(T) {
+        return std.ArrayList(T).initCapacity(c.a, 4) catch oom();
+    }
+
     pub fn dupe(c: *Checker, comptime T: type, v: []const T) []T {
         return c.a.dupe(T, v) catch oom();
     }
@@ -541,6 +546,18 @@ pub const Checker = struct {
 
     pub fn emptyMembers(c: *Checker) *Members {
         return c.create(Members, .{});
+    }
+
+    /// A property table's first insert reserves nine entries, and most objects have two.
+    pub fn membersFor(c: *Checker, props: usize) *Members {
+        const m = c.emptyMembers();
+        c.reserveProps(m, props);
+        return m;
+    }
+
+    pub fn reserveProps(c: *Checker, m: *Members, more: usize) void {
+        const want = m.props.count() + more;
+        if (want > m.props.entries.capacity) m.props.entries.setCapacity(c.a, want) catch oom();
     }
 
     pub fn newObj(c: *Checker, o: Obj) *Type {
@@ -711,14 +728,14 @@ pub const Checker = struct {
     /// from absorbing literals in a union. Everywhere else `{}` adds nothing to a non-nullable.
     pub fn intersect(c: *Checker, types: []const *Type, keep_empty: bool) *Type {
         if (types.len == 1) return types[0];
-        var list: std.ArrayList(*Type) = .empty;
+        var list = c.newList(*Type);
         for (types) |t| {
             switch (t.data) {
                 .inter => |x| for (x) |y| list.append(c.a, y) catch oom(),
                 else => list.append(c.a, t) catch oom(),
             }
         }
-        var out: std.ArrayList(*Type) = .empty;
+        var out = c.newList(*Type);
         var has_union = false;
         for (list.items) |t| {
             switch (t.data) {
@@ -756,7 +773,7 @@ pub const Checker = struct {
         }
         if (c.strict_null and nullable and (has_empty or object)) return c.t_never;
         const drop_empty = has_empty and (definite or object) and !keep_empty;
-        var reduced: std.ArrayList(*Type) = .empty;
+        var reduced = c.newList(*Type);
         for (out.items) |t| {
             const widens = for (out.items) |o| {
                 if (o != t and c.literalOfPrimitive(o, t)) break true;
@@ -786,7 +803,7 @@ pub const Checker = struct {
             };
             for (reduced.items, 0..) |t, i| {
                 if (t.data != .union_) continue;
-                var parts: std.ArrayList(*Type) = .empty;
+                var parts = c.newList(*Type);
                 for (t.data.union_) |m| {
                     const rest = c.dupe(*Type, reduced.items);
                     rest[i] = m;
@@ -811,8 +828,8 @@ pub const Checker = struct {
     /// distribution would count every pair against the limit: two literal unions of a few hundred
     /// members are common in `keyof` of DOM types and must stay legal.
     fn intersectPrimitiveUnions(c: *Checker, types: []const *Type) ?[]const *Type {
-        var unions: std.ArrayList(*Type) = .empty;
-        var rest: std.ArrayList(*Type) = .empty;
+        var unions = c.newList(*Type);
+        var rest = c.newList(*Type);
         var first: ?usize = null;
         for (types) |t| {
             if (isPrimitiveUnion(t)) {
@@ -821,7 +838,7 @@ pub const Checker = struct {
             } else rest.append(c.a, t) catch oom();
         }
         if (unions.items.len < 2) return null;
-        var common: std.ArrayList(*Type) = .empty;
+        var common = c.newList(*Type);
         for (unions.items) |u| {
             for (u.data.union_) |m| {
                 const everywhere = for (unions.items) |other| {
@@ -959,9 +976,9 @@ pub const Checker = struct {
             }
             return c.getUnion(out);
         }
-        var elems: std.ArrayList(*Type) = .empty;
-        var flags: std.ArrayList(ElemFlag) = .empty;
-        var names: std.ArrayList(?[]const u8) = .empty;
+        var elems = c.newList(*Type);
+        var flags = c.newList(ElemFlag);
+        var names = c.newList(?[]const u8);
         for (elems_in, 0..) |e, i| {
             const fl = flags_in[i];
             const nm: ?[]const u8 = if (i < names_in.len) names_in[i] else null;

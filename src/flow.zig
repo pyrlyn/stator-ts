@@ -351,7 +351,7 @@ const St = struct {
         if (st.recall(k, f)) |t| return t;
         const touched = c.flow_touched;
         c.flow_touched = T.flow_untouched;
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         var bypass: ?*FlowNode = null;
         var antecedents = f.antecedents;
         const over = st.over;
@@ -430,7 +430,7 @@ const St = struct {
                 st.round = .empty;
                 if (depth == 0) forgetRound(c);
                 c.flow_active.put(c.a, k, .{ .ty = cur, .depth = depth }) catch oom();
-                var parts: std.ArrayList(*Type) = .empty;
+                var parts = c.newList(*Type);
                 parts.append(c.a, cur) catch oom();
                 for (f.antecedents[1..]) |a| {
                     const t = st.go(a);
@@ -553,7 +553,7 @@ const St = struct {
     fn byDiscriminant(st: *St, t: *Type, name: []const u8, op: anytype) *Type {
         const c = st.c;
         const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (members) |m| {
             const p = d.getProp(c, m, name) orelse {
                 parts.append(c.a, m) catch oom();
@@ -845,7 +845,7 @@ pub fn isOptionalChain(n0: *Node) bool {
 fn reduceAssigned(c: *Checker, declared: *Type, assigned0: *Type) *Type {
     if (T.isAny(assigned0)) return declared;
     const assigned = assigned0.regular orelse assigned0;
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     for (declared.data.union_) |m| {
         if (mayAssign(c, assigned, m)) parts.append(c.a, m) catch oom();
     }
@@ -866,7 +866,7 @@ fn mayAssign(c: *Checker, s: *Type, t: *Type) bool {
 
 fn joinTypes(c: *Checker, declared: *Type, parts: []const *Type) *Type {
     _ = declared;
-    var list: std.ArrayList(*Type) = .empty;
+    var list = c.newList(*Type);
     for (parts) |t| if (t != c.t_unreachable) list.append(c.a, t) catch oom();
     if (list.items.len == 0) return c.t_unreachable;
     return recombineUnknown(c, c.getUnion(list.items));
@@ -887,7 +887,7 @@ pub fn byTruthiness(c: *Checker, t: *Type, assume: bool) *Type {
     if (t == c.t_auto and assume) return c.t_any;
     switch (t.data) {
         .union_ => |u| {
-            var parts: std.ArrayList(*Type) = .empty;
+            var parts = c.newList(*Type);
             for (u) |m| {
                 const r = byTruthiness(c, m, assume);
                 if (r.data != .never) parts.append(c.a, r) catch oom();
@@ -995,7 +995,7 @@ pub fn narrowTypeof(c: *Checker, t: *Type, word: []const u8, assume: bool) *Type
     // `null` passes `typeof x === "object"` as itself; anything still generic can only be an object.
     const implied = if (std.mem.eql(u8, word, "object")) c.t_nonprim else target;
     const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     for (members) |m| {
         const kind = typeofKind(c, m);
         if (kind) |k| {
@@ -1047,7 +1047,7 @@ fn byEquality(c: *Checker, t: *Type, op: @import("lexer.zig").Tok, value: *Node,
             if (v.data != .union_ or v == c.t_boolean) return v;
         }
         if (t.data == .unknown) return t;
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (members) |m| {
             if (loose and (m.data == .null or m.data == .undefined)) continue;
             if (relate.isComparable(c, m, v) or relate.isComparable(c, v, m)) {
@@ -1058,7 +1058,7 @@ fn byEquality(c: *Checker, t: *Type, op: @import("lexer.zig").Tok, value: *Node,
     }
     if (relate.isUnitType(v)) {
         const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (members) |m| {
             const reg = m.regular orelse m;
             // A string enum member and the string it holds are one value.
@@ -1088,7 +1088,7 @@ fn isNullishLeft(n: *Node) bool {
 
 fn narrowNullish(c: *Checker, t: *Type, v: *Type, loose: bool, assume: bool) *Type {
     const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     if (assume) {
         if (t.data == .unknown) return if (loose) c.getUnion(&.{ c.t_null, c.t_undefined }) else v;
         for (members) |m| {
@@ -1133,7 +1133,7 @@ fn admits(t: *Type, v: *Type) bool {
 fn narrowSwitch(c: *Checker, t: *Type, sw: *Node, start: u32, end: u32) *Type {
     const clauses = sw.data.switch_stmt.clauses;
     var has_default = start == end;
-    var values: std.ArrayList(*Type) = .empty;
+    var values = c.newList(*Type);
     for (clauses[start..end]) |cl| {
         if (cl.data == .default_clause) {
             has_default = true;
@@ -1143,7 +1143,7 @@ fn narrowSwitch(c: *Checker, t: *Type, sw: *Node, start: u32, end: u32) *Type {
         values.append(c.a, v.regular orelse v) catch oom();
     }
     const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
-    var cases: std.ArrayList(*Type) = .empty;
+    var cases = c.newList(*Type);
     if (t.data == .unknown and !has_default) return unknownByClauses(c, t, values.items);
     if (t.data == .unknown or T.isAny(t)) return t;
     for (values.items) |v| {
@@ -1155,13 +1155,13 @@ fn narrowSwitch(c: *Checker, t: *Type, sw: *Node, start: u32, end: u32) *Type {
     }
     const case_t = c.getUnion(cases.items);
     if (!has_default) return case_t;
-    var all: std.ArrayList(*Type) = .empty;
+    var all = c.newList(*Type);
     for (clauses) |cl| {
         if (cl.data != .case_clause) continue;
         const v = operand(c, cl.data.case_clause.expr);
         all.append(c.a, v.regular orelse v) catch oom();
     }
-    var rest: std.ArrayList(*Type) = .empty;
+    var rest = c.newList(*Type);
     for (members) |m| {
         const reg = m.regular orelse m;
         const hit = for (all.items) |v| {
@@ -1187,7 +1187,7 @@ fn unknownByClauses(c: *Checker, t: *Type, values: []*Type) *Type {
 fn narrowSwitchTypeof(c: *Checker, t: *Type, sw: *Node, start: u32, end: u32) *Type {
     const clauses = sw.data.switch_stmt.clauses;
     var has_default = start == end;
-    var words: std.ArrayList([]const u8) = .empty;
+    var words = c.newList([]const u8);
     for (clauses[start..end]) |cl| {
         if (cl.data == .default_clause) {
             has_default = true;
@@ -1212,7 +1212,7 @@ fn narrowSwitchTypeof(c: *Checker, t: *Type, sw: *Node, start: u32, end: u32) *T
         }
         return cur;
     }
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     for (words.items) |w| parts.append(c.a, narrowTypeof(c, t, w, true)) catch oom();
     return c.getUnion(parts.items);
 }
@@ -1264,7 +1264,7 @@ fn isSubset(s: *Type, t: *Type) bool {
 pub fn narrowedType(c: *Checker, t: *Type, candidate: *Type, assume: bool, check_derived: bool) *Type {
     if (T.isAny(candidate)) return t;
     const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     if (!assume) {
         if (t == candidate) return c.t_never;
         if (T.isAny(t)) return t;
@@ -1318,7 +1318,7 @@ fn byInstanceof(c: *Checker, t: *Type, right: *Node, assume: bool) *Type {
     if (candidate == null) {
         const sigs = d.ctorSigs(c, r);
         if (sigs.len > 0) {
-            var parts: std.ArrayList(*Type) = .empty;
+            var parts = c.newList(*Type);
             for (sigs) |s| parts.append(c.a, d.returnOf(c, s)) catch oom();
             candidate = c.getUnion(parts.items);
         }
@@ -1334,7 +1334,7 @@ fn byIn(c: *Checker, t: *Type, name: []const u8, assume: bool) *Type {
         if (mayHaveProp(c, m, name, true)) break true;
     } else false;
     if (known) {
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (members) |m| {
             if (mayHaveProp(c, m, name, assume)) parts.append(c.a, m) catch oom();
         }

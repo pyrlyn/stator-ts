@@ -388,7 +388,7 @@ fn moduleName(m: *Symbol) []const u8 {
 }
 
 fn missingExport(c: *Checker, m: *Symbol, at: *Node, name: []const u8) void {
-    var names: std.ArrayList([]const u8) = .empty;
+    var names = c.newList([]const u8);
     for (d.exportsOf(c, m)) |e| names.append(c.a, e.name) catch oom();
     if (expr.spellingFor(c, name, names.items)) |s| {
         err(c, at, 2724, c.fmt("'\"{s}\"' has no exported member named '{s}'. Did you mean '{s}'?", .{ moduleName(m), name, s }));
@@ -698,7 +698,7 @@ fn nameOfMember(n: *Node) *Node {
 
 fn checkAbstract(c: *Checker, n: *Node, t: *Type, base: *Type) void {
     if (n.mods.abstract) return;
-    var missing: std.ArrayList(*T.Prop) = .empty;
+    var missing = c.newList(*T.Prop);
     for (d.propsOf(c, base)) |bp| {
         if (!bp.abstract) continue;
         const p = d.membersOf(c, t).props.get(bp.name) orelse continue;

@@ -91,7 +91,7 @@ pub fn importedProperty(c: *Checker, s: *Symbol) ?*Type {
 }
 
 pub fn exportsOf(c: *Checker, m: *Symbol) []const *Symbol {
-    var out: std.ArrayList(*Symbol) = .empty;
+    var out = c.newList(*Symbol);
     var seen: std.StringHashMapUnmanaged(void) = .empty;
     c.collectExports(m.resolve(), &out, &seen, 0);
     return out.items;
@@ -216,7 +216,7 @@ fn declTParams(n: *Node) ?[]*Node {
 
 pub fn tparamsFrom(c: *Checker, list: []*Node) []*Type {
     if (list.len == 0) return &.{};
-    var out: std.ArrayList(*Type) = .empty;
+    var out = c.newList(*Type);
     for (list) |p| if (p.symbol) |s| out.append(c.a, tparamOf(c, s)) catch oom();
     return out.items;
 }
@@ -279,7 +279,7 @@ pub fn defaultOf(c: *Checker, t: *Type) ?*Type {
 /// Type parameters in scope at a declaration: instantiating what it declares must map them.
 pub fn outerTParams(c: *Checker, n: *Node) []*Type {
     if (c.node_tparams.get(n)) |x| return x;
-    var out: std.ArrayList(*Type) = .empty;
+    var out = c.newList(*Type);
     var cur: ?*Node = n;
     var from: ?*Node = null;
     while (cur) |x| : ({
@@ -327,7 +327,7 @@ fn referencedTParams(c: *Checker, n: *Node) []*Type {
     const outer = outerTParams(c, n);
     // `type A<T> = { x: 1 }` still names one type per argument, as its alias shows.
     const named = if (n.parent) |p| p.data == .type_alias and p.data.type_alias.type_params.items.len > 0 else false;
-    var out: std.ArrayList(*Type) = .empty;
+    var out = c.newList(*Type);
     for (outer) |p| if (named or possiblyReferenced(p, n)) out.append(c.a, p) catch oom();
     c.node_refs.put(c.a, n, out.items) catch oom();
     return out.items;
@@ -402,8 +402,8 @@ pub fn declaredType(c: *Checker, s0: *Symbol) *Type {
 }
 
 fn declareIface(c: *Checker, s: *Symbol) *Type {
-    var outer: std.ArrayList(*Type) = .empty;
-    var local: std.ArrayList(*Type) = .empty;
+    var outer = c.newList(*Type);
+    var local = c.newList(*Type);
     var first: ?*Node = null;
     for (s.decls) |d| {
         const list: []*Node = switch (d.data) {
@@ -494,7 +494,7 @@ fn parseEnumInit(c: *Checker, n: *Node, owner: *Symbol) T.EnumValue {
         .string_lit, .no_subst_template => |v| return .{ .str = v },
         .paren => |x| return parseEnumInit(c, x.expr, owner),
         .template_expr => |x| {
-            var out: std.ArrayList(u8) = .empty;
+            var out = c.newList(u8);
             out.appendSlice(c.a, x.head) catch oom();
             for (x.spans) |sp| {
                 const span = sp.data.template_span;
@@ -622,7 +622,7 @@ fn enumMemberType(c: *Checker, s: *Symbol) *Type {
 fn declareEnum(c: *Checker, s: *Symbol) *Type {
     c.declaring_enums.put(c.a, s, {}) catch oom();
     defer _ = c.declaring_enums.remove(s);
-    var types: std.ArrayList(*Type) = .empty;
+    var types = c.newList(*Type);
     var literal = true;
     for (s.decls) |d| {
         if (d.data != .enum_decl) continue;
@@ -661,7 +661,7 @@ pub fn basesOf(c: *Checker, t: *Type) []*Type {
     if (o.bases_resolving) return &.{};
     o.bases_resolving = true;
     defer o.bases_resolving = false;
-    var out: std.ArrayList(*Type) = .empty;
+    var out = c.newList(*Type);
     const s = o.sym orelse return &.{};
     for (s.decls) |d| {
         const heritage: []*Node = switch (d.data) {
@@ -875,8 +875,8 @@ fn typeFromNodeWorker(c: *Checker, n: *Node) *Type {
         },
         .literal_type => |x| return literalFromNode(c, x.lit),
         .template_literal_type => |x| {
-            var texts: std.ArrayList([]const u8) = .empty;
-            var types: std.ArrayList(*Type) = .empty;
+            var texts = c.newList([]const u8);
+            var types = c.newList(*Type);
             texts.append(c.a, x.head) catch oom();
             for (x.spans) |sp| {
                 const d = sp.data.template_type_span;
@@ -1111,7 +1111,7 @@ pub fn minArgs(c: *Checker, params: []*Type) usize {
 }
 
 fn reportArity(c: *Checker, n: *Node, s: *Symbol, params: []*Type, min: usize) void {
-    var names: std.ArrayList(u8) = .empty;
+    var names = c.newList(u8);
     for (params, 0..) |p, i| {
         if (i > 0) names.appendSlice(c.a, ", ") catch oom();
         names.appendSlice(c.a, p.data.param.name) catch oom();
@@ -1397,7 +1397,7 @@ fn instantiateHomomorphic(c: *Checker, root: *Type, hp: *Type, arg: *Type, outer
     }.f;
     switch (arg.data) {
         .union_ => |u| {
-            var parts: std.ArrayList(*Type) = .empty;
+            var parts = c.newList(*Type);
             for (u) |x| parts.append(c.a, with(c, root, hp, x, outer, mapped)) catch oom();
             return c.getUnion(parts.items);
         },
@@ -1504,7 +1504,6 @@ pub fn applySig(c: *Checker, s: *Sig, m: *Mapper) *Sig {
 fn instProp(c: *Checker, p: *Prop, m: ?*Mapper) *Prop {
     const q = c.create(Prop, p.*);
     q.ty = null;
-    q.write_ty = null;
     q.origin = p;
     q.mapper = m;
     return q;
@@ -1520,7 +1519,7 @@ pub fn propType(c: *Checker, p: *Prop) *Type {
 fn propTypeWorker(c: *Checker, p: *Prop) *Type {
     if (p.origin) |o| return instantiate(c, propType(c, o), p.mapper);
     if (p.mapped_owner) |owner| return mappedPropType(c, owner, p);
-    if (p.sym) |s| return typeOfSymbol(c, s);
+    if (p.sym) |s| return instantiate(c, typeOfSymbol(c, s), p.mapper);
     return c.t_err;
 }
 
@@ -1529,7 +1528,7 @@ pub fn propWriteType(c: *Checker, p: *Prop) *Type {
     if (p.sym) |s| if (s.flags & F.setter != 0) {
         for (s.decls) |d| if (d.data == .func and d.data.func.kind == .setter or d.data == .func and d.data.func.kind == .setter_sig) {
             const f = d.data.func;
-            if (f.params.len > 0) return typeOfParam(c, f.params[0]);
+            if (f.params.len > 0) return instantiate(c, typeOfParam(c, f.params[0]), p.mapper);
         };
     };
     return propType(c, p);
@@ -1616,7 +1615,7 @@ fn typeOfSymbolWorker(c: *Checker, s: *Symbol) *Type {
 
 /// `f.x = 1; f.x = 'a'` declares one property that holds either.
 fn expandoType(c: *Checker, s: *Symbol) *Type {
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     for (s.decls) |left| {
         const value = left.parent.?.data.binary.right;
         parts.append(c.a, expr.widenInit(c, value, expr.checkSilent(c, value), false)) catch oom();
@@ -1876,7 +1875,7 @@ fn syntheticAccess(c: *Checker, el: *Node) ?*Node {
 pub fn sigOfDecl(c: *Checker, d: *Node) *Sig {
     if (c.sig_of_decl.get(d)) |s| return s;
     const f = d.data.func;
-    var params: std.ArrayList(T.SigParam) = .empty;
+    var params = c.newList(T.SigParam);
     var min: u32 = 0;
     var rest = false;
     var this_ty: ?*Type = null;
@@ -1999,7 +1998,7 @@ pub fn predOf(c: *Checker, s: *Sig) ?*T.Pred {
 pub fn sigsOfSymbol(c: *Checker, s: *Symbol, want_ctor: bool) []*Sig {
     const cache = if (want_ctor) &c.ctor_list else &c.sig_list;
     if (cache.get(s)) |x| return x;
-    var out: std.ArrayList(*Sig) = .empty;
+    var out = c.newList(*Sig);
     for (s.decls, 0..) |d, i| {
         if (d.data != .func) continue;
         const f = d.data.func;
@@ -2046,7 +2045,7 @@ fn addExpandos(c: *Checker, m: *Members, func: *Node) void {
         var it = table.map.iterator();
         while (it.next()) |e| {
             const s = e.value_ptr.*.resolve();
-            if (s.flags & F.property != 0) m.props.put(c.a, e.key_ptr.*, propFromSymbol(c, s, null, null)) catch oom();
+            if (s.flags & F.property != 0) m.props.put(c.a, e.key_ptr.*, propFromSymbol(c, s, null)) catch oom();
         }
     }
     addLateExpandos(c, m, holder);
@@ -2059,13 +2058,13 @@ fn addLateExpandos(c: *Checker, m: *Members, s: *Symbol) void {
         const key = expr.checkSilent(c, left.data.elem_access.index);
         const name = literalName(c, key.regular orelse key) orelse continue;
         if (m.props.contains(name)) continue;
-        const p = propFromSymbol(c, late, null, null);
+        const p = propFromSymbol(c, late, null);
         p.name = name;
         m.props.put(c.a, name, p) catch oom();
     }
 }
 
-fn propFromSymbol(c: *Checker, s: *Symbol, mapper: ?*Mapper, owner: ?*Type) *Prop {
+fn propFromSymbol(c: *Checker, s: *Symbol, owner: ?*Type) *Prop {
     const d = s.value_decl orelse (if (s.decls.len > 0) s.decls[0] else null);
     const optional = s.flags & F.optional != 0;
     var readonly = false;
@@ -2080,15 +2079,13 @@ fn propFromSymbol(c: *Checker, s: *Symbol, mapper: ?*Mapper, owner: ?*Type) *Pro
         abstract = n.mods.abstract;
         is_static = n.mods.static;
     }
-    return mkProp(c, s, d, mapper, owner, optional, readonly, private, protected, abstract, is_static);
+    return mkProp(c, s, d, owner, optional, readonly, private, protected, abstract, is_static);
 }
 
-fn mkProp(c: *Checker, s: *Symbol, d: ?*Node, mapper: ?*Mapper, owner: ?*Type, optional: bool, readonly: bool, private: bool, protected: bool, abstract: bool, is_static: bool) *Prop {
+fn mkProp(c: *Checker, s: *Symbol, d: ?*Node, owner: ?*Type, optional: bool, readonly: bool, private: bool, protected: bool, abstract: bool, is_static: bool) *Prop {
     return c.create(Prop, .{
         .name = s.name,
         .sym = s,
-        .mapper = null,
-        .origin = if (mapper != null) c.create(Prop, .{ .name = s.name, .sym = s, .mapper = null, .decl = d, .origin = null, .optional = optional }) else null,
         .optional = optional,
         .readonly = readonly or (s.flags & F.getter != 0 and s.flags & F.setter == 0),
         .method = s.flags & F.method != 0,
@@ -2109,8 +2106,8 @@ fn hasUnnamedMember(s: *Symbol) bool {
 fn resolveIface(c: *Checker, self: *Type, g: *Type, args: []*Type, this_arg: *Type) *Members {
     const o = g.data.obj;
     const m = c.emptyMembers();
-    var from: std.ArrayList(*Type) = .empty;
-    var to: std.ArrayList(*Type) = .empty;
+    var from = c.newList(*Type);
+    var to = c.newList(*Type);
     for (o.tparams, 0..) |p, i| if (i < args.len) {
         from.append(c.a, p) catch oom();
         to.append(c.a, args[i]) catch oom();
@@ -2121,9 +2118,9 @@ fn resolveIface(c: *Checker, self: *Type, g: *Type, args: []*Type, this_arg: *Ty
     }
     const mapper: ?*Mapper = if (from.items.len > 0) arrayMapper(c, from.items, to.items) else null;
     const s = o.sym.?;
-    var calls: std.ArrayList(*Sig) = .empty;
-    var ctors: std.ArrayList(*Sig) = .empty;
-    var indexes: std.ArrayList(T.Index) = .empty;
+    var calls = c.newList(*Sig);
+    var ctors = c.newList(*Sig);
+    var indexes = c.newList(T.Index);
     if (s.members) |tbl| {
         var it = tbl.map.iterator();
         while (it.next()) |e| {
@@ -2138,8 +2135,9 @@ fn resolveIface(c: *Checker, self: *Type, g: *Type, args: []*Type, this_arg: *Ty
             } else if (std.mem.eql(u8, name, "__constructor")) {
                 addParamProps(c, ms, m, mapper, g);
             } else {
-                m.props.put(c.a, name, propFromSymbol(c, ms, mapper, g)) catch oom();
-                if (mapper) |mp| m.props.get(name).?.mapper = mp;
+                const p = propFromSymbol(c, ms, g);
+                p.mapper = mapper;
+                m.props.put(c.a, name, p) catch oom();
             }
         }
     }
@@ -2159,12 +2157,12 @@ fn resolveIface(c: *Checker, self: *Type, g: *Type, args: []*Type, this_arg: *Ty
 /// A key the checker can name makes a member. Any other key is an index signature, and since the
 /// name is known only when the code runs, it speaks for every sibling too.
 fn addLateMembers(c: *Checker, late: []*Symbol, m: *Members, mapper: ?*Mapper, owner: ?*Type, indexes: *std.ArrayList(T.Index), unnamed: bool) void {
-    var computed: std.ArrayList(expr.ComputedKey) = .empty;
+    var computed = c.newList(expr.ComputedKey);
     var readonly = true;
     for (late) |ls| {
         const node = binder.nameNode(ls.decls[0]) orelse continue;
-        const p = propFromSymbol(c, ls, mapper, owner);
-        if (mapper) |mp| p.mapper = mp;
+        const p = propFromSymbol(c, ls, owner);
+        p.mapper = mapper;
         const name = expr.propNameOf(c, node) orelse {
             const key = expr.computedKeyOf(c, node) orelse continue;
             computed.append(c.a, .{ .key = key, .ty = propType(c, p) }) catch oom();
@@ -2182,7 +2180,7 @@ fn addLateMembers(c: *Checker, late: []*Symbol, m: *Members, mapper: ?*Mapper, o
             if (x.key == key) break true;
         } else false;
         if (!used) continue;
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (computed.items) |x| {
             if (expr.coveredByKey(c, key, x.key == c.t_number, x.key == c.t_symbol)) parts.append(c.a, x.ty) catch oom();
         }
@@ -2233,7 +2231,7 @@ fn addParamProps(c: *Checker, ctor: *Symbol, m: *Members, mapper: ?*Mapper, owne
             if (!(pn.mods.public or pn.mods.private or pn.mods.protected or pn.mods.readonly)) continue;
             const s = pn.symbol orelse continue;
             if (m.props.contains(s.name)) continue;
-            const p = mkProp(c, s, pn, mapper, owner, pn.data.param.question, pn.mods.readonly, pn.mods.private, pn.mods.protected, false, false);
+            const p = mkProp(c, s, pn, owner, pn.data.param.question, pn.mods.readonly, pn.mods.private, pn.mods.protected, false, false);
             p.mapper = mapper;
             m.props.put(c.a, s.name, p) catch oom();
         }
@@ -2274,7 +2272,7 @@ pub fn withThis(c: *Checker, t: *Type, this_arg: *Type) *Type {
 fn resolveTuple(c: *Checker, t: *Type) *Members {
     const o = t.data.obj;
     const m = c.emptyMembers();
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     var open = false;
     var min: usize = 0;
     for (o.elems, o.eflags, 0..) |e, f, i| {
@@ -2296,7 +2294,7 @@ fn resolveTuple(c: *Checker, t: *Type) *Members {
     }
     var len: *Type = c.t_number;
     if (!open) {
-        var lens: std.ArrayList(*Type) = .empty;
+        var lens = c.newList(*Type);
         for (min..o.elems.len + 1) |i| lens.append(c.a, c.numLit(@floatFromInt(i))) catch oom();
         len = c.getUnion(lens.items);
     }
@@ -2333,9 +2331,9 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
     };
     const s = o.sym orelse return m;
     if (s.flags & F.type_literal != 0 and s.flags & (F.function | F.class | F.value_module) == 0) {
-        var calls: std.ArrayList(*Sig) = .empty;
-        var ctors: std.ArrayList(*Sig) = .empty;
-        var indexes: std.ArrayList(T.Index) = .empty;
+        var calls = c.newList(*Sig);
+        var ctors = c.newList(*Sig);
+        var indexes = c.newList(T.Index);
         // `() => void` and `new () => T` carry their own signature and no members table.
         for (s.decls) |d| if (d.data == .func) {
             const sg = sigOfDecl(c, d);
@@ -2353,7 +2351,7 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
                 } else if (std.mem.eql(u8, name, "__index")) {
                     addIndexes(c, ms, null, &indexes, false);
                 } else {
-                    m.props.put(c.a, name, propFromSymbol(c, ms, null, null)) catch oom();
+                    m.props.put(c.a, name, propFromSymbol(c, ms, null)) catch oom();
                 }
             }
         }
@@ -2379,7 +2377,7 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
             const tgt = targetOf(c, e) orelse continue;
             if (tgt.flags & F.value == 0) continue;
         }
-        const p = propFromSymbol(c, e, null, null);
+        const p = propFromSymbol(c, e, null);
         p.static = true;
         if (e.flags & F.variable != 0 and e.decls.len > 0 and e.decls[0].parent != null) {
             const l = e.decls[0].parent.?;
@@ -2397,7 +2395,7 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
         const cls = declaredType(c, s);
         const proto_ty = eraseArgs(c, cls);
         m.props.put(c.a, "prototype", c.create(Prop, .{ .name = "prototype", .ty = proto_ty, .readonly = true })) catch oom();
-        var indexes: std.ArrayList(T.Index) = .empty;
+        var indexes = c.newList(T.Index);
         if (s.members) |tbl| if (tbl.get("__index")) |i| addIndexes(c, i.resolve(), null, &indexes, true);
         addLateMembers(c, s.late_statics, m, null, null, &indexes, false);
         if (s.decls.len > 0) {
@@ -2444,7 +2442,7 @@ fn classCtors(c: *Checker, s: *Symbol) []*Sig {
     if (s.members) |tbl| if (tbl.get("__constructor")) |ctor| {
         declared = sigsOfSymbol(c, ctor, true);
     };
-    var out: std.ArrayList(*Sig) = .empty;
+    var out = c.newList(*Sig);
     const is_abstract = blk: {
         for (s.decls) |d| if (d.data == .class and d.mods.abstract) break :blk true;
         break :blk false;
@@ -2520,7 +2518,7 @@ fn resolveMapped(c: *Checker, t: *Type) *Members {
         const from = instantiate(c, kc.data.keyof, o.mapper);
         break :blk getApparent(c, from);
     };
-    var indexes: std.ArrayList(T.Index) = .empty;
+    var indexes = c.newList(T.Index);
     const key_param = mappedParam(c, n);
     const addKey = struct {
         fn f(cc: *Checker, tt: *Type, mm: *Members, idx: *std.ArrayList(T.Index), nn: *Node, kp: *Type, key0: *Type, source: ?*Prop, opt: bool, ro: bool) void {
@@ -2724,7 +2722,7 @@ pub fn propsOf(c: *Checker, t: *Type) []const *Prop {
             return seen.values();
         },
         .union_ => |x| {
-            var out: std.ArrayList(*Prop) = .empty;
+            var out = c.newList(*Prop);
             if (x.len == 0) return out.items;
             for (propsOf(c, getApparent(c, x[0]))) |p| {
                 if (getProp(c, t, p.name)) |q| out.append(c.a, q) catch oom();
@@ -2808,7 +2806,7 @@ fn hasConflictingLiteral(c: *Checker, members: []*Type) bool {
 }
 
 fn conflicts(c: *Checker, members: []*Type, name: []const u8) bool {
-    var types: std.ArrayList(*Type) = .empty;
+    var types = c.newList(*Type);
     for (members) |m| {
         if (m.data != .obj) continue;
         const p = objectProp(c, m, name) orelse continue;
@@ -2824,8 +2822,7 @@ pub fn getProp(c: *Checker, t0: *Type, name: []const u8) ?*Prop {
     switch (t.data) {
         .obj => return objectProp(c, t, name),
         .union_ => |x| {
-            var types: std.ArrayList(*Type) = .empty;
-            var writes: std.ArrayList(*Type) = .empty;
+            var types = c.newList(*Type);
             var first: ?*Prop = null;
             var optional = false;
             var readonly = false;
@@ -2838,7 +2835,6 @@ pub fn getProp(c: *Checker, t0: *Type, name: []const u8) ?*Prop {
                     // Reading stays possible when a member could still hold the property.
                     const partial = missingUnionMember(c, ap, name) orelse return null;
                     types.append(c.a, partial) catch oom();
-                    writes.append(c.a, partial) catch oom();
                     continue;
                 };
                 if (first == null) first = p;
@@ -2847,14 +2843,13 @@ pub fn getProp(c: *Checker, t0: *Type, name: []const u8) ?*Prop {
                 private = private or p.private;
                 protected = protected or p.protected;
                 types.append(c.a, propType(c, p)) catch oom();
-                writes.append(c.a, propWriteType(c, p)) catch oom();
             }
             const p0 = first orelse return null;
             if (types.items.len == 1) return p0;
-            return c.create(Prop, .{ .name = name, .sym = p0.sym, .ty = c.getUnion(types.items), .write_ty = c.getUnion(writes.items), .optional = optional, .readonly = readonly, .private = private, .protected = protected, .decl = p0.decl, .method = p0.method, .owner = p0.owner });
+            return c.create(Prop, .{ .name = name, .sym = p0.sym, .ty = c.getUnion(types.items), .optional = optional, .readonly = readonly, .private = private, .protected = protected, .decl = p0.decl, .method = p0.method, .owner = p0.owner });
         },
         .inter => |x| {
-            var types: std.ArrayList(*Type) = .empty;
+            var types = c.newList(*Type);
             var first: ?*Prop = null;
             var optional = true;
             var readonly = true;
@@ -2890,7 +2885,7 @@ fn sigsOf(c: *Checker, t0: *Type, ctor: bool) []*Sig {
             return if (ctor) m.ctors else m.calls;
         },
         .inter => |x| {
-            var out: std.ArrayList(*Sig) = .empty;
+            var out = c.newList(*Sig);
             for (x) |y| for (sigsOf(c, y, ctor)) |s| out.append(c.a, s) catch oom();
             return out.items;
         },
@@ -2913,7 +2908,7 @@ fn sigsOf(c: *Checker, t0: *Type, ctor: bool) []*Sig {
 fn arrayMemberSigs(c: *Checker, x: []*Type) ?[]*Sig {
     const array = c.global_array orelse return null;
     const readonly_array = c.global_readonly_array orelse return null;
-    var elems: std.ArrayList(*Type) = .empty;
+    var elems = c.newList(*Type);
     var name: ?[]const u8 = null;
     var readonly = false;
     for (x) |t| {
@@ -2937,7 +2932,7 @@ fn arrayMemberSigs(c: *Checker, x: []*Type) ?[]*Sig {
 }
 
 fn unionSigs(c: *Checker, x: []*Type, ctor: bool) ?[]*Sig {
-    var rets: std.ArrayList(*Type) = .empty;
+    var rets = c.newList(*Type);
     var best: ?*Sig = null;
     var tparams: []*Type = &.{};
     const sigs = c.a.alloc(*Sig, x.len) catch oom();
@@ -2958,7 +2953,7 @@ fn unionSigs(c: *Checker, x: []*Type, ctor: bool) ?[]*Sig {
     const b = best orelse return null;
     const params = c.dupe(T.SigParam, b.params);
     for (params, 0..) |*p, i| {
-        var parts: std.ArrayList(*Type) = .empty;
+        var parts = c.newList(*Type);
         for (sigs) |s| {
             if (i < s.params.len) parts.append(c.a, paramTypeAt(c, s, i)) catch oom();
         }
@@ -2974,7 +2969,7 @@ fn unionSigs(c: *Checker, x: []*Type, ctor: bool) ?[]*Sig {
 /// is let through.
 fn compositePred(c: *Checker, sigs: []*Sig) ?*T.Pred {
     var last: ?*T.Pred = null;
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     for (sigs) |s| {
         if (predOf(c, s)) |p| {
             if (p.asserts or last != null and (last.?.is_this != p.is_this or last.?.param_index != p.param_index)) return null;
@@ -3015,7 +3010,7 @@ pub fn indexesOf(c: *Checker, t0: *Type) []T.Index {
     return switch (t.data) {
         .obj => membersOf(c, t).indexes,
         .inter => |x| blk: {
-            var out: std.ArrayList(T.Index) = .empty;
+            var out = c.newList(T.Index);
             for (x) |y| for (indexesOf(c, y)) |i| {
                 // The same key twice holds what both members say.
                 for (out.items) |*o| {
@@ -3030,9 +3025,9 @@ pub fn indexesOf(c: *Checker, t0: *Type) []T.Index {
         .union_ => |x| blk: {
             // A union only indexes when every member does.
             if (x.len == 0) break :blk &.{};
-            var out: std.ArrayList(T.Index) = .empty;
+            var out = c.newList(T.Index);
             for (indexesOf(c, x[0])) |first| {
-                var parts: std.ArrayList(*Type) = .empty;
+                var parts = c.newList(*Type);
                 var all = true;
                 for (x) |y| {
                     const v = indexValue(c, y, first.key) orelse {
@@ -3214,7 +3209,7 @@ pub fn getApparent(c: *Checker, t: *Type) *Type {
                 if (isNeverReduced(c, y)) break true;
             } else false;
             if (!reduced) return t;
-            var kept: std.ArrayList(*Type) = .empty;
+            var kept = c.newList(*Type);
             for (x) |y| if (!isNeverReduced(c, y)) kept.append(c.a, y) catch oom();
             return c.getUnion(kept.items);
         },
@@ -3273,7 +3268,7 @@ pub fn getIndexType(c: *Checker, t: *Type) *Type {
     }
     const ap = getApparent(c, t);
     if (ap.data != .obj and ap.data != .inter) return c.t_never;
-    var parts: std.ArrayList(*Type) = .empty;
+    var parts = c.newList(*Type);
     for (propsOf(c, ap)) |p| {
         if (p.private or p.protected) continue;
         parts.append(c.a, propKey(c, p)) catch oom();
@@ -3341,7 +3336,7 @@ fn condFromNode(c: *Checker, n: *Node) *Type {
     const d = n.data.conditional_type;
     const check = typeFromNode(c, d.check);
     const extends = typeFromNode(c, d.extends);
-    var infers: std.ArrayList(*Type) = .empty;
+    var infers = c.newList(*Type);
     if (n.locals) |l| {
         var it = l.map.valueIterator();
         while (it.next()) |s| infers.append(c.a, tparamOf(c, s.*)) catch oom();
@@ -3508,7 +3503,7 @@ pub fn getTemplate(c: *Checker, texts: []const []const u8, types: []const *Type)
     }
     for (types, 0..) |t, i| {
         if (t.data == .union_) {
-            var out: std.ArrayList(*Type) = .empty;
+            var out = c.newList(*Type);
             for (t.data.union_) |m| {
                 const copy = c.dupe(*Type, types);
                 copy[i] = m;
@@ -3517,9 +3512,9 @@ pub fn getTemplate(c: *Checker, texts: []const []const u8, types: []const *Type)
             return c.getUnion(out.items);
         }
     }
-    var ntexts: std.ArrayList([]const u8) = .empty;
-    var ntypes: std.ArrayList(*Type) = .empty;
-    var cur: std.ArrayList(u8) = .empty;
+    var ntexts = c.newList([]const u8);
+    var ntypes = c.newList(*Type);
+    var cur = c.newList(u8);
     cur.appendSlice(c.a, texts[0]) catch oom();
     for (types, 0..) |t, i| {
         if (T.isAny(t)) return c.t_string;
