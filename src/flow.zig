@@ -351,7 +351,6 @@ const St = struct {
         if (st.recall(k, f)) |t| return t;
         const touched = c.flow_touched;
         c.flow_touched = T.flow_untouched;
-        var parts = c.newList(*Type);
         var bypass: ?*FlowNode = null;
         var antecedents = f.antecedents;
         const over = st.over;
@@ -360,6 +359,7 @@ const St = struct {
             antecedents = o.f.antecedents;
             st.over = o.prev;
         };
+        var parts = std.ArrayList(*Type).initCapacity(c.a, antecedents.len) catch oom();
         for (antecedents) |a| {
             if (bypass == null and a.kind == .switch_clause and a.clause_start == a.clause_end) {
                 bypass = a;
@@ -370,13 +370,13 @@ const St = struct {
                 st.settle(k, f, t, touched);
                 return t;
             }
-            parts.append(c.a, t) catch oom();
+            parts.appendAssumeCapacity(t);
         }
         // The unmatched path of a switch only counts when some value can actually take it.
         if (bypass) |b| {
             const t = st.go(b);
             if (t.data != .never and std.mem.indexOfScalar(*Type, parts.items, t) == null and !expr.isExhaustive(c, b.node.?)) {
-                parts.append(c.a, t) catch oom();
+                parts.appendAssumeCapacity(t);
             }
         }
         const r = joinTypes(c, st.declared, parts.items);
@@ -866,8 +866,9 @@ fn mayAssign(c: *Checker, s: *Type, t: *Type) bool {
 
 fn joinTypes(c: *Checker, declared: *Type, parts: []const *Type) *Type {
     _ = declared;
-    var list = c.newList(*Type);
-    for (parts) |t| if (t != c.t_unreachable) list.append(c.a, t) catch oom();
+    var small: [d.small_list]*Type = undefined;
+    var list = std.ArrayList(*Type).initBuffer(d.smallList(c, &small, parts.len));
+    for (parts) |t| if (t != c.t_unreachable) list.appendAssumeCapacity(t);
     if (list.items.len == 0) return c.t_unreachable;
     return recombineUnknown(c, c.getUnion(list.items));
 }
@@ -887,10 +888,11 @@ pub fn byTruthiness(c: *Checker, t: *Type, assume: bool) *Type {
     if (t == c.t_auto and assume) return c.t_any;
     switch (t.data) {
         .union_ => |u| {
-            var parts = c.newList(*Type);
+            var small: [d.small_list]*Type = undefined;
+            var parts = std.ArrayList(*Type).initBuffer(d.smallList(c, &small, u.len));
             for (u) |m| {
                 const r = byTruthiness(c, m, assume);
-                if (r.data != .never) parts.append(c.a, r) catch oom();
+                if (r.data != .never) parts.appendAssumeCapacity(r);
             }
             if (parts.items.len == u.len and t != c.t_boolean) {
                 var same = true;
@@ -1047,23 +1049,25 @@ fn byEquality(c: *Checker, t: *Type, op: @import("lexer.zig").Tok, value: *Node,
             if (v.data != .union_ or v == c.t_boolean) return v;
         }
         if (t.data == .unknown) return t;
-        var parts = c.newList(*Type);
+        var small: [d.small_list]*Type = undefined;
+        var parts = std.ArrayList(*Type).initBuffer(d.smallList(c, &small, members.len));
         for (members) |m| {
             if (loose and (m.data == .null or m.data == .undefined)) continue;
             if (relate.isComparable(c, m, v) or relate.isComparable(c, v, m)) {
-                parts.append(c.a, if (relate.isUnitType(v) and !relate.isUnitType(m) and m.data != .param and m.data != .obj and m.data != .inter) v else m) catch oom();
+                parts.appendAssumeCapacity(if (relate.isUnitType(v) and !relate.isUnitType(m) and m.data != .param and m.data != .obj and m.data != .inter) v else m);
             }
         }
         return c.getUnion(parts.items);
     }
     if (relate.isUnitType(v)) {
         const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
-        var parts = c.newList(*Type);
+        var small: [d.small_list]*Type = undefined;
+        var parts = std.ArrayList(*Type).initBuffer(d.smallList(c, &small, members.len));
         for (members) |m| {
             const reg = m.regular orelse m;
             // A string enum member and the string it holds are one value.
             if (relate.isUnitType(reg) and (reg == v or relate.isComparable(c, reg, v) or relate.isComparable(c, v, reg))) continue;
-            parts.append(c.a, m) catch oom();
+            parts.appendAssumeCapacity(m);
         }
         return c.getUnion(parts.items);
     }

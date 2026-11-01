@@ -1245,9 +1245,9 @@ fn mapAll(c: *Checker, m: *Mapper, list: []*Type) []*Type {
 
 /// Instantiation mostly finds types that already exist, and arena memory never comes back, so
 /// argument lists that end up thrown away stay on the stack.
-const small_list = 16;
+pub const small_list = 16;
 
-fn smallList(c: *Checker, buf: *[small_list]*Type, n: usize) []*Type {
+pub fn smallList(c: *Checker, buf: *[small_list]*Type, n: usize) []*Type {
     return if (n <= buf.len) buf[0..n] else c.a.alloc(*Type, n) catch oom();
 }
 

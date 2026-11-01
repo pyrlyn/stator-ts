@@ -324,9 +324,9 @@ pub const InferCtx = struct {
     infos: []InferInfo,
     mapper: *Mapper,
     /// Fixes nothing: used while still gathering inferences for a contextual type.
-    non_fixing: *Mapper,
+    non_fixing: ?*Mapper = null,
     /// Like `non_fixing`, but a parameter without candidates stays open instead of defaulting.
-    no_default: *Mapper,
+    no_default: ?*Mapper = null,
     is_return: bool = false,
     /// For `infer` in a conditional type, where a generic source is exact rather than a stopgap.
     conditional: bool = false,

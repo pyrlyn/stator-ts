@@ -1331,11 +1331,19 @@ pub fn newInferCtx(c: *Checker, params: []const *Type, _: u32) *InferCtx {
     const infos = c.a.alloc(InferInfo, params.len) catch oom();
     for (params, 0..) |p, i| infos[i] = .{ .param = p };
     const ctx = c.a.create(InferCtx) catch oom();
-    const m1 = c.create(Mapper, .{ .infer = ctx });
-    const m2 = c.create(Mapper, .{ .infer = ctx });
-    const m3 = c.create(Mapper, .{ .infer = ctx });
-    ctx.* = .{ .infos = infos, .mapper = m1, .non_fixing = m2, .no_default = m3 };
+    ctx.* = .{ .infos = infos, .mapper = c.create(Mapper, .{ .infer = ctx }) };
     return ctx;
+}
+
+/// A context is made for every generic call and most never need this.
+pub fn nonFixing(c: *Checker, ctx: *InferCtx) *Mapper {
+    if (ctx.non_fixing == null) ctx.non_fixing = c.create(Mapper, .{ .infer = ctx });
+    return ctx.non_fixing.?;
+}
+
+pub fn noDefault(c: *Checker, ctx: *InferCtx) *Mapper {
+    if (ctx.no_default == null) ctx.no_default = c.create(Mapper, .{ .infer = ctx });
+    return ctx.no_default.?;
 }
 
 /// Maps only the parameters that have candidates; null when none has.
@@ -1468,10 +1476,12 @@ fn isObjectLiteral(t: *Type) bool {
 /// Literals written side by side describe one value each, so none has to be a supertype of the rest.
 fn uniteLiteralCandidates(c: *Checker, ctx: *InferCtx, list: []const *Type) []const *Type {
     if (list.len < 2) return list;
+    for (list) |x| {
+        if (isObjectLiteral(x) or ctx.array_lits.contains(x)) break;
+    } else return list;
     var literals = c.newList(*Type);
     var out = c.newList(*Type);
     for (list) |x| (if (isObjectLiteral(x) or ctx.array_lits.contains(x)) &literals else &out).append(c.a, x) catch oom();
-    if (literals.items.len == 0) return list;
     out.append(c.a, expr.reduceSubtypes(c, literals.items)) catch oom();
     return out.items;
 }
@@ -1522,14 +1532,14 @@ pub fn getInferred(c: *Checker, ctx: *InferCtx, i: usize) *Type {
         fallback = if (prefer_cov) contra else cov;
     } else if (d.defaultOf(c, info.param)) |x| {
         info.inferred = c.t_unknown;
-        inferred = d.instantiate(c, x, ctx.non_fixing);
+        inferred = d.instantiate(c, x, nonFixing(c, ctx));
     } else {
         inferred = c.t_unknown;
         inferred_any = false;
     }
     info.inferred = inferred;
     if (d.constraintOf(c, info.param)) |k0| {
-        const k = d.instantiate(c, k0, ctx.non_fixing);
+        const k = d.instantiate(c, k0, nonFixing(c, ctx));
         if (!inferred_any or !isAssignable(c, inferred, k)) {
             // A return position only wished for a type: `T | undefined` still says `T`.
             const fitting = if (inferred_any and info.priority == Priority.return_type) fittingMembers(c, inferred, k) else c.t_never;
@@ -2111,7 +2121,7 @@ const Infer = struct {
         if (st.ctx.ret) |r| if (singleCall(c, r) != null and !hasAllCandidates(st.ctx)) return erasedToShape(c, s);
         const ctx = newInferCtx(c, s.tparams, 0);
         for (0..@min(fixedCount(c, s), fixedCount(c, t))) |i| {
-            const x = d.instantiate(c, typeAt(c, t, i) orelse break, st.ctx.non_fixing);
+            const x = d.instantiate(c, typeAt(c, t, i) orelse break, nonFixing(c, st.ctx));
             // A parameter that knows nothing yet has nothing to fix the argument with.
             if (T.isAny(x) or x.data == .unknown) return erasedToShape(c, s);
             inferTypes(c, ctx, x, typeAt(c, s, i) orelse break, 0);

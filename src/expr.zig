@@ -936,7 +936,7 @@ fn soFarInferred(c: *Checker, n: *Node, t: *Type) *Type {
     for (ctx.infos) |i| {
         if (i.candidates.items.len > 0 or i.contra.items.len > 0 or d.defaultOf(c, i.param) != null) break;
     } else return t;
-    return instantiateTop(c, t, ctx.non_fixing);
+    return instantiateTop(c, t, relate.nonFixing(c, ctx));
 }
 
 fn instantiateTop(c: *Checker, t: *Type, m: *T.Mapper) *Type {
@@ -1308,7 +1308,7 @@ fn isConstRef(n: *Node) bool {
 fn instantiateCtx(c: *Checker, n: *Node, t: *Type) *Type {
     if (!t.vars) return t;
     const ctx = inferFor(c, n) orelse return t;
-    return d.instantiate(c, t, ctx.no_default);
+    return d.instantiate(c, t, relate.noDefault(c, ctx));
 }
 
 /// What the call around this one has learned so far reaches the lambdas of this one:
@@ -3001,10 +3001,10 @@ fn checkObjectLit(c: *Checker, n: *Node) *Type {
     var pending = false;
     var spreads_any = false;
     // What has been spread from a type parameter, and the objects around it.
-    var parts = c.newList(*Type);
+    var parts: std.ArrayList(*Type) = .empty;
     // What was written since the last spread, which is what a computed key can stand for.
     var run_start: usize = 0;
-    var computed = c.newList(ComputedKey);
+    var computed: std.ArrayList(ComputedKey) = .empty;
     var split: ?SplitSpread = null;
     for (items, 0..) |p, i| {
         switch (p.data) {
