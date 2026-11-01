@@ -173,17 +173,18 @@ fn stringList(a: Allocator, v: json.Value) ?[]const []const u8 {
 }
 
 fn applyOptions(a: Allocator, cfg: *Config, base: []const u8, co: json.ObjectMap) void {
-    inline for (std.meta.fields(Options)) |f| {
-        if (co.get(f.name)) |v| {
-            if (f.type == ?bool) {
-                if (v == .bool) @field(cfg.options, f.name) = v.bool;
-            } else if (f.type == ?[]const u8) {
+    const info = @typeInfo(Options).@"struct";
+    inline for (info.field_names, info.field_types) |name, T| {
+        if (co.get(name)) |v| {
+            if (T == ?bool) {
+                if (v == .bool) @field(cfg.options, name) = v.bool;
+            } else if (T == ?[]const u8) {
                 if (v == .string) {
-                    const is_path = comptime (std.mem.eql(u8, f.name, "outDir") or std.mem.eql(u8, f.name, "rootDir") or std.mem.eql(u8, f.name, "baseUrl"));
-                    @field(cfg.options, f.name) = if (is_path) fspath.resolve(a, &.{ base, v.string }) catch oom() else v.string;
+                    const is_path = comptime (std.mem.eql(u8, name, "outDir") or std.mem.eql(u8, name, "rootDir") or std.mem.eql(u8, name, "baseUrl"));
+                    @field(cfg.options, name) = if (is_path) fspath.resolve(a, &.{ base, v.string }) catch oom() else v.string;
                 }
             } else {
-                if (stringList(a, v)) |l| @field(cfg.options, f.name) = l;
+                if (stringList(a, v)) |l| @field(cfg.options, name) = l;
             }
         }
     }
@@ -1328,10 +1329,9 @@ test "a root that cannot be read is reported, not dropped" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const tp = try pool.ThreadPool.init(a, std.testing.io, 1);
-    defer tp.deinit();
+    var tp = pool.ThreadPool.init(1);
     const cfg = Config{ .root = "/nonexistent-stator-ts-test" };
-    const p = loadProgram(a, std.testing.io, tp, &cfg, &.{"/nonexistent-stator-ts-test/missing.ts"}, .{ .want_libs = false });
+    const p = loadProgram(a, std.testing.io, &tp, &cfg, &.{"/nonexistent-stator-ts-test/missing.ts"}, .{ .want_libs = false });
     try std.testing.expectEqual(@as(usize, 1), p.missing_roots.items.len);
     try std.testing.expectEqualStrings("/nonexistent-stator-ts-test/missing.ts", p.missing_roots.items[0]);
     try std.testing.expectEqual(@as(usize, 0), p.files.items.len);

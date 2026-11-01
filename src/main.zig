@@ -163,8 +163,8 @@ pub fn main(init: std.process.Init) !u8 {
         try w.print("error: cannot load project: {s}\n", .{@errorName(e)});
         return 1;
     };
-    const tp = try pool.ThreadPool.init(a, io, pool.jobCount(cli.jobs));
-    defer tp.deinit();
+    var workers = pool.ThreadPool.init(pool.jobCount(cli.jobs));
+    const tp = &workers;
     if (std.mem.eql(u8, cli.command, "scan")) return cmdScan(a, io, tp, cfg, w);
     if (std.mem.eql(u8, cli.command, "test")) {
         return testrun.run(a, io, init.environ_map, .{ .cfg = cfg, .tp = tp, .runtime = cli.runtime, .filters = cli.rest.items, .name_filter = cli.test_name, .lib_dir = cli.lib_dir }, w);

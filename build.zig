@@ -9,12 +9,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    mod.addImport("coroutines", b.dependency("coroutines", .{ .target = target, .optimize = optimize }).module("coroutines"));
 
     const exe = b.addExecutable(.{ .name = "stator-ts", .root_module = mod });
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);
-    if (b.args) |args| run.addArgs(args);
+    run.addPassthruArgs();
     b.step("run", "Run stator-ts").dependOn(&run.step);
 
     const tests = b.addTest(.{ .root_module = mod });

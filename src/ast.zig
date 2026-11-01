@@ -325,7 +325,7 @@ fn visitValue(value: anytype, ctx: anytype, comptime visit: anytype) void {
     } else if (T == []*Node) {
         for (value) |v| visit(ctx, v);
     } else switch (@typeInfo(T)) {
-        .@"struct" => |s| inline for (s.fields) |f| visitValue(@field(value, f.name), ctx, visit),
+        .@"struct" => |s| inline for (s.field_names) |name| visitValue(@field(value, name), ctx, visit),
         .pointer => |p| if (p.size == .one and @typeInfo(p.child) == .@"struct") visitValue(value.*, ctx, visit),
         else => {},
     }
