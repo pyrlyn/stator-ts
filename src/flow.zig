@@ -151,7 +151,7 @@ pub fn matchingRef(c: *Checker, r0: *Node, n0: *Node) bool {
             return s == expr.symbolOf(c, n);
         },
         .var_decl, .binding_elem => {
-            const s = n.symbol orelse return false;
+            const s = n.symbol() orelse return false;
             if (r.data != .identifier or !std.mem.eql(u8, r.data.identifier, s.name)) return false;
             return expr.symbolOf(c, r) == s;
         },
@@ -284,7 +284,7 @@ const St = struct {
                 .start => {
                     const n = f.node orelse return st.initial;
                     if (n == st.container or strip(st.ref).data != .identifier) return st.initial;
-                    f = n.flow orelse return st.initial;
+                    f = n.flow() orelse return st.initial;
                 },
                 .unreachable_end => return c.t_unreachable,
             }
@@ -317,7 +317,7 @@ const St = struct {
         }
         if (containsRef(c, st.ref, n)) {
             // `const f = () => {}; f.x = 1`: declaring `f` does not reset `f.x`, it starts it.
-            if (n.data == .var_decl) if (n.symbol) |s| if (binder.holdsExpandos(s)) return null;
+            if (n.data == .var_decl) if (n.symbol()) |s| if (binder.holdsExpandos(s)) return null;
             return st.declared;
         }
         return null;
@@ -931,8 +931,8 @@ pub fn byTruthiness(c: *Checker, t: *Type, assume: bool) *Type {
 
 fn isEmptyLike(c: *Checker, t: *Type) bool {
     if (t.data.obj.kind == .mapped) return false;
-    const m = d.membersOf(c, t);
-    return m.props.count() == 0 and m.calls.len == 0 and m.ctors.len == 0 and m.indexes.len == 0;
+    const m = d.shallowMembers(c, t);
+    return m.calls.len == 0 and m.ctors.len == 0 and m.indexes.len == 0 and d.hasNoProps(c, t);
 }
 
 /// An interface extending `Function` declares no call signature and is still called.
@@ -1359,7 +1359,7 @@ fn mayHaveProp(c: *Checker, t: *Type, name: []const u8, assume: bool) bool {
 
 /// `container` stops the walk at the function whose own flow the reference belongs to.
 pub fn flowType(c: *Checker, ref: *Node, declared: *Type, initial: *Type, container: ?*Node) *Type {
-    const flow = ref.flow orelse return declared;
+    const flow = ref.flow() orelse return declared;
     if (c.flow_depth > 120) {
         _ = c.metCycle();
         return declared;
@@ -1391,8 +1391,8 @@ pub fn flowAt(c: *Checker, ref: *Node, at: *FlowNode, declared: *Type) *Type {
 
 /// What `e` being true proves about a parameter, when being false proves the opposite.
 pub fn refinedParam(c: *Checker, name: *Node, e: *Node, func: *Node, init: *Type) ?*Type {
-    const ante = e.flow orelse blk: {
-        if (e.parent) |p| if (p.data == .return_stmt) if (p.flow) |x| break :blk x;
+    const ante = e.flow() orelse blk: {
+        if (e.parent) |p| if (p.data == .return_stmt) if (p.flow()) |x| break :blk x;
         break :blk c.create(FlowNode, .{ .kind = .start });
     };
     const on_true = c.create(FlowNode, .{ .kind = .true_cond, .node = e, .antecedent = ante });

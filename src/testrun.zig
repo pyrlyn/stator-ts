@@ -181,14 +181,15 @@ pub fn run(a: Allocator, io: Io, base_env: *const std.process.Environ.Map, o: Op
         return 1;
     }
     var found: std.ArrayList([]const u8) = .empty;
-    for (project.walkDirs(a, io, o.tp, &.{o.cfg.root})) |f| {
+    const fs = project.FsCache.create(a, io);
+    for (project.walkDirs(a, fs, o.tp, &.{o.cfg.root})) |f| {
         if (isTestFile(f) and matches(relativeTo(f, o.cfg.root), o.filters)) found.append(a, f) catch oom();
     }
     if (found.items.len == 0) {
         try w.writeAll("no test files found\n");
         return 1;
     }
-    const prog = project.loadProgram(a, io, o.tp, o.cfg, found.items, .{ .lib_dir_flag = o.lib_dir, .want_libs = false });
+    const prog = project.loadProgram(a, io, o.tp, o.cfg, found.items, .{ .fs = fs, .lib_dir_flag = o.lib_dir, .want_libs = false });
     var syntax: u32 = 0;
     for (prog.files.items) |sf| {
         for (sf.file.diags) |d| {

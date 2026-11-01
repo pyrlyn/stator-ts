@@ -128,18 +128,19 @@ fn lessDiag(_: void, l: Printed, r: Printed) bool {
 }
 
 pub fn run(a: Allocator, io: Io, o: Options, w: *Io.Writer) !u8 {
-    const roots = project.projectFiles(a, io, o.tp, o.cfg);
+    const fs = project.FsCache.create(a, io);
+    const roots = project.projectFiles(a, fs, o.tp, o.cfg);
     // The emitter walks every body, so only a run that writes nothing can leave them unparsed.
     if (!o.emit or (o.cfg.options.noEmit orelse false)) {
-        const p = load(a, io, o, roots, true);
+        const p = load(a, fs, o, roots, true);
         if (!p.hasSyntaxErrors() and p.missing_roots.items.len == 0) if (try report(a, io, o, p, w)) |code| return code;
     }
     // tsc lists every syntax error at once and then stops, so the checker cannot be what finds them.
-    return (try report(a, io, o, load(a, io, o, roots, false), w)).?;
+    return (try report(a, io, o, load(a, fs, o, roots, false), w)).?;
 }
 
-fn load(a: Allocator, io: Io, o: Options, roots: []const []const u8, lazy_bodies: bool) *Program {
-    return project.loadProgram(a, io, o.tp, o.cfg, roots, .{ .lib_dir_flag = o.lib_dir, .lib_dir_env = o.lib_env, .lazy_bodies = lazy_bodies });
+fn load(a: Allocator, fs: *project.FsCache, o: Options, roots: []const []const u8, lazy_bodies: bool) *Program {
+    return project.loadProgram(a, fs.io, o.tp, o.cfg, roots, .{ .fs = fs, .lib_dir_flag = o.lib_dir, .lib_dir_env = o.lib_env, .lazy_bodies = lazy_bodies });
 }
 
 /// Null, with nothing written, when a body left for later turned out to have a syntax error.

@@ -132,11 +132,11 @@ fn enumsRelated(c: *Checker, s0: *binder.Symbol, t0: *binder.Symbol) bool {
     if (!std.mem.eql(u8, s.name, t.name) or s.flags & binder.F.regular_enum == 0 or t.flags & binder.F.regular_enum == 0) return false;
     const se = s.exports orelse return true;
     const te = t.exports orelse return false;
-    var it = se.map.iterator();
+    var it = se.map.keyIterator();
     while (it.next()) |kv| {
-        const sm = kv.value_ptr.*.resolve();
+        const sm = kv.*.resolve();
         if (sm.flags & binder.F.enum_member == 0) continue;
-        const tm = te.get(kv.key_ptr.*) orelse return false;
+        const tm = te.get(kv.*.name) orelse return false;
         if (tm.flags & binder.F.enum_member == 0) return false;
         const sv = d.typeOfSymbol(c, sm);
         const tv = d.typeOfSymbol(c, tm);
@@ -438,8 +438,8 @@ fn mappedHolds(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
 
 pub fn isEmptyObject(c: *Checker, t: *Type) bool {
     if (t.data != .obj) return false;
-    const m = d.membersOf(c, t);
-    return m.props.count() == 0 and m.calls.len == 0 and m.ctors.len == 0 and m.indexes.len == 0;
+    const m = d.shallowMembers(c, t);
+    return m.calls.len == 0 and m.ctors.len == 0 and m.indexes.len == 0 and d.hasNoProps(c, t);
 }
 
 fn matchesTemplate(c: *Checker, v: []const u8, t: *Type) bool {
@@ -732,22 +732,24 @@ fn weakCheck(s: *Type, rel: Relation) bool {
 
 pub fn isWeak(c: *Checker, t: *Type) bool {
     if (t.data != .obj) return false;
+    const shallow = d.shallowMembers(c, t);
+    if (shallow.calls.len > 0 or shallow.ctors.len > 0 or shallow.indexes.len > 0 or d.hasRequiredProp(c, t)) return false;
     const m = d.membersOf(c, t);
-    if (m.calls.len > 0 or m.ctors.len > 0 or m.indexes.len > 0 or m.props.count() == 0) return false;
+    if (m.props.count() == 0) return false;
     for (m.props.values()) |p| if (!p.optional) return false;
     return true;
 }
 
 pub fn hasCommonProp(c: *Checker, s: *Type, t: *Type) bool {
     if (s.data == .obj) {
-        const m = d.membersOf(c, s);
+        const m = d.shallowMembers(c, s);
         if (m.calls.len > 0 or m.ctors.len > 0) return true;
         if (d.genericMappedOrigin(c, s)) |f| return hasCommonProp(c, f, t);
         if (s.data.obj.open or s.data.obj.any_base) return true;
     }
     const props = d.propsOf(c, s);
     if (props.len == 0) return true;
-    for (props) |p| if (d.membersOf(c, t).props.contains(p.name)) return true;
+    for (props) |p| if (d.ownProp(c, t, p.name) != null) return true;
     return false;
 }
 
@@ -1229,7 +1231,7 @@ fn isKnown(c: *Checker, t: *Type, name: []const u8) bool {
     switch (t.data) {
         .obj => |o| {
             if (o.open or o.any_base or (o.kind == .mapped and t.vars)) return true;
-            if (d.membersOf(c, t).props.contains(name)) return true;
+            if (d.ownProp(c, t, name) != null) return true;
             // A string index has always let symbol names through here, unlike in an element access.
             for (d.indexesOf(c, t)) |i| if (keyApplies(c, i.key, name) or i.key == c.t_string) return true;
             return false;
@@ -2081,7 +2083,7 @@ const Infer = struct {
         if (s.data != .obj and s.data != .inter) return c.t_err;
         const name = m.tparam_name;
         if (name.data != .identifier) return c.t_err;
-        const ls = (n.locals orelse return c.t_err).get(name.data.identifier) orelse return c.t_err;
+        const ls = (n.locals() orelse return c.t_err).get(name.data.identifier) orelse return c.t_err;
         if (d.propsOf(c, s).len == 0 and d.indexValue(c, s, c.t_string) == null) return null;
         const access = d.getIndexedAccess(c, x, d.tparamOf(c, ls));
         const template = d.instantiate(c, d.typeFromNode(c, tn), mapper);

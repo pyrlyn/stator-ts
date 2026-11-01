@@ -40,7 +40,7 @@ fn matches(c: *Checker, s: *Symbol, meaning: u32) ?*Symbol {
 pub fn bodyOf(c: *Checker, n: *Node) ?binder.Body {
     const f = n.data.func;
     const b = f.body orelse return null;
-    if (b.data != .lazy_body) return .{ .block = b, .end_flow = f.end_flow, .locals = n.locals };
+    if (b.data != .lazy_body) return .{ .block = b, .end_flow = f.end_flow, .locals = n.locals() };
     if (c.bodies.get(n)) |known| return known;
     const file = fileOf(c, n).?;
     const parsed = parser.parseBody(c.a, file, n);
@@ -54,10 +54,11 @@ pub fn bodyOf(c: *Checker, n: *Node) ?binder.Body {
 /// `n`'s scope, which for a function takes in its block once this checker has read that.
 pub fn localsOf(c: *Checker, n: *Node) ?*binder.SymbolTable {
     if (n.data == .func) if (n.data.func.body) |b| if (b.data == .lazy_body) if (c.bodies.get(n)) |x| return x.locals;
-    return n.locals;
+    return n.locals();
 }
 
 pub fn resolveName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?*Symbol {
+    const hashed = binder.HashedName.of(name);
     var cur: ?*Node = from;
     var last: ?*Node = null;
     while (cur) |n| : ({
@@ -66,21 +67,21 @@ pub fn resolveName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?*S
     }) {
         // `T extends [infer T] ? T : T`: the name is taken in the true branch alone.
         const hidden = n.data == .conditional_type and last != n.data.conditional_type.then;
-        if (!hidden) if (localsOf(c, n)) |l| if (l.get(name)) |s| {
+        if (!hidden) if (localsOf(c, n)) |l| if (l.getHashed(hashed)) |s| {
             if (matches(c, s, meaning)) |r| {
                 if (n.data != .func or visibleInFunc(c, n, last, r, meaning)) return r;
-            } else if (n.data == .source_file) if (fileOf(c, n)) |f| if (f.symbol) |m| if (m.exports) |e| if (e.get(name)) |x| {
+            } else if (n.data == .source_file) if (fileOf(c, n)) |f| if (f.symbol) |m| if (m.exports) |e| if (e.getHashed(hashed)) |x| {
                 if (x != s and !binder.isExportSpecifierOnly(x)) if (matches(c, x, meaning)) |r| return r;
             };
         };
         switch (n.data) {
-            .module_decl, .enum_decl => if (n.symbol) |sym| if (sym.resolve().exports) |e| if (e.get(name)) |x| {
+            .module_decl, .enum_decl => if (n.symbol()) |sym| if (sym.resolve().exports) |e| if (e.getHashed(hashed)) |x| {
                 if (!binder.isExportSpecifierOnly(x)) if (matches(c, x, meaning)) |r| return r;
             },
             else => {},
         }
     }
-    if (c.prog.globals.get(name)) |s| if (matches(c, s, meaning)) |r| return r;
+    if (c.prog.globals.getHashed(hashed)) |s| if (matches(c, s, meaning)) |r| return r;
     return null;
 }
 
@@ -273,13 +274,13 @@ fn mergedTParam(decl: *Node) ?*Symbol {
     const owner = decl.parent orelse return null;
     const list = declTParams(owner) orelse return null;
     const idx = std.mem.indexOfScalar(*Node, list, decl) orelse return null;
-    const sym = (owner.symbol orelse return null).resolve();
+    const sym = (owner.symbol() orelse return null).resolve();
     for (sym.decls) |x| {
         if (x == owner) return null;
         const other = declTParams(x) orelse continue;
         if (other.len == 0) continue;
         if (idx >= other.len) return null;
-        return other[idx].symbol;
+        return other[idx].symbol();
     }
     return null;
 }
@@ -291,7 +292,7 @@ fn mergedDefault(decl: *Node) ?*Node {
     const owner = decl.parent orelse return null;
     const list = declTParams(owner) orelse return null;
     const idx = std.mem.indexOfScalar(*Node, list, decl) orelse return null;
-    const sym = (owner.symbol orelse return null).resolve();
+    const sym = (owner.symbol() orelse return null).resolve();
     for (sym.decls) |x| {
         const other = declTParams(x) orelse continue;
         if (idx < other.len) if (other[idx].data.type_param.default) |k| return k;
@@ -310,7 +311,7 @@ fn declTParams(n: *Node) ?[]*Node {
 pub fn tparamsFrom(c: *Checker, list: []*Node) []*Type {
     if (list.len == 0) return &.{};
     var out = c.newList(*Type);
-    for (list) |p| if (p.symbol) |s| out.append(c.a, tparamOf(c, s)) catch oom();
+    for (list) |p| if (p.symbol()) |s| out.append(c.a, tparamOf(c, s)) catch oom();
     return out.items;
 }
 
@@ -389,21 +390,21 @@ pub fn outerTParams(c: *Checker, n: *Node) []*Type {
         for (tparamsFrom(c, list)) |t| out.append(c.a, t) catch oom();
         switch (x.data) {
             .class, .interface => {
-                if (x.symbol) |s| {
+                if (x.symbol()) |s| {
                     const d = declaredType(c, s);
                     if (d.data == .obj) if (d.data.obj.thisType()) |tt| out.append(c.a, tt) catch oom();
                 }
             },
             // Its own key parameter is bound inside it, never by whoever instantiates it.
-            .mapped_type => if (x != n) if (x.locals) |l| {
-                var it = l.map.valueIterator();
+            .mapped_type => if (x != n) if (x.locals()) |l| {
+                var it = l.map.keyIterator();
                 while (it.next()) |s| out.append(c.a, tparamOf(c, s.*)) catch oom();
             },
             // Its own `infer` names are bound by each resolution, or a recursive use would see the
             // outer level's answers. Nothing ever maps them for the false branch either, which
             // would stay generic forever.
-            .conditional_type => |y| if (x != n and from != y.els and from != y.check) if (x.locals) |l| {
-                var it = l.map.valueIterator();
+            .conditional_type => |y| if (x != n and from != y.els and from != y.check) if (x.locals()) |l| {
+                var it = l.map.keyIterator();
                 while (it.next()) |s| out.append(c.a, tparamOf(c, s.*)) catch oom();
             },
             else => {},
@@ -694,7 +695,7 @@ fn unassignedMember(c: *Checker, s: *Symbol, ref: *Node) ?T.EnumValue {
     if (c.declared.contains(s) or !c.declaring_enums.contains(parent)) return null;
     var cur: ?*Node = ref;
     while (cur) |n| : (cur = n.parent) {
-        if (n.data == .enum_member and n.symbol == s) {
+        if (n.data == .enum_member and n.symbol() == s) {
             report(c, ref, 2565, c.fmt("Property '{s}' is used before being assigned.", .{s.name}));
             return .none;
         }
@@ -721,7 +722,7 @@ fn declareEnum(c: *Checker, s: *Symbol) *Type {
         if (d.data != .enum_decl) continue;
         var next: ?f64 = 0;
         for (d.data.enum_decl.members) |m| {
-            const ms = m.symbol orelse continue;
+            const ms = m.symbol() orelse continue;
             const md = m.data.enum_member;
             var val: T.EnumValue = .none;
             // Earlier members are declared by now, which is what forward references rely on.
@@ -926,12 +927,12 @@ fn typeFromNodeWorker(c: *Checker, n: *Node) *Type {
             return if (x.type_args.items.len > 0) expr.instantiationExpr(c, t, x.type_args.items) else t;
         },
         .type_literal => {
-            const t = c.newObj(.{ .kind = .anon, .sym = n.symbol, .node = n });
+            const t = c.newObj(.{ .kind = .anon, .sym = n.symbol(), .node = n });
             t.vars = referencedTParams(c, n).len > 0;
             return t;
         },
         .func => {
-            const t = c.newObj(.{ .kind = .anon, .sym = n.symbol, .node = n });
+            const t = c.newObj(.{ .kind = .anon, .sym = n.symbol(), .node = n });
             t.vars = referencedTParams(c, n).len > 0;
             return t;
         },
@@ -950,7 +951,7 @@ fn typeFromNodeWorker(c: *Checker, n: *Node) *Type {
             return c.intersect(list, list.len == 2 and primitive and spelled_empty);
         },
         .conditional_type => return condFromNode(c, n),
-        .infer_type => |x| return if (x.tparam.symbol) |s| tparamOf(c, s) else c.t_err,
+        .infer_type => |x| return if (x.tparam.symbol()) |s| tparamOf(c, s) else c.t_err,
         .type_operator => |x| switch (x.op) {
             .kw_keyof => return getIndexType(c, typeFromNode(c, x.type)),
             .kw_readonly => {
@@ -967,7 +968,7 @@ fn typeFromNodeWorker(c: *Checker, n: *Node) *Type {
         },
         .indexed_access => |x| return getIndexedAccess(c, typeFromNode(c, x.object), typeFromNode(c, x.index)),
         .mapped_type => {
-            const t = c.newObj(.{ .kind = .mapped, .sym = n.symbol, .node = n });
+            const t = c.newObj(.{ .kind = .mapped, .sym = n.symbol(), .node = n });
             t.vars = referencedTParams(c, n).len > 0;
             return t;
         },
@@ -994,7 +995,7 @@ fn typeFromNodeWorker(c: *Checker, n: *Node) *Type {
 
 fn declSymbol(n: *Node) ?*Symbol {
     return switch (n.data) {
-        .var_decl, .property_decl, .property_sig => n.symbol,
+        .var_decl, .property_decl, .property_sig => n.symbol(),
         else => null,
     };
 }
@@ -1029,7 +1030,7 @@ fn thisTypeAt(c: *Checker, n: *Node) *Type {
     while (cur) |x| : (cur = x.parent) {
         switch (x.data) {
             .class, .interface => {
-                const s = x.symbol orelse return c.t_err;
+                const s = x.symbol() orelse return c.t_err;
                 const d = declaredType(c, s);
                 if (d.data == .obj) if (d.data.obj.thisType()) |t| return t;
                 return c.t_err;
@@ -1549,7 +1550,7 @@ fn instantiateHomomorphicMember(c: *Checker, root: *Type, arg: *Type, outer: []*
 
 pub fn mappedParam(c: *Checker, n: *Node) *Type {
     const name = n.data.mapped_type.tparam_name;
-    if (n.locals) |l| if (name.data == .identifier) if (l.get(name.data.identifier)) |s| return tparamOf(c, s);
+    if (n.locals()) |l| if (name.data == .identifier) if (l.get(name.data.identifier)) |s| return tparamOf(c, s);
     return c.t_err;
 }
 
@@ -1912,7 +1913,7 @@ fn padPattern(c: *Checker, t: *Type, init: *Node, pat: *Node) *Type {
 /// A setter's parameter takes its type from the getter of the same property.
 pub fn setterGetter(fnode: *Node) ?*Node {
     if (fnode.data.func.kind != .setter and fnode.data.func.kind != .setter_sig) return null;
-    const s = fnode.symbol orelse return null;
+    const s = fnode.symbol() orelse return null;
     for (s.decls) |x| if (x.data == .func and (x.data.func.kind == .getter or x.data.func.kind == .getter_sig)) return x;
     return null;
 }
@@ -1921,7 +1922,7 @@ pub fn setterGetter(fnode: *Node) ?*Node {
 pub fn setterAnnotation(c: *Checker, fnode: *Node) ?*Type {
     const f = fnode.data.func;
     if (f.kind != .getter or f.ret != null) return null;
-    const s = fnode.symbol orelse return null;
+    const s = fnode.symbol() orelse return null;
     for (s.decls) |x| {
         if (x.data != .func or (x.data.func.kind != .setter and x.data.func.kind != .setter_sig)) continue;
         const ps = x.data.func.params;
@@ -2007,7 +2008,7 @@ pub fn bindingElemFrom(c: *Checker, el: *Node, parent_t: *Type) *Type {
     const pat = el.parent orelse return c.t_err;
     const e = el.data.binding_elem;
     var t = expr.destructuredType(c, parent_t, pat, el);
-    if (syntheticAccess(c, el)) |r| t = @import("flow.zig").flowAt(c, r, r.flow.?, t);
+    if (syntheticAccess(c, el)) |r| t = @import("flow.zig").flowAt(c, r, r.flow().?, t);
     if (e.init) |i| {
         const init_t = expr.widenInit(c, i, expr.checkInit(c, i), true);
         t = c.getUnion(&.{ expr.removeUndefined(c, t), expr.regularWiden(c, init_t) });
@@ -2030,7 +2031,7 @@ fn syntheticAccess(c: *Checker, el: *Node) ?*Node {
         .identifier, .this_expr, .prop_access, .elem_access => {},
         else => return null,
     }
-    const at = from.flow orelse return null;
+    const at = from.flow() orelse return null;
     const e = el.data.binding_elem;
     if (e.dotdotdot) return null;
     const name: []const u8 = switch (pat.data) {
@@ -2039,7 +2040,7 @@ fn syntheticAccess(c: *Checker, el: *Node) ?*Node {
         else => return null,
     };
     const lit = c.create(Node, .{ .start = el.start, .end = el.end, .data = .{ .string_lit = name } });
-    const r = c.create(Node, .{ .start = el.start, .end = el.end, .parent = el, .flow = at, .data = .{ .elem_access = .{ .expr = from, .index = lit, .optional = false } } });
+    const r = c.create(Node, Node.atFlow(at, el.start, el.end, el, .{ .elem_access = .{ .expr = from, .index = lit, .optional = false } }));
     lit.parent = r;
     return r;
 }
@@ -2061,7 +2062,7 @@ pub fn sigOfDecl(c: *Checker, d: *Node) *Sig {
         }
         const name = if (p.name.data == .identifier) p.name.data.identifier else c.fmt("__{d}", .{i});
         const optional = p.question or p.init != null or p.dotdotdot or p.type == null and takesFewerArgs(d);
-        params.append(c.a, .{ .name = name, .sym = pn.symbol, .optional = optional }) catch oom();
+        params.append(c.a, .{ .name = name, .sym = pn.symbol(), .optional = optional }) catch oom();
         if (!optional) min = @intCast(params.items.len);
         if (p.dotdotdot) rest = true;
     }
@@ -2146,7 +2147,7 @@ fn returnOfWorker(c: *Checker, s: *Sig) *Type {
     const f = d.data.func;
     if (f.kind == .ctor) {
         const owner = d.parent orelse return c.t_err;
-        return if (owner.symbol) |o| declaredType(c, o) else c.t_err;
+        return if (owner.symbol()) |o| declaredType(c, o) else c.t_err;
     }
     if (f.ret) |r| return typeFromNode(c, r);
     if (setterAnnotation(c, d)) |a| return a;
@@ -2207,7 +2208,16 @@ pub fn sigsOfSymbol(c: *Checker, s: *Symbol, want_ctor: bool) []*Sig {
 
 // ---- members ----
 
+/// Every member of `t`. To read one, or only the signatures, `ownProp` and `shallowMembers` leave
+/// the rest unbuilt.
 pub fn membersOf(c: *Checker, t: *Type) *Members {
+    const m = shallowMembers(c, t);
+    if (m.lazy) |l| if (!t.data.obj.resolving) fillProps(c, t, m, l);
+    return m;
+}
+
+/// Signatures and index signatures are complete, while properties need `ownProp`.
+pub fn shallowMembers(c: *Checker, t: *Type) *Members {
     const o = t.data.obj;
     if (o.members) |m| return m;
     if (o.resolving) return c.emptyMembers();
@@ -2224,6 +2234,126 @@ pub fn membersOf(c: *Checker, t: *Type) *Members {
     return m;
 }
 
+fn isUnnamedMember(name: []const u8) bool {
+    if (name.len < 5 or name[0] != '_' or name[1] != '_') return false;
+    return std.mem.eql(u8, name, "__call") or std.mem.eql(u8, name, "__new") or std.mem.eql(u8, name, "__index") or std.mem.eql(u8, name, "__constructor");
+}
+
+/// A property of an object type itself, the way `membersOf(c, t).props.get(name)` finds it.
+pub fn ownProp(c: *Checker, t: *Type, name: []const u8) ?*Prop {
+    const m = shallowMembers(c, t);
+    if (m.props.get(name)) |p| return p;
+    const l = m.lazy orelse return null;
+    const o = t.data.obj;
+    if (o.resolving or isUnnamedMember(name)) return null;
+    o.resolving = true;
+    defer o.resolving = false;
+    const p = switch (l.*) {
+        .declared => |x| declaredProp(c, x.owner, x.mapper, x.bases, name),
+        .instance => |x| if (ownProp(c, x.root, name)) |q| instProp(c, q, x.mapper) else null,
+    } orelse return null;
+    m.props.put(c.a, p.name, p) catch oom();
+    return p;
+}
+
+fn declaredProp(c: *Checker, g: *Type, mapper: ?*Mapper, bases: []*Type, name: []const u8) ?*Prop {
+    const s = g.data.obj.sym.?;
+    if (s.members) |tbl| {
+        if (tbl.get(name)) |ms| {
+            const p = propFromSymbol(c, ms, g);
+            p.mapper = mapper;
+            return p;
+        }
+        if (g.data.obj.is_class) if (tbl.get("__constructor")) |ctor| if (paramProp(c, ctor, name, mapper, g)) |p| return p;
+    }
+    for (bases) |b| if (ownProp(c, b, name)) |p| return p;
+    return null;
+}
+
+/// Whether `t` has no properties, with as few of them built as it takes to tell.
+pub fn hasNoProps(c: *Checker, t: *Type) bool {
+    const m = shallowMembers(c, t);
+    if (m.props.count() > 0) return false;
+    const l = m.lazy orelse return true;
+    switch (l.*) {
+        .declared => |x| if (x.owner.data.obj.sym.?.members) |tbl| {
+            var it = tbl.map.keyIterator();
+            while (it.next()) |k| if (!isUnnamedMember(k.*.name)) return false;
+        },
+        .instance => |x| return hasNoProps(c, x.root),
+    }
+    return membersOf(c, t).props.count() == 0;
+}
+
+/// Whether a declared property is not optional. Most types have one early, and only the rest need
+/// their tables built to be called weak. False says nothing: inherited properties are not looked at.
+pub fn hasRequiredProp(c: *Checker, t: *Type) bool {
+    const m = shallowMembers(c, t);
+    const l = m.lazy orelse return false;
+    switch (l.*) {
+        .declared => |x| if (x.owner.data.obj.sym.?.members) |tbl| {
+            var it = tbl.map.keyIterator();
+            while (it.next()) |e| {
+                if (!isUnnamedMember(e.*.name) and e.*.resolve().flags & F.optional == 0) return true;
+            }
+        },
+        .instance => |x| return hasRequiredProp(c, x.root),
+    }
+    return false;
+}
+
+/// Rebuilds the table in the order building it at once would give, with whatever lookups made.
+fn fillProps(c: *Checker, t: *Type, m: *Members, l: *const T.LazyProps) void {
+    const o = t.data.obj;
+    o.resolving = true;
+    defer o.resolving = false;
+    var out: T.PropTable = .empty;
+    switch (l.*) {
+        .declared => |x| {
+            if (x.owner.data.obj.sym.?.members) |tbl| {
+                out.ensureTotalCapacity(c.a, tbl.map.count()) catch oom();
+                var it = tbl.map.keyIterator();
+                while (it.next()) |e| {
+                    const name = e.*.name;
+                    if (std.mem.eql(u8, name, "__constructor")) {
+                        addParamProps(c, e.*.resolve(), &out, &m.props, x.mapper, x.owner);
+                    } else if (!isUnnamedMember(name)) {
+                        const p = m.props.get(name) orelse blk: {
+                            const q = propFromSymbol(c, e.*.resolve(), x.owner);
+                            q.mapper = x.mapper;
+                            break :blk q;
+                        };
+                        out.put(c.a, name, p) catch oom();
+                    }
+                }
+            }
+            for (x.bases) |b| {
+                const bm = membersOf(c, b);
+                out.ensureUnusedCapacity(c.a, bm.props.count()) catch oom();
+                inheritProps(&out, bm);
+            }
+        },
+        .instance => |x| {
+            const src = membersOf(c, x.root);
+            out.ensureTotalCapacity(c.a, src.props.count()) catch oom();
+            var it = src.props.iterator();
+            while (it.next()) |e| {
+                out.putAssumeCapacity(e.key_ptr.*, m.props.get(e.key_ptr.*) orelse instProp(c, e.value_ptr.*, x.mapper));
+            }
+        },
+    }
+    m.props.deinit(c.a);
+    m.props = out;
+    m.lazy = null;
+}
+
+fn inheritProps(out: *T.PropTable, bm: *const Members) void {
+    var it = bm.props.iterator();
+    while (it.next()) |e| {
+        if (!out.contains(e.key_ptr.*)) out.putAssumeCapacity(e.key_ptr.*, e.value_ptr.*);
+    }
+}
+
 /// Reading goes through the getter, so a `private set` beside a public `get` stays public.
 fn getterOf(s: *Symbol) ?*Node {
     if (s.flags & F.getter == 0) return null;
@@ -2234,17 +2364,17 @@ fn getterOf(s: *Symbol) ?*Node {
 fn addExpandos(c: *Checker, m: *Members, func: *Node) void {
     const holder = binder.expandoHolder(func) orelse return;
     if (holder.exports) |table| {
-        var it = table.map.iterator();
+        var it = table.map.keyIterator();
         while (it.next()) |e| {
-            const s = e.value_ptr.*.resolve();
-            if (s.flags & F.property != 0) m.props.put(c.a, e.key_ptr.*, propFromSymbol(c, s, null)) catch oom();
+            const s = e.*.resolve();
+            if (s.flags & F.property != 0) m.props.put(c.a, e.*.name, propFromSymbol(c, s, null)) catch oom();
         }
     }
     addLateExpandos(c, m, holder);
 }
 
 fn addLateExpandos(c: *Checker, m: *Members, s: *Symbol) void {
-    for (s.late_members) |late| {
+    for (s.lateMembers()) |late| {
         const left = late.decls[0];
         if (left.data != .elem_access) continue;
         const key = expr.checkSilent(c, left.data.elem_access.index);
@@ -2298,47 +2428,56 @@ fn hasUnnamedMember(s: *Symbol) bool {
 fn resolveIface(c: *Checker, self: *Type, g: *Type, args: []*Type, this_arg: *Type) *Members {
     const o = g.data.obj;
     const m = c.emptyMembers();
-    var from = c.newList(*Type);
-    var to = c.newList(*Type);
-    for (o.tparams(), 0..) |p, i| if (i < args.len) {
-        from.append(c.a, p) catch oom();
-        to.append(c.a, args[i]) catch oom();
-    };
-    if (o.thisType()) |tt| {
-        from.append(c.a, tt) catch oom();
-        to.append(c.a, this_arg) catch oom();
+    const params = o.tparams();
+    const bound = @min(params.len, args.len);
+    const this_type = o.thisType();
+    const count = bound + @intFromBool(this_type != null);
+    const from = c.a.alloc(*Type, count) catch oom();
+    const to = c.a.alloc(*Type, count) catch oom();
+    @memcpy(from[0..bound], params[0..bound]);
+    @memcpy(to[0..bound], args[0..bound]);
+    if (this_type) |tt| {
+        from[bound] = tt;
+        to[bound] = this_arg;
     }
-    const mapper: ?*Mapper = if (from.items.len > 0) arrayMapper(c, from.items, to.items) else null;
+    const mapper: ?*Mapper = if (count > 0) arrayMapper(c, from, to) else null;
     const s = o.sym.?;
-    var calls = c.newList(*Sig);
-    var ctors = c.newList(*Sig);
-    var indexes = c.newList(T.Index);
+    var calls: std.ArrayList(*Sig) = .empty;
+    var ctors: std.ArrayList(*Sig) = .empty;
+    var indexes: std.ArrayList(T.Index) = .empty;
     if (s.members) |tbl| {
-        var it = tbl.map.iterator();
-        while (it.next()) |e| {
-            const ms = e.value_ptr.*.resolve();
-            const name = e.key_ptr.*;
-            if (std.mem.eql(u8, name, "__call")) {
-                for (sigsOfSymbol(c, ms, false)) |x| calls.append(c.a, if (mapper) |mp| instSig(c, x, mp) else x) catch oom();
-            } else if (std.mem.eql(u8, name, "__new")) {
-                for (sigsOfSymbol(c, ms, true)) |x| ctors.append(c.a, if (mapper) |mp| instSig(c, x, mp) else x) catch oom();
-            } else if (std.mem.eql(u8, name, "__index")) {
-                addIndexes(c, ms, mapper, &indexes, false);
-            } else if (std.mem.eql(u8, name, "__constructor")) {
-                addParamProps(c, ms, m, mapper, g);
-            } else {
-                const p = propFromSymbol(c, ms, g);
-                p.mapper = mapper;
-                m.props.put(c.a, name, p) catch oom();
+        if (tbl.get("__call")) |ms| for (sigsOfSymbol(c, ms, false)) |x| calls.append(c.a, if (mapper) |mp| instSig(c, x, mp) else x) catch oom();
+        if (tbl.get("__new")) |ms| for (sigsOfSymbol(c, ms, true)) |x| ctors.append(c.a, if (mapper) |mp| instSig(c, x, mp) else x) catch oom();
+        if (tbl.get("__index")) |ms| addIndexes(c, ms, mapper, &indexes, false);
+    }
+    const declared = basesOf(c, g);
+    const bases = c.a.alloc(*Type, declared.len) catch oom();
+    var plain = s.lateMembers().len == 0;
+    for (declared, bases) |b0, *b| {
+        b.* = withThis(c, instantiate(c, b0, mapper), this_arg);
+        if (b.*.data != .obj) plain = false;
+    }
+    if (plain) {
+        for (bases) |b| inheritSigs(c, shallowMembers(c, b), &calls, &ctors, &indexes, o.is_class);
+        if (s.members != null or bases.len > 0) m.lazy = c.create(T.LazyProps, .{ .declared = .{ .owner = g, .mapper = mapper, .bases = bases } });
+    } else {
+        if (s.members) |tbl| {
+            var it = tbl.map.keyIterator();
+            while (it.next()) |e| {
+                const name = e.*.name;
+                if (std.mem.eql(u8, name, "__constructor")) {
+                    addParamProps(c, e.*.resolve(), &m.props, &.empty, mapper, g);
+                } else if (!isUnnamedMember(name)) {
+                    const p = propFromSymbol(c, e.*.resolve(), g);
+                    p.mapper = mapper;
+                    m.props.put(c.a, name, p) catch oom();
+                }
             }
         }
-    }
-    // Reading a key can come back to this very type, which then shows what it has so far.
-    if (s.late_members.len > 0) self.data.obj.members = m;
-    addLateMembers(c, s.late_members, m, mapper, g, &indexes, hasUnnamedMember(s));
-    for (basesOf(c, g)) |b0| {
-        const b = withThis(c, instantiate(c, b0, mapper), this_arg);
-        inheritFrom(c, m, b, &calls, &ctors, &indexes, o.is_class);
+        // Reading a key can come back to this very type, which then shows what it has so far.
+        if (s.lateMembers().len > 0) self.data.obj.members = m;
+        addLateMembers(c, s.lateMembers(), m, mapper, g, &indexes, hasUnnamedMember(s));
+        for (bases) |b| inheritFrom(c, m, b, &calls, &ctors, &indexes, o.is_class);
     }
     m.calls = calls.items;
     m.ctors = ctors.items;
@@ -2403,11 +2542,12 @@ fn inheritFrom(c: *Checker, m: *Members, b: *Type, calls: *std.ArrayList(*Sig), 
     }
     if (b.data != .obj) return;
     const bm = membersOf(c, b);
-    var it = bm.props.iterator();
-    while (it.next()) |e| {
-        if (m.props.contains(e.key_ptr.*)) continue;
-        m.props.put(c.a, e.key_ptr.*, e.value_ptr.*) catch oom();
-    }
+    m.props.ensureUnusedCapacity(c.a, bm.props.count()) catch oom();
+    inheritProps(&m.props, bm);
+    inheritSigs(c, bm, calls, ctors, indexes, is_class);
+}
+
+fn inheritSigs(c: *Checker, bm: *const Members, calls: *std.ArrayList(*Sig), ctors: *std.ArrayList(*Sig), indexes: *std.ArrayList(T.Index), is_class: bool) void {
     for (bm.calls) |x| calls.append(c.a, x) catch oom();
     if (!is_class) for (bm.ctors) |x| ctors.append(c.a, x) catch oom();
     outer: for (bm.indexes) |x| {
@@ -2416,18 +2556,38 @@ fn inheritFrom(c: *Checker, m: *Members, b: *Type, calls: *std.ArrayList(*Sig), 
     }
 }
 
-fn addParamProps(c: *Checker, ctor: *Symbol, m: *Members, mapper: ?*Mapper, owner: *Type) void {
+fn paramPropOf(c: *Checker, pn: *Node, s: *Symbol, mapper: ?*Mapper, owner: *Type) *Prop {
+    const p = mkProp(c, s, pn, owner, pn.data.param.question, pn.mods.readonly, pn.mods.private, pn.mods.protected, false, false);
+    p.mapper = mapper;
+    return p;
+}
+
+fn isParamProp(pn: *Node) bool {
+    return pn.mods.public or pn.mods.private or pn.mods.protected or pn.mods.readonly;
+}
+
+fn addParamProps(c: *Checker, ctor: *Symbol, out: *T.PropTable, had: *const T.PropTable, mapper: ?*Mapper, owner: *Type) void {
     for (ctor.decls) |d| {
         if (d.data != .func) continue;
         for (d.data.func.params) |pn| {
-            if (!(pn.mods.public or pn.mods.private or pn.mods.protected or pn.mods.readonly)) continue;
-            const s = pn.symbol orelse continue;
-            if (m.props.contains(s.name)) continue;
-            const p = mkProp(c, s, pn, owner, pn.data.param.question, pn.mods.readonly, pn.mods.private, pn.mods.protected, false, false);
-            p.mapper = mapper;
-            m.props.put(c.a, s.name, p) catch oom();
+            if (!isParamProp(pn)) continue;
+            const s = pn.symbol() orelse continue;
+            if (out.contains(s.name)) continue;
+            out.put(c.a, s.name, had.get(s.name) orelse paramPropOf(c, pn, s, mapper, owner)) catch oom();
         }
     }
+}
+
+fn paramProp(c: *Checker, ctor: *Symbol, name: []const u8, mapper: ?*Mapper, owner: *Type) ?*Prop {
+    for (ctor.decls) |d| {
+        if (d.data != .func) continue;
+        for (d.data.func.params) |pn| {
+            if (!isParamProp(pn)) continue;
+            const s = pn.symbol() orelse continue;
+            if (std.mem.eql(u8, s.name, name)) return paramPropOf(c, pn, s, mapper, owner);
+        }
+    }
+    return null;
 }
 
 fn addIndexes(c: *Checker, s: *Symbol, mapper: ?*Mapper, out: *std.ArrayList(T.Index), static: bool) void {
@@ -2497,10 +2657,9 @@ fn resolveTuple(c: *Checker, t: *Type) *Members {
 fn resolveAnon(c: *Checker, t: *Type) *Members {
     const o = t.data.obj;
     if (o.target) |root| {
-        const src = membersOf(c, root);
+        const src = shallowMembers(c, root);
         const m = c.emptyMembers();
-        var it = src.props.iterator();
-        while (it.next()) |e| m.props.put(c.a, e.key_ptr.*, instProp(c, e.value_ptr.*, o.mapper)) catch oom();
+        m.lazy = c.create(T.LazyProps, .{ .instance = .{ .root = root, .mapper = o.mapper } });
         const calls = c.a.alloc(*Sig, src.calls.len) catch oom();
         for (src.calls, 0..) |s, i| calls[i] = instSig(c, s, o.mapper.?);
         const ctors = c.a.alloc(*Sig, src.ctors.len) catch oom();
@@ -2532,10 +2691,10 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
             if (d.data.func.kind == .constructor_type) ctors.append(c.a, sg) catch oom() else calls.append(c.a, sg) catch oom();
         };
         if (s.members) |tbl| {
-            var it = tbl.map.iterator();
+            var it = tbl.map.keyIterator();
             while (it.next()) |e| {
-                const ms = e.value_ptr.*.resolve();
-                const name = e.key_ptr.*;
+                const ms = e.*.resolve();
+                const name = e.*.name;
                 if (std.mem.eql(u8, name, "__call")) {
                     for (sigsOfSymbol(c, ms, false)) |x| calls.append(c.a, x) catch oom();
                 } else if (std.mem.eql(u8, name, "__new")) {
@@ -2547,7 +2706,7 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
                 }
             }
         }
-        addLateMembers(c, s.late_members, m, null, null, &indexes, hasUnnamedMember(s));
+        addLateMembers(c, s.lateMembers(), m, null, null, &indexes, hasUnnamedMember(s));
         m.calls = calls.items;
         m.ctors = ctors.items;
         m.indexes = indexes.items;
@@ -2589,7 +2748,7 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
         m.props.put(c.a, "prototype", c.create(Prop, .{ .name = "prototype", .ty = proto_ty, .readonly = true })) catch oom();
         var indexes = c.newList(T.Index);
         if (s.members) |tbl| if (tbl.get("__index")) |i| addIndexes(c, i.resolve(), null, &indexes, true);
-        addLateMembers(c, s.late_statics, m, null, null, &indexes, false);
+        addLateMembers(c, s.lateStatics(), m, null, null, &indexes, false);
         if (s.decls.len > 0) {
             for (basesOf(c, cls)) |_| {
                 if (classBaseValue(c, s)) |v| if (v.data == .obj or v.data == .inter) {
@@ -2926,15 +3085,15 @@ pub fn propsOf(c: *Checker, t: *Type) []const *Prop {
 }
 
 fn objectProp(c: *Checker, t: *Type, name: []const u8) ?*Prop {
-    const m = membersOf(c, t);
-    if (m.props.get(name)) |p| return p;
+    if (ownProp(c, t, name)) |p| return p;
     if (tupleProp(c, t, name)) |p| return p;
+    const m = shallowMembers(c, t);
     if (m.calls.len > 0 or m.ctors.len > 0) {
         const strict_name: ?[]const u8 = if (!c.bind_call_apply) null else if (m.calls.len > 0) "CallableFunction" else if (m.ctors.len > 0) "NewableFunction" else null;
-        if (strict_name) |sn| if (globalType(c, sn)) |f| if (f.data == .obj) if (membersOf(c, f).props.get(name)) |p| return p;
-        if (globalType(c, "Function")) |f| if (f.data == .obj) if (membersOf(c, f).props.get(name)) |p| return p;
+        if (strict_name) |sn| if (globalType(c, sn)) |f| if (f.data == .obj) if (ownProp(c, f, name)) |p| return p;
+        if (globalType(c, "Function")) |f| if (f.data == .obj) if (ownProp(c, f, name)) |p| return p;
     }
-    if (globalType(c, "Object")) |f| if (f.data == .obj) if (membersOf(c, f).props.get(name)) |p| return p;
+    if (globalType(c, "Object")) |f| if (f.data == .obj) if (ownProp(c, f, name)) |p| return p;
     return null;
 }
 
@@ -3048,7 +3207,7 @@ pub fn getProp(c: *Checker, t0: *Type, name: []const u8) ?*Prop {
             for (x) |m| {
                 const ap = getApparent(c, m);
                 if (ap.data != .obj and ap.data != .union_ and ap.data != .inter) continue;
-                const p = if (ap.data == .obj) (membersOf(c, ap).props.get(name) orelse tupleProp(c, ap, name)) else getProp(c, ap, name);
+                const p = if (ap.data == .obj) (ownProp(c, ap, name) orelse tupleProp(c, ap, name)) else getProp(c, ap, name);
                 const q = p orelse continue;
                 if (first == null) first = q;
                 optional = optional and q.optional;
@@ -3073,7 +3232,7 @@ fn sigsOf(c: *Checker, t0: *Type, ctor: bool) []*Sig {
     const t = getApparent(c, t0);
     switch (t.data) {
         .obj => {
-            const m = membersOf(c, t);
+            const m = shallowMembers(c, t);
             return if (ctor) m.ctors else m.calls;
         },
         .inter => |x| {
@@ -3200,7 +3359,7 @@ pub fn ctorSigs(c: *Checker, t: *Type) []*Sig {
 pub fn indexesOf(c: *Checker, t0: *Type) []T.Index {
     const t = getApparent(c, t0);
     return switch (t.data) {
-        .obj => membersOf(c, t).indexes,
+        .obj => shallowMembers(c, t).indexes,
         .inter => |x| blk: {
             var out = c.newList(T.Index);
             for (x) |y| for (indexesOf(c, y)) |i| {
@@ -3529,8 +3688,8 @@ fn condFromNode(c: *Checker, n: *Node) *Type {
     const check = typeFromNode(c, d.check);
     const extends = typeFromNode(c, d.extends);
     var infers = c.newList(*Type);
-    if (n.locals) |l| {
-        var it = l.map.valueIterator();
+    if (n.locals()) |l| {
+        var it = l.map.keyIterator();
         while (it.next()) |s| infers.append(c.a, tparamOf(c, s.*)) catch oom();
     }
     const cond = c.create(T.Cond, .{

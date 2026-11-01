@@ -93,8 +93,8 @@ fn quickType(c: *Checker, n: *Node) ?*Type {
             if (special or y.optional or flow.isOptionalChain(y.callee)) break :blk null;
             const t = nonNull(c, checkSilent(c, y.callee));
             if (t.data != .obj) break :blk null;
-            const m = d.membersOf(c, t);
-            if (m.calls.len != 1 or m.calls[0].tparams.len != 0 or m.ctors.len != 0 or m.indexes.len != 0 or m.props.count() != 0) break :blk null;
+            const m = d.shallowMembers(c, t);
+            if (m.calls.len != 1 or m.calls[0].tparams.len != 0 or m.ctors.len != 0 or m.indexes.len != 0 or !d.hasNoProps(c, t)) break :blk null;
             break :blk d.returnOf(c, m.calls[0]);
         },
         .new_expr => |y| blk: {
@@ -158,16 +158,16 @@ pub fn reportNodeTypes(c: *Checker, n: *Node, name: []const u8) void {
     }
 }
 
-fn suggestIn(c: *Checker, map: anytype, name: []const u8, meaning: u32, primitives: bool) ?[]const u8 {
+fn suggestIn(c: *Checker, table: *binder.SymbolTable, name: []const u8, meaning: u32, primitives: bool) ?[]const u8 {
     var list = c.newList([]const u8);
     if (primitives) for ([_][2][]const u8{ .{ "string", "String" }, .{ "number", "Number" }, .{ "boolean", "Boolean" }, .{ "object", "Object" }, .{ "bigint", "BigInt" }, .{ "symbol", "Symbol" } }) |p| {
-        if (map.contains(p[1])) list.append(c.a, p[0]) catch oom();
+        if (table.contains(p[1])) list.append(c.a, p[0]) catch oom();
     };
-    var it = map.iterator();
+    var it = table.map.keyIterator();
     while (it.next()) |e| {
-        const s = e.value_ptr.*;
+        const s = e.*;
         const flags = if (s.flags & F.alias != 0) (if (d.targetOf(c, s)) |t| t.flags else 0) else s.flags;
-        if (flags & meaning != 0 and !std.mem.startsWith(u8, e.key_ptr.*, "\"")) list.append(c.a, e.key_ptr.*) catch oom();
+        if (flags & meaning != 0 and !std.mem.startsWith(u8, s.name, "\"")) list.append(c.a, s.name) catch oom();
     }
     return spelling.best(c.a, name, list.items);
 }
@@ -176,12 +176,12 @@ fn suggestIn(c: *Checker, map: anytype, name: []const u8, meaning: u32, primitiv
 pub fn suggestName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?[]const u8 {
     var cur: ?*Node = from;
     while (cur) |n| : (cur = n.parent) {
-        if (d.localsOf(c, n)) |l| if (suggestIn(c, l.map, name, meaning, false)) |s| return s;
-        if (n.data == .module_decl) if (n.symbol) |sym| if (sym.resolve().exports) |e| {
-            if (suggestIn(c, e.map, name, meaning, false)) |s| return s;
+        if (d.localsOf(c, n)) |l| if (suggestIn(c, l, name, meaning, false)) |s| return s;
+        if (n.data == .module_decl) if (n.symbol()) |sym| if (sym.resolve().exports) |e| {
+            if (suggestIn(c, e, name, meaning, false)) |s| return s;
         };
     }
-    return suggestIn(c, c.prog.globals.map, name, meaning, true);
+    return suggestIn(c, c.prog.globals, name, meaning, true);
 }
 
 fn unresolved(c: *Checker, n: *Node, name: []const u8) *Type {
@@ -589,7 +589,7 @@ fn checkIdentifier(c: *Checker, n: *Node) *Type {
 /// The flow reached the variable's declaration without finding an assignment, as a closure does.
 fn autoTyped(c: *Checker, n: *Node, s: *Symbol, t: *Type) *Type {
     if (t != c.t_auto) return t;
-    if (n.flow != null and c.flow_depth <= 120) {
+    if (n.flow() != null and c.flow_depth <= 120) {
         if (s.value_decl) |dn| err(c, dn.data.var_decl.name, 7034, c.fmt("Variable '{s}' implicitly has type 'any' in some locations where its type cannot be determined.", .{s.name}));
         err(c, n, 7005, c.fmt("Variable '{s}' implicitly has an 'any' type.", .{s.name}));
     }
@@ -692,7 +692,7 @@ fn narrowedBinding(c: *Checker, s: *Symbol, n: *Node, t: *Type) *Type {
     if (root.data == .var_decl) {
         if (!isConstVar(s)) return t;
     } else if (root.data != .param or !isStableBinding(c, s)) return t;
-    const at = n.flow orelse return t;
+    const at = n.flow() orelse return t;
     const gop = c.binding_busy.getOrPut(c.a, pat) catch oom();
     if (gop.found_existing) return t;
     defer _ = c.binding_busy.remove(pat);
@@ -743,7 +743,7 @@ pub fn thisAccess(c: *Checker, name: *Node, ctor: *Node) ?*Node {
     const this = c.a.create(Node) catch oom();
     const ref = c.a.create(Node) catch oom();
     this.* = .{ .start = ctor.start, .end = ctor.start, .parent = ref, .data = .this_expr };
-    ref.* = .{ .start = ctor.start, .end = ctor.start, .parent = ctor, .flow = end, .data = .{ .prop_access = .{ .expr = this, .name = name, .optional = false } } };
+    ref.* = Node.atFlow(end, ctor.start, ctor.start, ctor, .{ .prop_access = .{ .expr = this, .name = name, .optional = false } });
     return ref;
 }
 
@@ -751,7 +751,7 @@ pub fn flowTypeOfQuery(c: *Checker, n: *Node, s: *Symbol) *Type {
     const target = d.targetOf(c, s) orelse return c.t_err;
     const t = d.typeOfSymbol(c, target);
     if (target.flags & F.variable == 0) return t;
-    if (n.flow == null) return t;
+    if (n.flow() == null) return t;
     return flow.flowType(c, n, t, t, flowContainer(c, n, s));
 }
 
@@ -766,7 +766,7 @@ pub fn memberQuery(c: *Checker, n: *Node, left: *Type) *Type {
 // ---- this / super ----
 
 fn thisOfClass(c: *Checker, cls: *Node, is_static: bool) *Type {
-    const s = cls.symbol orelse return c.t_err;
+    const s = cls.symbol() orelse return c.t_err;
     if (is_static) return d.typeOfSymbol(c, s);
     const t = d.declaredType(c, s);
     if (t.data == .obj) if (t.data.obj.thisType()) |x| return x;
@@ -837,7 +837,7 @@ fn superBase(c: *Checker, n: *Node) ?struct { base: *Type, is_static: bool } {
         if (x.data == .func and x.data.func.kind != .arrow) is_static = x.mods.static;
         if (x.data == .property_decl) is_static = x.mods.static;
         if (x.data == .class) {
-            const s = x.symbol orelse return null;
+            const s = x.symbol() orelse return null;
             const t = d.declaredType(c, s);
             if (t.data != .obj) return null;
             const bases = d.basesOf(c, t);
@@ -1151,7 +1151,7 @@ fn rawContext(c: *Checker, n: *Node) ?*Type {
                 .assign, .amp2_assign, .pipe2_assign, .qq_assign => {
                     if (x.right != n) return null;
                     // An expando is typed by this very value, unless its function's variable has a type.
-                    if (x.left.symbol) |s| if (!hasAnnotatedOwner(s)) return null;
+                    if (x.left.symbol()) |s| if (!hasAnnotatedOwner(s)) return null;
                     return assignmentContext(c, x.left);
                 },
                 .pipe2, .qq => {
@@ -1654,7 +1654,7 @@ const Widening = struct {
         var out = c.newList(*Type);
         for (w.parent.?.siblings(c)) |t| {
             if (t.data != .obj or !t.data.obj.lit) continue;
-            const p = d.membersOf(c, t).props.get(w.prop) orelse continue;
+            const p = d.ownProp(c, t, w.prop) orelse continue;
             const v = d.propType(c, p);
             if (v.data == .union_) out.appendSlice(c.a, v.data.union_) catch oom() else out.append(c.a, v) catch oom();
         }
@@ -2010,7 +2010,7 @@ fn checkFunctionExpr(c: *Checker, n: *Node) *Type {
         if (!gop.found_existing) c.deferred.append(c.a, n) catch oom();
     } else c.quiet_funcs.append(c.a, n) catch oom();
     // An object literal's method has a symbol, but only the node carries its signature.
-    const t = if (n.symbol != null and n.data.func.kind != .method) d.typeOfSymbol(c, n.symbol.?) else lambdaType(c, n);
+    const t = if (n.symbol() != null and n.data.func.kind != .method) d.typeOfSymbol(c, n.symbol().?) else lambdaType(c, n);
     // The return type must come from the body while the call's context is still on the stack;
     // read lazily from `inferTypes` it would lose it.
     if (n.data.func.ret == null and n.data.func.body != null and inContext(c, n)) {
@@ -2102,7 +2102,7 @@ pub fn predicateFromBody(c: *Checker, s: *Sig, fnode: *Node) ?*T.Pred {
         const pn = f.params[i + offset];
         const x = pn.data.param;
         if (x.dotdotdot or x.name.data != .identifier) continue;
-        const sym = pn.symbol orelse continue;
+        const sym = pn.symbol() orelse continue;
         if (!isStableBinding(c, sym)) continue;
         const init = d.typeOfParam(c, pn);
         if (init == c.t_boolean) continue;
@@ -2145,14 +2145,14 @@ pub fn returnTypeFromBody(c: *Checker, fnode: *Node) *Type {
         var self_call = false;
         for (r.list.items) |x| {
             if (x.data.return_stmt.expr) |e| {
-                if (!flow.isReachable(c, x.flow)) continue;
+                if (!flow.isReachable(c, x.flow())) continue;
                 if (isCallToSelf(c, fnode, e)) {
                     self_call = true;
                     continue;
                 }
                 parts.append(c.a, checkExpr(c, e)) catch oom();
             } else {
-                if (flow.isReachable(c, x.flow)) implicit = true;
+                if (flow.isReachable(c, x.flow())) implicit = true;
             }
         }
         if (parts.items.len == 0 and !implicit and !f.asterisk and (self_call or mayReturnNever(fnode))) {
@@ -2194,7 +2194,7 @@ fn isCallToSelf(c: *Checker, fnode: *Node, e: *Node) bool {
     const callee = x.data.call.callee;
     const t = checkSilent(c, callee);
     if (t.data != .obj) return false;
-    const own = fnode.symbol;
+    const own = fnode.symbol();
     if (t.data.obj.node != fnode and (own == null or t.data.obj.sym != own)) return false;
     const kind = fnode.data.func.kind;
     if (kind != .expr and kind != .arrow) return true;
@@ -2553,7 +2553,7 @@ pub fn assignedType(c: *Checker, n: *Node) ?*Type {
             };
             return null;
         },
-        .binding_elem => return if (n.symbol) |s| d.typeOfSymbol(c, s) else null,
+        .binding_elem => return if (n.symbol()) |s| d.typeOfSymbol(c, s) else null,
         else => {},
     }
     var cur = n;
@@ -2693,7 +2693,7 @@ fn checkVisibility(c: *Checker, n: *Node, left: *Type, p: *Prop, name_node: *Nod
     if (p.private) {
         var cur = enclosingClass(n);
         while (cur) |x| : (cur = enclosingClass(x)) if (x == owner_decl) return;
-        const cls = if (owner_decl) |x| (if (x.symbol) |s| s.name else "?") else "?";
+        const cls = if (owner_decl) |x| (if (x.symbol()) |s| s.name else "?") else "?";
         err(c, name_node, 2341, c.fmt("Property '{s}' is private and only accessible within class '{s}'.", .{ name, cls }));
         return;
     }
@@ -2703,14 +2703,14 @@ fn checkVisibility(c: *Checker, n: *Node, left: *Type, p: *Prop, name_node: *Nod
         if (derivesFrom(c, x, owner_decl)) return;
     }
     if (!p.static and thisDerivesFrom(c, n, owner_decl)) return;
-    const cls = if (owner_decl) |x| (if (x.symbol) |s| s.name else "?") else "?";
+    const cls = if (owner_decl) |x| (if (x.symbol()) |s| s.name else "?") else "?";
     _ = left;
     err(c, name_node, 2445, c.fmt("Property '{s}' is protected and only accessible within class '{s}' and its subclasses.", .{ name, cls }));
 }
 
 /// A function written outside the class may still declare, or be promised, a `this` of it.
 fn thisDerivesFrom(c: *Checker, n: *Node, owner: ?*Node) bool {
-    const sym = (owner orelse return false).symbol orelse return false;
+    const sym = (owner orelse return false).symbol() orelse return false;
     var cur = n.parent;
     while (cur) |x| : (cur = x.parent) {
         if (x.data != .func or x.data.func.kind == .arrow) continue;
@@ -2729,7 +2729,7 @@ fn ownerClass(x: *Node) ?*Node {
 
 fn derivesFrom(c: *Checker, cls: *Node, base: ?*Node) bool {
     const b = base orelse return false;
-    const s = cls.symbol orelse return false;
+    const s = cls.symbol() orelse return false;
     const t = d.declaredType(c, s);
     if (t.data != .obj) return false;
     return baseHas(c, t, b, 0);
@@ -2855,7 +2855,7 @@ fn propAccessType(c: *Checker, n: *Node, left: *Type, name_node: *Node, name: []
     const p = d.getProp(c, left, name) orelse {
         if (d.indexValue(c, left, d.nameToKey(c, name))) |v| {
             const r = if (c.no_unchecked_index) d.addOptional(c, v) else v;
-            if (isWriteOnly(n) or n.flow == null) return r;
+            if (isWriteOnly(n) or n.flow() == null) return r;
             return flow.flowType(c, n, r, r, containingFunc(n));
         }
         if (isOpen(c, left)) return c.t_err;
@@ -2868,7 +2868,7 @@ fn propAccessType(c: *Checker, n: *Node, left: *Type, name_node: *Node, name: []
     checkVisibility(c, n, left, p, name_node);
     if (isWriteOnly(n)) return d.propWriteType(c, p);
     const declared = d.propType(c, p);
-    if (n.flow == null or T.isAny(declared)) return declared;
+    if (n.flow() == null or T.isAny(declared)) return declared;
     if (p.method and declared.data != .union_) return declared;
     const narrowable = narrowableRef(c, n, declared);
     if (c.strict_null and addedHere(n, p)) {
@@ -2939,7 +2939,7 @@ fn checkElemAccess(c: *Checker, n: *Node) *Type {
     } else left = checkNonNull(c, left, x.expr);
     if (T.isAny(left)) {
         // Unlike `x.y`, `x[0]` on `any` still reads what `if (isArray(x[0]))` found out.
-        if (left.data != .any or n.flow == null or isWriteOnly(n)) return left;
+        if (left.data != .any or n.flow() == null or isWriteOnly(n)) return left;
         return flow.flowType(c, n, left, left, containingFunc(n));
     }
     const result = elemType(c, n, left, if (isNumericKey(c, x.index)) c.t_number else idx, x.index);
@@ -2973,7 +2973,7 @@ fn forInSymbol(c: *Checker, loop: *Node) ?*Symbol {
     const init = loop.data.for_in.init;
     if (init.data == .identifier) return if (symbolOf(c, init)) |s| s.resolve() else null;
     if (init.data != .var_list or init.data.var_list.decls.len == 0) return null;
-    return init.data.var_list.decls[0].symbol;
+    return init.data.var_list.decls[0].symbol();
 }
 
 fn elemType(c: *Checker, n: *Node, left: *Type, idx: *Type, index_node: *Node) *Type {
@@ -2994,7 +2994,7 @@ fn elemType(c: *Checker, n: *Node, left: *Type, idx: *Type, index_node: *Node) *
         if (d.getProp(c, left, name)) |p| {
             if (assign) return d.propWriteType(c, p);
             const declared = d.propType(c, p);
-            if (n.flow == null or declared.data == .err) return declared;
+            if (n.flow() == null or declared.data == .err) return declared;
             const narrowable = narrowableRef(c, n, declared);
             return flow.flowType(c, n, narrowable, narrowable, containingFunc(n));
         }
@@ -3020,7 +3020,7 @@ fn elemType(c: *Checker, n: *Node, left: *Type, idx: *Type, index_node: *Node) *
     const index_key = if (idx.data == .enum_lit) (if (idx.data.enum_lit.value == .str) c.t_string else c.t_number) else idx;
     if (d.indexValue(c, ap, idx) orelse d.indexValue(c, ap, index_key)) |v| {
         const r = if (c.no_unchecked_index and !assign) d.addOptional(c, v) else v;
-        if (assign or n.flow == null or (d.literalName(c, idx) == null and index_node.data != .identifier)) return r;
+        if (assign or n.flow() == null or (d.literalName(c, idx) == null and index_node.data != .identifier)) return r;
         return flow.flowType(c, n, r, r, containingFunc(n));
     }
     if (idx.data == .enum_ or idx.data == .enum_lit) if (d.indexValue(c, ap, c.t_number)) |v| return v;
@@ -3255,7 +3255,7 @@ fn checkObjectLit(c: *Checker, n: *Node) *Type {
                         const gop = c.checked_funcs.getOrPut(c.a, p) catch oom();
                         if (!gop.found_existing) c.deferred.append(c.a, p) catch oom();
                     }
-                    if (p.symbol) |s| m.props.put(c.a, name, c.create(Prop, .{ .name = name, .sym = s, .readonly = f.kind == .getter and s.flags & F.setter == 0, .decl = p })) catch oom();
+                    if (p.symbol()) |s| m.props.put(c.a, name, c.create(Prop, .{ .name = name, .sym = s, .readonly = f.kind == .getter and s.flags & F.setter == 0, .decl = p })) catch oom();
                     continue;
                 }
                 const v = checkFunctionExpr(c, p);
@@ -3293,7 +3293,7 @@ fn checkObjectLit(c: *Checker, n: *Node) *Type {
 const SplitSpread = struct { members: []const *Type, before: *T.Members, first: bool };
 
 fn literalObject(c: *Checker, n: *Node, m: *T.Members, open: bool, vars: bool, pending: bool, has_spread: bool) *Type {
-    const t = c.newObj(.{ .kind = .anon, .sym = n.symbol, .node = null, .members = m, .lit = true, .literal = n, .non_inferrable = pending, .open = open, .spread = has_spread });
+    const t = c.newObj(.{ .kind = .anon, .sym = n.symbol(), .node = null, .members = m, .lit = true, .literal = n, .non_inferrable = pending, .open = open, .spread = has_spread });
     t.vars = vars;
     return t;
 }
@@ -4418,7 +4418,7 @@ fn reorderCandidates(c: *Checker, sigs: []*Sig) []*Sig {
     var index: usize = 0;
     var specialized: usize = 0;
     for (sigs) |s| {
-        const sym = if (s.decl) |x| (if (x.symbol) |y| y.resolve() else null) else null;
+        const sym = if (s.decl) |x| (if (x.symbol()) |y| y.resolve() else null) else null;
         const parent = if (s.decl) |x| x.parent else null;
         if (last_symbol == null or sym == last_symbol) {
             if (last_parent != null and parent == last_parent) {
@@ -4634,12 +4634,12 @@ fn symbolCallOwner(c: *Checker, n: *Node) ?*Symbol {
     switch (owner.data) {
         .var_decl => |v| {
             if (v.init != cur or v.name.data != .identifier) return null;
-            const s = owner.symbol orelse return null;
+            const s = owner.symbol() orelse return null;
             return if (isConstVar(s)) s else null;
         },
         .property_decl => |v| {
             if (v.init != cur or !owner.mods.static or !owner.mods.readonly) return null;
-            return owner.symbol;
+            return owner.symbol();
         },
         else => {
             _ = c;
@@ -4882,7 +4882,7 @@ fn checkCtorAccess(c: *Checker, n: *Node, s: *Sig) void {
     const owner = decl.parent orelse return;
     var cur = enclosingClass(n);
     while (cur) |x| : (cur = enclosingClass(x)) if (x == owner) return;
-    const name = if (owner.symbol) |o| o.name else "?";
+    const name = if (owner.symbol()) |o| o.name else "?";
     if (decl.mods.private) {
         err(c, n, 2673, c.fmt("Constructor of class '{s}' is private and only accessible within the class declaration.", .{name}));
     } else {
@@ -5216,7 +5216,7 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         .null_lit => c.t_null,
         .this_expr => blk: {
             const t = checkThisAt(c, n);
-            if (n.flow == null or T.isAny(t)) break :blk t;
+            if (n.flow() == null or T.isAny(t)) break :blk t;
             break :blk flow.flowType(c, n, t, t, containingFunc(n));
         },
         .super_expr => if (superBase(c, n)) |x| x.base else c.t_err,
@@ -5275,7 +5275,7 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         .func => checkFunctionExpr(c, n),
         .class => blk: {
             if (!quiet(c)) c.deferred.append(c.a, n) catch oom();
-            break :blk if (n.symbol) |s| d.typeOfSymbol(c, s) else c.t_err;
+            break :blk if (n.symbol()) |s| d.typeOfSymbol(c, s) else c.t_err;
         },
         .spread_elem => |x| iteratedOf(c, x.expr, checkExpr(c, x.expr), false),
         .meta_property => c.t_err,

@@ -124,7 +124,7 @@ fn scanOne(s: *Scan, _: usize, i: usize) void {
 
 fn cmdScan(a: Allocator, io: Io, tp: *pool.ThreadPool, cfg: *const project.Config, w: *Io.Writer) !u8 {
     const t0 = Io.Clock.awake.now(io);
-    const files = project.projectFiles(a, io, tp, cfg);
+    const files = project.projectFiles(a, project.FsCache.create(a, io), tp, cfg);
     const t1 = Io.Clock.awake.now(io);
     const diags = try a.alloc([]const u8, files.len);
     @memset(diags, "");
@@ -188,6 +188,7 @@ test {
     _ = @import("ast.zig");
     _ = @import("parser.zig");
     _ = @import("binder.zig");
+    _ = @import("bump.zig");
     _ = @import("emit.zig");
     _ = @import("pool.zig");
     _ = @import("project.zig");
