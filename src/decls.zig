@@ -1518,7 +1518,7 @@ pub fn propType(c: *Checker, p: *Prop) *Type {
 
 fn propTypeWorker(c: *Checker, p: *Prop) *Type {
     if (p.origin) |o| return instantiate(c, propType(c, o), p.mapper);
-    if (p.mapped_owner) |owner| return mappedPropType(c, owner, p);
+    if (p.mapped) |x| return mappedPropType(c, x.owner, p);
     if (p.sym) |s| return instantiate(c, typeOfSymbol(c, s), p.mapper);
     return c.t_err;
 }
@@ -2534,7 +2534,7 @@ fn resolveMapped(c: *Checker, t: *Type) *Members {
                 if (name) |nm| {
                     const is_opt = opt or (source != null and source.?.optional and dd.question_mod != .minus);
                     const is_ro = ro or (source != null and source.?.readonly and dd.readonly_mod != .minus);
-                    const p = cc.create(Prop, .{ .name = nm, .optional = is_opt, .readonly = is_ro, .mapped_key = key0, .mapped_owner = tt, .mapped_required = dd.question_mod == .minus and source != null and source.?.optional, .decl = if (source) |sp| sp.decl else null });
+                    const p = cc.create(Prop, .{ .name = nm, .optional = is_opt, .readonly = is_ro, .mapped = cc.create(T.MappedProp, .{ .key = key0, .owner = tt, .required = dd.question_mod == .minus and source != null and source.?.optional }), .decl = if (source) |sp| sp.decl else null });
                     mm.props.put(cc.a, nm, p) catch oom();
                 } else if (key.data == .string or key.data == .number or key.data == .symbol or key.data == .tmpl and !key.vars) {
                     const mapper = compose(cc, tt.data.obj.mapper, arrayMapper(cc, cc.dupe(*Type, &.{kp}), cc.dupe(*Type, &.{key})));
@@ -2584,9 +2584,9 @@ fn mappedPropType(c: *Checker, owner: *Type, p: *Prop) *Type {
     const n = o.node.?;
     const d = n.data.mapped_type;
     const kp = mappedParam(c, n);
-    const m = compose(c, o.mapper, arrayMapper(c, c.dupe(*Type, &.{kp}), c.dupe(*Type, &.{p.mapped_key.?})));
+    const m = compose(c, o.mapper, arrayMapper(c, c.dupe(*Type, &.{kp}), c.dupe(*Type, &.{p.mapped.?.key})));
     var t = if (d.type) |x| instantiate(c, typeFromNode(c, x), m) else c.t_any;
-    if (p.mapped_required) t = relate.removeDefinitelyUndefined(c, t) else if (p.optional) t = addOptional(c, t);
+    if (p.mapped.?.required) t = relate.removeDefinitelyUndefined(c, t) else if (p.optional) t = addOptional(c, t);
     return t;
 }
 
@@ -2665,7 +2665,7 @@ pub fn numNameAlloc(a: Allocator, v: f64) []const u8 {
 
 /// `{ '1': x }` has a string key and `{ 1: x }` a numeric one; the name alone cannot tell.
 fn propKey(c: *Checker, p: *Prop) *Type {
-    if (p.mapped_key) |k| return k;
+    if (p.mapped) |x| return x.key;
     if (p.decl) |n| {
         const name: ?*Node = switch (n.data) {
             .property_decl => |x| x.name,

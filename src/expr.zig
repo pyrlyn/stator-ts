@@ -3284,7 +3284,6 @@ fn spreadInto(c: *Checker, m: *T.Members, s: *Type, partial: bool, is_const: boo
         q.ty = v;
         q.readonly = is_const;
         q.origin = null;
-        q.mapped_owner = null;
         m.props.put(c.a, p.name, q) catch oom();
     }
     return m;

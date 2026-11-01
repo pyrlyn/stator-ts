@@ -175,6 +175,13 @@ pub const Cond = struct {
     default_constraint: ?*Type = null,
 };
 
+pub const MappedProp = struct {
+    key: *Type,
+    owner: *Type,
+    /// `-?` takes `undefined` off only the properties that had the `?`.
+    required: bool,
+};
+
 pub const Prop = struct {
     name: []const u8,
     sym: ?*Symbol = null,
@@ -189,15 +196,10 @@ pub const Prop = struct {
     static: bool = false,
     decl: ?*Node = null,
     /// Lazily computed members of a mapped type carry their key here.
-    mapped_key: ?*Type = null,
-    mapped_owner: ?*Type = null,
-    /// `-?` takes `undefined` off only the properties that had the `?`.
-    mapped_required: bool = false,
+    mapped: ?*const MappedProp = null,
     owner: ?*Type = null,
     /// The uninstantiated property, for ones with no symbol of their own to go back to.
     origin: ?*Prop = null,
-    /// Union property that some constituents lack; only readable through narrowing.
-    partial: bool = false,
 };
 
 pub const Index = struct { key: *Type, ty: *Type, readonly: bool = false, decl: ?*Node = null };
