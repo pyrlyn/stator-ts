@@ -3586,7 +3586,8 @@ fn condResolve(c: *Checker, root: *T.Cond, mapper: ?*Mapper, for_constraint: boo
     const check = instantiate(c, root.check, mapper);
     const extends = instantiate(c, root.extends, mapper);
     if (check == c.t_err or extends == c.t_err) return c.t_err;
-    const check_deferred = isGeneric(c, check) or hasGenericTuple(c, check);
+    const tuples = writtenAsTuples(root.node);
+    const check_deferred = isGeneric(c, check) or hasGenericTuple(c, check) or (tuples and hasGenericElem(c, check));
     var combined = mapper;
     if (root.infer_params.len > 0) {
         const ctx = relate.newInferCtx(c, root.infer_params, 0);
@@ -3595,7 +3596,7 @@ fn condResolve(c: *Checker, root: *T.Cond, mapper: ?*Mapper, for_constraint: boo
         combined = compose(c, mapper, ctx.mapper);
     }
     const inferred_ext = if (root.infer_params.len > 0) instantiate(c, root.extends, combined) else extends;
-    if (check_deferred or isGeneric(c, inferred_ext)) return deferredCond(c, root, mapper);
+    if (check_deferred or isGeneric(c, inferred_ext) or (tuples and hasGenericElem(c, inferred_ext))) return deferredCond(c, root, mapper);
     if (check.data == .any or check == c.t_unresolved) {
         return c.getUnion(&.{ instantiate(c, condThen(c, root), combined), instantiate(c, condEls(c, root), mapper) });
     }
@@ -3614,6 +3615,31 @@ fn condResolve(c: *Checker, root: *T.Cond, mapper: ?*Mapper, for_constraint: boo
 fn someAssignable(c: *Checker, t: *Type, target: *Type) bool {
     if (t.data != .union_) return relate.isAssignable(c, t, target);
     for (t.data.union_) |x| if (relate.isAssignable(c, x, target)) return true;
+    return false;
+}
+
+/// `[T] extends [U]` written out compares element by element, so it waits for its elements as
+/// `T extends U` waits for `T`.
+fn writtenAsTuples(n: *Node) bool {
+    if (n.data != .conditional_type) return false;
+    const x = n.data.conditional_type;
+    if (x.check.data != .tuple_type or x.extends.data != .tuple_type) return false;
+    const l = x.check.data.tuple_type.elems;
+    return l.len > 0 and l.len == x.extends.data.tuple_type.elems.len and allPlainElems(l) and allPlainElems(x.extends.data.tuple_type.elems);
+}
+
+fn allPlainElems(elems: []*Node) bool {
+    for (elems) |e| switch (e.data) {
+        .optional_type, .rest_type => return false,
+        .named_tuple_member => |m| if (m.question or m.dotdotdot) return false,
+        else => {},
+    };
+    return true;
+}
+
+fn hasGenericElem(c: *Checker, t: *Type) bool {
+    if (!T.isTupleType(t)) return false;
+    for (t.data.obj.tuple.elems) |e| if (isGeneric(c, e)) return true;
     return false;
 }
 
