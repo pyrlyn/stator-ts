@@ -2988,10 +2988,14 @@ const Parser = struct {
         const s = p.lx.start;
         p.next();
         var list: NodeList = .empty;
+        // The brackets delimit the elements, so a conditional is unambiguous here even inside `extends`.
+        const save_cond = p.no_cond_type;
+        p.no_cond_type = false;
         while (p.t() != .r_bracket and p.t() != .eof) {
             p.push(&list, p.parseTupleElement());
             if (!p.eat(.comma)) break;
         }
+        p.no_cond_type = save_cond;
         p.expect(.r_bracket);
         return p.mk(s, .{ .tuple_type = .{ .elems = list.items } });
     }
