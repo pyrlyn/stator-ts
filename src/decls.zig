@@ -1161,7 +1161,7 @@ pub fn fillArgs(c: *Checker, out: []*Type, params: []*Type, targs: []*Node) void
 /// Waits until declarations are done: `class A extends B<A>` reaches this while resolving
 /// `A`'s bases, and relating `A` to a constraint then would see a class with no members.
 fn checkConstraints(c: *Checker, nodes: []*Node, params: []*Type, args: []*Type) void {
-    if (c.silent == 0) c.pending_constraints.append(c.a, .{ .nodes = nodes, .params = params, .args = args }) catch oom();
+    if (!expr.quiet(c)) c.pending_constraints.append(c.a, .{ .nodes = nodes, .params = params, .args = args }) catch oom();
 }
 
 pub fn verifyConstraints(c: *Checker, p: T.PendingConstraint) void {
@@ -1569,7 +1569,7 @@ pub fn typeOfSymbol(c: *Checker, s0: *Symbol) *Type {
         c.sym_types.put(c.a, s, out) catch oom();
         return out;
     }
-    if (c.sym_resolving.contains(s)) return c.t_err;
+    if (c.sym_resolving.contains(s)) return c.metCycle();
     c.sym_resolving.put(c.a, s, {}) catch oom();
     // What a symbol is does not depend on the pass over a call that first asks.
     const skip = c.skip_sensitive;
@@ -1968,7 +1968,7 @@ pub fn unionOfReturns(c: *Checker, sigs: []*Sig) *Sig {
 pub fn returnOf(c: *Checker, s: *Sig) *Type {
     if (s.ret) |t| return t;
     if (s.composite.len > 0) {
-        if (s.ret_resolving) return c.t_err;
+        if (s.ret_resolving) return c.metCycle();
         s.ret_resolving = true;
         defer s.ret_resolving = false;
         var rets = c.newList(*Type);
@@ -1978,7 +1978,7 @@ pub fn returnOf(c: *Checker, s: *Sig) *Type {
         return t;
     }
     if (s.target) |x| {
-        if (s.ret_resolving) return c.t_err;
+        if (s.ret_resolving) return c.metCycle();
         s.ret_resolving = true;
         defer s.ret_resolving = false;
         const t = instantiate(c, returnOf(c, x), s.mapper);
@@ -1988,7 +1988,7 @@ pub fn returnOf(c: *Checker, s: *Sig) *Type {
     const d = s.decl orelse return c.t_any;
     if (d.data != .func) return c.t_any;
     const f = d.data.func;
-    if (s.ret_resolving) return c.t_err;
+    if (s.ret_resolving) return c.metCycle();
     s.ret_resolving = true;
     defer s.ret_resolving = false;
     var t: *Type = undefined;

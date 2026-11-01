@@ -38,6 +38,12 @@ So stator-ts uses the least memory of all of them: 14% below tsrs `--fast`, 3.2 
 
 The load peaks at 1.10 GB of RSS and sixteen workers add about 1.1 GB. `-j 1` takes 1.72 GB of footprint and 17.76 s. T12 left a single checker at 8.7 GB, and T13 took 9.8 GB down to 2.2 GB through short-lived checkers and lazy function bodies.
 
+### T15
+
+After T15, alternating with tsrs under a load average of 8 to 14, so not a quiet machine: `-j 16` 1.61-2.09 s, median 1.68 s, 155-157 G instructions, 2.43-2.56 GB; tsrs `--fast` 1.33-2.22 s, median 1.71 s, 111-113 G, 2.71-2.74 GB. `-j 1` 14.26-14.35 s, 131.9 G, 48.6 G cycles; tsrs `--singleThreaded --fast` 11.89-12.17 s, 99.9 G, 42.6 G cycles. T13 was 18.72 s and 188.6 G at `-j 1`, 215 G at `-j 16`. The numbers and how they were got are in `plan/T15/done.md`; the tables above and below are from T13.
+
+What is left is spread evenly over `openat`, `relate.cached`, property lookup, the lexer and the arena. At `-j 16` the extra is checkers repeating each other, 156 G against 132 G, and file reads, which stop scaling at 4 threads and about 300 ms on this machine.
+
 ### tsrs
 
 Facts about tsrs's design come from https://github.com/oxc-project/tsrs at commit e18fb617ee516917342dcda27063ab67acc79e49, checked 2026-11-01; paths are from that tree. Numbers marked "here" were measured on this machine with the builds in the table above.

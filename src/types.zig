@@ -422,7 +422,19 @@ pub const Checker = struct {
     alias_params: IdMap(*Symbol, []*Type) = .empty,
     apparent_cache: IdMap(*Type, *Type) = .empty,
     resolved_calls: IdMap(*Node, *Sig) = .empty,
-    call_results: IdMap(*Node, *Type) = .empty,
+    call_results: IdMap(*Node, CallAnswer) = .empty,
+    /// Initializers read for a declaration's type that its own turn need not visit again, with the
+    /// lambdas that turn still has to queue.
+    settled_inits: IdMap(*Node, []*Node) = .empty,
+    /// Counts what quiet visits left undone: errors held back and work only the open visit does.
+    /// A visit that left it alone can stand for the visit in the open.
+    quiet_debt: u32 = 0,
+    /// Lambdas quiet visits met, whose bodies the visit in the open would queue.
+    quiet_funcs: std.ArrayList(*Node) = .empty,
+    /// References settled for this run: their type, with nothing left to report.
+    ref_answers: IdMap(*Node, *Type) = .empty,
+    /// Counts the cycles and depth limits met. What a visit got past one is a stand-in, not its answer.
+    cycles: u32 = 0,
     name_syms: IdMap(*Node, ?*Symbol) = .empty,
     const_keys: IdMap(*Node, ?[]const u8) = .empty,
     binding_busy: IdMap(*Node, void) = .empty,
@@ -501,6 +513,7 @@ pub const Checker = struct {
     sensitive_args: IdMap(*Node, bool) = .empty,
 
     pub const CtxEntry = struct { node: *Node, ty: ?*Type, ctx: ?*InferCtx };
+    pub const CallAnswer = struct { ty: *Type, sig: ?*Sig, settled: bool };
     pub const FlowKey = struct { flow: *binder.FlowNode, ref: u64, declared: u32 };
     pub const ActiveLoop = struct { ty: *Type, depth: u32 };
     pub const Provisional = struct { ty: *Type, touched: u32 };
@@ -969,6 +982,11 @@ pub const Checker = struct {
 
     pub fn key2(l: u32, r: u32) u64 {
         return (@as(u64, l) << 32) | r;
+    }
+
+    pub fn metCycle(c: *Checker) *Type {
+        c.cycles += 1;
+        return c.t_err;
     }
 
     pub fn internRef(c: *Checker, target: *Type, args: []*Type, this_arg: ?*Type) *Type {

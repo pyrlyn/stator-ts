@@ -145,16 +145,15 @@ pub fn matchingRef(c: *Checker, r0: *Node, n0: *Node) bool {
     const n = strip(n0);
     switch (n.data) {
         .identifier => {
-            if (r.data != .identifier) return false;
-            return expr.symbolOf(c, r) == expr.symbolOf(c, n) and expr.symbolOf(c, r) != null;
+            // Every step of a walk lands here: the names rule out nearly all of them without a lookup.
+            if (r.data != .identifier or !std.mem.eql(u8, r.data.identifier, n.data.identifier)) return false;
+            const s = expr.symbolOf(c, r) orelse return false;
+            return s == expr.symbolOf(c, n);
         },
-        .var_decl => {
-            if (r.data != .identifier) return false;
-            return expr.symbolOf(c, r) == n.symbol and n.symbol != null;
-        },
-        .binding_elem => {
-            if (r.data != .identifier) return false;
-            return expr.symbolOf(c, r) == n.symbol and n.symbol != null;
+        .var_decl, .binding_elem => {
+            const s = n.symbol orelse return false;
+            if (r.data != .identifier or !std.mem.eql(u8, r.data.identifier, s.name)) return false;
+            return expr.symbolOf(c, r) == s;
         },
         .this_expr => return r.data == .this_expr,
         .super_expr => return r.data == .super_expr,
@@ -1361,7 +1360,10 @@ fn mayHaveProp(c: *Checker, t: *Type, name: []const u8, assume: bool) bool {
 /// `container` stops the walk at the function whose own flow the reference belongs to.
 pub fn flowType(c: *Checker, ref: *Node, declared: *Type, initial: *Type, container: ?*Node) *Type {
     const flow = ref.flow orelse return declared;
-    if (c.flow_depth > 120) return declared;
+    if (c.flow_depth > 120) {
+        _ = c.metCycle();
+        return declared;
+    }
     c.flow_depth += 1;
     defer c.flow_depth -= 1;
     const r = walk(c, ref, declared, initial, container, flow);
@@ -1374,7 +1376,10 @@ pub fn flowType(c: *Checker, ref: *Node, declared: *Type, initial: *Type, contai
 
 /// Narrows `ref` as if it occurred at `at`, for references that have no flow node of their own.
 pub fn flowAt(c: *Checker, ref: *Node, at: *FlowNode, declared: *Type) *Type {
-    if (c.flow_depth > 120) return declared;
+    if (c.flow_depth > 120) {
+        _ = c.metCycle();
+        return declared;
+    }
     c.flow_depth += 1;
     defer c.flow_depth -= 1;
     const r = walk(c, ref, declared, declared, null, at);
