@@ -42,8 +42,8 @@ const P = struct {
 
     fn isArrow(p: *P, t: *Type) bool {
         if (t.data != .obj or t.data.obj.kind != .anon) return false;
-        const m = d.membersOf(p.c, t);
-        return m.calls.len == 1 and m.props.count() == 0 and m.indexes.len == 0 and m.ctors.len == 0;
+        const m = d.shallowMembers(p.c, t);
+        return m.calls.len == 1 and m.indexes.len == 0 and m.ctors.len == 0 and d.hasNoProps(p.c, t);
     }
 
     fn quoted(p: *P, v: []const u8) void {

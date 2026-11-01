@@ -297,18 +297,102 @@ pub const Data = union(enum) {
 
 pub const Kind = std.meta.Tag(Data);
 
+/// For the few nodes that need more than one of what `Node` keeps in its link, functions mostly.
+const LinkExtra = struct {
+    symbol: ?*binder.Symbol = null,
+    flow: ?*binder.FlowNode = null,
+    locals: ?*binder.SymbolTable = null,
+};
+
+const LinkTag = enum(u3) { none, symbol, flow, locals, extra };
+
+/// A declaration has a symbol, a reference has a flow and a scope has locals, so of VS Code's five
+/// million nodes under a tenth of a percent want two of them. One 48-bit pointer with a tag takes
+/// a node from 80 bytes to 56, and the bytes it leaves over hold `mods`.
 pub const Node = struct {
     start: u32,
     end: u32,
-    mods: Mods = .{},
     parent: ?*Node = null,
-    symbol: ?*binder.Symbol = null,
-    locals: ?*binder.SymbolTable = null,
-    flow: ?*binder.FlowNode = null,
+    link_low: u32 = 0,
+    link_high: u16 = 0,
+    mods: Mods = .{},
     data: Data,
 
     pub fn kind(n: *const Node) Kind {
         return std.meta.activeTag(n.data);
+    }
+
+    fn link(n: *const Node) usize {
+        return @as(usize, n.link_high) << 32 | n.link_low;
+    }
+
+    fn setLink(n: *Node, v: usize) void {
+        n.link_low = @truncate(v);
+        n.link_high = @intCast(v >> 32);
+    }
+
+    fn linkTag(v: usize) LinkTag {
+        return @enumFromInt(@as(u3, @truncate(v)));
+    }
+
+    fn extra(v: usize) *LinkExtra {
+        return @ptrFromInt(v & ~@as(usize, 7));
+    }
+
+    fn get(n: *const Node, comptime field: LinkTag) @FieldType(LinkExtra, @tagName(field)) {
+        const v = n.link();
+        const tag = linkTag(v);
+        if (tag == field) return @ptrFromInt(v & ~@as(usize, 7));
+        return if (tag == .extra) @field(extra(v), @tagName(field)) else null;
+    }
+
+    fn put(n: *Node, a: std.mem.Allocator, comptime field: LinkTag, x: @FieldType(LinkExtra, @tagName(field))) void {
+        const v = n.link();
+        const tag = linkTag(v);
+        const bits = if (x) |p| @intFromPtr(p) | @intFromEnum(field) else 0;
+        if (tag == .none or tag == field) return n.setLink(bits);
+        if (bits == 0 and tag != .extra) return;
+        if (tag != .extra) {
+            const e = a.create(LinkExtra) catch @panic("out of memory");
+            e.* = .{};
+            switch (tag) {
+                inline .symbol, .flow, .locals => |t| @field(e, @tagName(t)) = @ptrFromInt(v & ~@as(usize, 7)),
+                else => unreachable,
+            }
+            n.setLink(@intFromPtr(e) | @intFromEnum(LinkTag.extra));
+        }
+        @field(extra(n.link()), @tagName(field)) = x;
+    }
+
+    pub fn symbol(n: *const Node) ?*binder.Symbol {
+        return n.get(.symbol);
+    }
+
+    pub fn flow(n: *const Node) ?*binder.FlowNode {
+        return n.get(.flow);
+    }
+
+    pub fn locals(n: *const Node) ?*binder.SymbolTable {
+        return n.get(.locals);
+    }
+
+    pub fn setSymbol(n: *Node, a: std.mem.Allocator, s: ?*binder.Symbol) void {
+        n.put(a, .symbol, s);
+    }
+
+    pub fn setFlow(n: *Node, a: std.mem.Allocator, f: ?*binder.FlowNode) void {
+        n.put(a, .flow, f);
+    }
+
+    pub fn setLocals(n: *Node, a: std.mem.Allocator, t: ?*binder.SymbolTable) void {
+        n.put(a, .locals, t);
+    }
+
+    /// A node the checker makes for itself, which is read like a reference at `f`.
+    pub fn atFlow(f: *binder.FlowNode, start: u32, end: u32, parent: *Node, data: Data) Node {
+        var n: Node = .{ .start = start, .end = end, .parent = parent, .data = data };
+        n.setLink(@intFromPtr(f) | @intFromEnum(LinkTag.flow));
+        return n;
     }
 
     pub fn func(n: *const Node) ?*Func {

@@ -204,11 +204,20 @@ pub const Prop = struct {
 
 pub const Index = struct { key: *Type, ty: *Type, readonly: bool = false, decl: ?*Node = null };
 
+/// Where the properties of a type come from until someone wants all of them. Most instantiations
+/// of `Array` or of a DOM interface are asked for a member or two out of hundreds.
+pub const LazyProps = union(enum) {
+    declared: struct { owner: *Type, mapper: ?*Mapper, bases: []*Type },
+    instance: struct { root: *Type, mapper: ?*Mapper },
+};
+
 pub const Members = struct {
+    /// Holds only what was looked up while `lazy` is set.
     props: PropTable = .empty,
     calls: []*Sig = &.{},
     ctors: []*Sig = &.{},
     indexes: []Index = &.{},
+    lazy: ?*const LazyProps = null,
 };
 
 pub const SigParam = struct {
@@ -564,6 +573,16 @@ pub const Checker = struct {
         c.t_typeof = c.getUnion(&.{ c.strLit("string"), c.strLit("number"), c.strLit("bigint"), c.strLit("boolean"), c.strLit("symbol"), c.strLit("undefined"), c.strLit("object"), c.strLit("function") });
         c.t_pending_fn = c.newObj(.{ .kind = .anon, .members = c.emptyMembers(), .open = true, .non_inferrable = true });
         return c;
+    }
+
+    /// These hold a dozen or so entries per KB of source in a run. Growing to that by doubling rehashes
+    /// everything each time, which for the interned tables means reading every key from its slice.
+    pub fn reserveFor(c: *Checker, source_bytes: usize) void {
+        const entries: u32 = @intCast(source_bytes / 80);
+        c.interned.ensureTotalCapacity(c.a, entries) catch oom();
+        c.node_types.ensureTotalCapacity(c.a, entries) catch oom();
+        c.sym_types.ensureTotalCapacity(c.a, entries) catch oom();
+        c.relation_cache[@intFromEnum(Relation.assignable)].ensureTotalCapacity(c.a, entries) catch oom();
     }
 
     pub fn create(c: *Checker, comptime T: type, v: T) *T {
@@ -1116,15 +1135,15 @@ pub const Checker = struct {
     pub fn collectExports(c: *Checker, m: *Symbol, out: *std.ArrayList(*Symbol), seen: *std.StringHashMapUnmanaged(void), depth: u32) void {
         if (depth > 32) return;
         if (m.exports) |tbl| {
-            var it = tbl.map.iterator();
+            var it = tbl.map.keyIterator();
             while (it.next()) |e| {
-                const gop = seen.getOrPut(c.a, e.key_ptr.*) catch oom();
+                const gop = seen.getOrPut(c.a, e.*.name) catch oom();
                 if (gop.found_existing) continue;
-                out.append(c.a, e.value_ptr.*.resolve()) catch oom();
+                out.append(c.a, e.*.resolve()) catch oom();
             }
         }
         const sf = c.prog.sourceOf(m.file) orelse return;
-        for (m.stars) |star| {
+        for (m.stars()) |star| {
             const spec = star.data.export_decl.specifier orelse continue;
             if (spec.data != .string_lit) continue;
             const t = c.prog.resolveModuleName(sf, spec.data.string_lit) orelse continue;

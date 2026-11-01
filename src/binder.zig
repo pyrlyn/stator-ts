@@ -76,16 +76,41 @@ pub const Symbol = struct {
     /// Set when a merge folded this symbol into another; lookups must follow it.
     merged: ?*Symbol = null,
     file: ?*ast.File = null,
-    /// `export *` declarations of a module; `declare module "x"` bodies have their own.
-    stars: []*Node = &.{},
-    /// Members named by `[KEY]`: only the checker can tell what name a constant holds.
-    late_members: []*Symbol = &.{},
-    late_statics: []*Symbol = &.{},
+    rare: ?*RareParts = null,
+
+    /// Next to none of a million symbols have these, and the rest would pay 48 bytes each.
+    pub const RareParts = struct {
+        /// `export *` declarations of a module; `declare module "x"` bodies have their own.
+        stars: []*Node = &.{},
+        /// Members named by `[KEY]`: only the checker can tell what name a constant holds.
+        late_members: []*Symbol = &.{},
+        late_statics: []*Symbol = &.{},
+    };
 
     pub fn resolve(s: *Symbol) *Symbol {
         var c = s;
         while (c.merged) |m| c = m;
         return c;
+    }
+
+    pub fn stars(s: *const Symbol) []*Node {
+        return if (s.rare) |r| r.stars else &.{};
+    }
+
+    pub fn lateMembers(s: *const Symbol) []*Symbol {
+        return if (s.rare) |r| r.late_members else &.{};
+    }
+
+    pub fn lateStatics(s: *const Symbol) []*Symbol {
+        return if (s.rare) |r| r.late_statics else &.{};
+    }
+
+    pub fn rareParts(s: *Symbol, a: Allocator) *RareParts {
+        if (s.rare) |r| return r;
+        const r = a.create(RareParts) catch oom();
+        r.* = .{};
+        s.rare = r;
+        return r;
     }
 };
 
@@ -112,11 +137,80 @@ pub const NameContext = struct {
     }
 };
 
+/// Holding only the symbol, whose name is the key, keeps a table to a third of the size, and the
+/// tables of a large project run to hundreds of megabytes. A symbol known by another name here sits
+/// behind a stand-in of that name.
 pub const SymbolTable = struct {
-    map: std.HashMapUnmanaged([]const u8, *Symbol, NameContext, 80) = .empty,
+    map: std.HashMapUnmanaged(*Symbol, void, SymbolContext, 80) = .empty,
+
+    /// The entry as it stands, which may be a stand-in or a symbol since merged.
+    pub fn raw(t: *const SymbolTable, name: []const u8) ?*Symbol {
+        return t.map.getKeyAdapted(HashedName.of(name), HashedContext{});
+    }
 
     pub fn get(t: *const SymbolTable, name: []const u8) ?*Symbol {
-        return if (t.map.get(name)) |s| s.resolve() else null;
+        return t.getHashed(HashedName.of(name));
+    }
+
+    pub fn getHashed(t: *const SymbolTable, name: HashedName) ?*Symbol {
+        return if (t.map.getKeyAdapted(name, HashedContext{})) |s| s.resolve() else null;
+    }
+
+    pub fn contains(t: *const SymbolTable, name: []const u8) bool {
+        return t.raw(name) != null;
+    }
+
+    /// A new slot's key must be set to a symbol of this name before the table is used again.
+    pub fn slot(t: *SymbolTable, a: Allocator, name: []const u8) Slot {
+        const gop = t.map.getOrPutAdapted(a, HashedName.of(name), HashedContext{}) catch oom();
+        return .{ .symbol = gop.key_ptr, .found_existing = gop.found_existing };
+    }
+
+    pub fn put(t: *SymbolTable, a: Allocator, name: []const u8, s: *Symbol) void {
+        var entry = s;
+        if (!std.mem.eql(u8, s.name, name)) {
+            entry = a.create(Symbol) catch oom();
+            entry.* = s.*;
+            entry.name = name;
+            entry.merged = s;
+        }
+        t.slot(a, name).symbol.* = entry;
+    }
+
+    pub fn remove(t: *SymbolTable, name: []const u8) void {
+        _ = t.map.removeAdapted(HashedName.of(name), HashedContext{});
+    }
+
+    pub const Slot = struct { symbol: **Symbol, found_existing: bool };
+};
+
+const SymbolContext = struct {
+    pub fn hash(_: SymbolContext, s: *Symbol) u64 {
+        return NameContext.hashOf(s.name);
+    }
+
+    pub fn eql(_: SymbolContext, l: *Symbol, r: *Symbol) bool {
+        return l == r;
+    }
+};
+
+/// A name asked of every scope on the way out needs hashing only once.
+pub const HashedName = struct {
+    name: []const u8,
+    hash: u64,
+
+    pub fn of(name: []const u8) HashedName {
+        return .{ .name = name, .hash = NameContext.hashOf(name) };
+    }
+};
+
+const HashedContext = struct {
+    pub fn hash(_: HashedContext, k: HashedName) u64 {
+        return k.hash;
+    }
+
+    pub fn eql(_: HashedContext, k: HashedName, s: *Symbol) bool {
+        return std.mem.eql(u8, k.name, s.name);
     }
 };
 
@@ -199,23 +293,23 @@ pub const Binder = struct {
         if (n == b.frozen) {
             if (b.frozen_locals == null) {
                 b.frozen_locals = b.table();
-                if (n.locals) |l| b.frozen_locals.?.map = l.map.clone(b.a) catch oom();
+                if (n.locals()) |l| b.frozen_locals.?.map = l.map.clone(b.a) catch oom();
             }
             return b.frozen_locals.?;
         }
-        if (n.locals == null) n.locals = b.table();
-        return n.locals.?;
+        if (n.locals() == null) n.setLocals(b.a, b.table());
+        return n.locals().?;
     }
 
     fn scopeOf(b: *const Binder, n: *Node) ?*SymbolTable {
-        return if (n == b.frozen and b.frozen_locals != null) b.frozen_locals else n.locals;
+        return if (n == b.frozen and b.frozen_locals != null) b.frozen_locals else n.locals();
     }
 
     /// `var x` can join the parameter `x`, whose symbol is in the frozen tree.
     fn writable(b: *Binder, slot: **Symbol) *Symbol {
-        const s = slot.*;
-        const shared = (b.frozen orelse return s).locals orelse return s;
-        if (shared.map.get(s.name) != s) return s;
+        const s = slot.*.resolve();
+        const shared = (b.frozen orelse return s).locals() orelse return s;
+        if (shared.raw(s.name) != s) return s;
         const own = b.a.create(Symbol) catch oom();
         own.* = s.*;
         // `append` writes in place below the next power of two.
@@ -230,13 +324,13 @@ pub const Binder = struct {
         s.flags |= flags;
         s.decls = append(b.a, s.decls, n);
         if (flags & F.value != 0 and (s.value_decl == null or (s.value_decl.?.data != .class and n.data == .class))) s.value_decl = n;
-        if (n.symbol == null) n.symbol = s;
+        if (n.symbol() == null) n.setSymbol(b.a, s);
     }
 
     fn declare(b: *Binder, t: *SymbolTable, parent: ?*Symbol, n: *Node, name: []const u8, flags: u32, excludes: u32, err_node: ?*Node) *Symbol {
-        const gop = t.map.getOrPut(b.a, name) catch oom();
-        if (gop.found_existing) {
-            const s = b.writable(gop.value_ptr);
+        const entry = t.slot(b.a, name);
+        if (entry.found_existing) {
+            const s = b.writable(entry.symbol);
             if (s.flags & excludes == 0 or (flags & F.variable != 0 and s.flags & F.assignment != 0)) {
                 b.addDecl(s, n, flags);
                 return s;
@@ -246,12 +340,12 @@ pub const Binder = struct {
             const fresh = b.mkSym(name, flags);
             fresh.parent = parent;
             b.addDecl(fresh, n, flags);
-            n.symbol = fresh;
+            n.setSymbol(b.a, fresh);
             return fresh;
         }
         const s = b.mkSym(name, 0);
         s.parent = parent;
-        gop.value_ptr.* = s;
+        entry.symbol.* = s;
         b.addDecl(s, n, flags);
         return s;
     }
@@ -290,7 +384,7 @@ pub const Binder = struct {
     fn moduleScope(b: *Binder) ?*Symbol {
         const c = b.container;
         if (c.data == .source_file) return if (b.file.is_module) b.fileSym() else null;
-        if (c.data == .module_decl) return c.symbol;
+        if (c.data == .module_decl) return c.symbol();
         return null;
     }
 
@@ -303,18 +397,18 @@ pub const Binder = struct {
             const s = b.declare(ms.?.exports.?, ms, n, exported_name, flags, excludes, err_node);
             if (mods.default and name.len > 0) {
                 const lt = b.localsOf(b.container);
-                lt.map.put(b.a, name, s) catch oom();
+                lt.put(b.a, name, s);
             } else if (b.container.data == .source_file) {
                 const lt = b.localsOf(b.container);
                 // `interface X` beside `export const X` is not exported, and name lookup reaches the export past it.
                 const beside = if (lt.get(name)) |old| old != s and old.flags & (excludes | F.alias) == 0 else false;
-                if (!beside) lt.map.put(b.a, name, s) catch oom();
+                if (!beside) lt.put(b.a, name, s);
             }
             return s;
         }
         const lt = b.localsOf(b.container);
         if (ms) |m| if (b.container.data == .source_file and flags & F.alias == 0) if (m.exports) |e| if (e.get(name)) |x| {
-            if (x.flags & excludes == 0 and lt.get(name) == x) _ = lt.map.remove(name);
+            if (x.flags & excludes == 0 and lt.get(name) == x) lt.remove(name);
         };
         return b.declare(lt, null, n, name, flags, excludes, err_node);
     }
@@ -480,10 +574,11 @@ pub const Binder = struct {
             const s = b.mkSym("__computed", 0);
             s.parent = sym;
             b.addDecl(s, n, flags);
+            const rare = sym.rareParts(b.a);
             if (static) {
-                sym.late_statics = append(b.a, sym.late_statics, s);
+                rare.late_statics = append(b.a, rare.late_statics, s);
             } else {
-                sym.late_members = append(b.a, sym.late_members, s);
+                rare.late_members = append(b.a, rare.late_members, s);
             }
             return null;
         };
@@ -517,17 +612,17 @@ pub const Binder = struct {
         const name = if (n.data.func.name) |x| b.propName(x) else null;
         if (name) |nm| for (n.parent.?.data.object_lit.props) |p| {
             if (p == n) break;
-            const s = p.symbol orelse continue;
+            const s = p.symbol() orelse continue;
             if (p.data != .func or s.flags & (F.getter | F.setter) == 0 or !std.mem.eql(u8, s.name, nm)) continue;
             s.flags |= flag;
             b.addDecl(s, n, 0);
-            n.symbol = s;
+            n.setSymbol(b.a, s);
             return;
         };
         const s = b.mkSym(name orelse "__computed", flag);
         b.addDecl(s, n, 0);
         s.value_decl = n;
-        n.symbol = s;
+        n.setSymbol(b.a, s);
     }
 
     fn bindFunc(b: *Binder, n: *Node) void {
@@ -542,33 +637,33 @@ pub const Binder = struct {
             .expr => if (f.name) |x| {
                 _ = b.declare(b.localsOf(n), null, n, x.data.identifier, F.function, F.none, null);
             },
-            .method, .method_sig => if (owner != null and owner.?.symbol != null and f.name != null) {
+            .method, .method_sig => if (owner != null and owner.?.symbol() != null and f.name != null) {
                 const opt: u32 = if (f.question) F.optional else 0;
-                _ = b.declareMember(owner.?.symbol.?, n.mods.static, n, f.name.?, F.method | opt, F.method_ex & ~F.optional);
+                _ = b.declareMember(owner.?.symbol().?, n.mods.static, n, f.name.?, F.method | opt, F.method_ex & ~F.optional);
             } else if (owner != null and owner.?.data == .object_lit) {
-                n.symbol = b.mkSym(if (f.name) |x| b.propName(x) orelse "__computed" else "__computed", F.method);
-                n.symbol.?.value_decl = n;
+                n.setSymbol(b.a, b.mkSym(if (f.name) |x| b.propName(x) orelse "__computed" else "__computed", F.method));
+                n.symbol().?.value_decl = n;
             },
-            .getter, .getter_sig => if (owner != null and owner.?.symbol != null and f.name != null) {
-                _ = b.declareMember(owner.?.symbol.?, n.mods.static, n, f.name.?, F.getter, F.getter_ex);
+            .getter, .getter_sig => if (owner != null and owner.?.symbol() != null and f.name != null) {
+                _ = b.declareMember(owner.?.symbol().?, n.mods.static, n, f.name.?, F.getter, F.getter_ex);
             } else if (owner != null and owner.?.data == .object_lit) b.literalAccessor(n, F.getter),
-            .setter, .setter_sig => if (owner != null and owner.?.symbol != null and f.name != null) {
-                _ = b.declareMember(owner.?.symbol.?, n.mods.static, n, f.name.?, F.setter, F.setter_ex);
+            .setter, .setter_sig => if (owner != null and owner.?.symbol() != null and f.name != null) {
+                _ = b.declareMember(owner.?.symbol().?, n.mods.static, n, f.name.?, F.setter, F.setter_ex);
             } else if (owner != null and owner.?.data == .object_lit) b.literalAccessor(n, F.setter),
-            .ctor => if (owner != null and owner.?.symbol != null) {
-                const s = owner.?.symbol.?;
+            .ctor => if (owner != null and owner.?.symbol() != null) {
+                const s = owner.?.symbol().?;
                 if (s.members == null) s.members = b.table();
                 _ = b.declare(s.members.?, s, n, "__constructor", F.constructor, F.none, null);
             },
-            .call_sig, .construct_sig => if (owner != null and owner.?.symbol != null) {
-                const s = owner.?.symbol.?;
+            .call_sig, .construct_sig => if (owner != null and owner.?.symbol() != null) {
+                const s = owner.?.symbol().?;
                 if (s.members == null) s.members = b.table();
                 _ = b.declare(s.members.?, s, n, if (f.kind == .call_sig) "__call" else "__new", F.signature, F.none, null);
             },
             .function_type, .constructor_type, .arrow => {
                 const s = b.mkSym(if (f.kind == .arrow) "__function" else "__type", if (f.kind == .arrow) F.function else F.type_literal);
                 b.addDecl(s, n, 0);
-                n.symbol = s;
+                n.setSymbol(b.a, s);
             },
         }
         if (f.name) |x| b.bindComputed(x);
@@ -577,7 +672,7 @@ pub const Binder = struct {
         const save = .{ b.container, b.block, b.flow, b.brk, b.cont, b.ret, b.labels, b.exc };
         b.exc = null;
         const start_node: ?*Node = if (f.kind == .arrow or f.kind == .expr or f.kind == .method or f.kind == .getter or f.kind == .setter) n else null;
-        if (start_node != null) n.flow = b.flow;
+        if (start_node != null) n.setFlow(b.a, b.flow);
         // Run on the spot, the body is part of the code around it and a `return` lands after the call.
         const in_place = calledOnTheSpot(n) and !n.mods.async and !f.asterisk;
         b.container = n;
@@ -600,7 +695,7 @@ pub const Binder = struct {
         };
         if (f.body) |body| {
             if (body.data == .lazy_body) {
-                body.flow = b.flow;
+                body.setFlow(b.a, b.flow);
                 for (body.data.lazy_body.specs) |s| b.moduleSpec(s);
             } else {
                 if (body.data == .block) b.bindList(body.data.block.stmts) else b.bind(body);
@@ -636,12 +731,12 @@ pub const Binder = struct {
                 }
                 const fd = func.data.func;
                 if (fd.kind == .ctor and (p.mods.public or p.mods.private or p.mods.protected or p.mods.readonly or p.mods.override)) {
-                    if (func.parent) |cls| if (cls.symbol) |sym| {
+                    if (func.parent) |cls| if (cls.symbol()) |sym| {
                         if (sym.members == null) sym.members = b.table();
                         const opt: u32 = if (d.question) F.optional else 0;
-                        const saved = p.symbol;
+                        const saved = p.symbol();
                         _ = b.declare(sym.members.?, sym, p, name, F.property | opt, F.none, d.name);
-                        p.symbol = saved;
+                        p.setSymbol(b.a, saved);
                     };
                 }
             },
@@ -672,8 +767,8 @@ pub const Binder = struct {
         if (c.is_expr) {
             const s = b.mkSym(if (name.len > 0) name else "__class", 0);
             b.addDecl(s, n, F.class);
-            n.symbol = s;
-            if (name.len > 0) b.localsOf(n).map.put(b.a, name, s) catch oom();
+            n.setSymbol(b.a, s);
+            if (name.len > 0) b.localsOf(n).put(b.a, name, s);
         } else {
             _ = b.declareBlock(n, if (name.len > 0) name else "default", F.class, F.class_ex, n.mods, c.name);
         }
@@ -692,7 +787,7 @@ pub const Binder = struct {
 
     /// Field initializers run later, on their own flow.
     fn bindMember(b: *Binder, cls: *Node, m: *Node) void {
-        const sym = cls.symbol orelse return;
+        const sym = cls.symbol() orelse return;
         switch (m.data) {
             .property_decl => |d| {
                 for (d.decorators) |x| b.bind(x);
@@ -727,7 +822,7 @@ pub const Binder = struct {
     }
 
     fn bindTypeMembers(b: *Binder, owner: *Node, members: []*Node) void {
-        const sym = owner.symbol orelse return;
+        const sym = owner.symbol() orelse return;
         for (members) |m| {
             m.parent = owner;
             switch (m.data) {
@@ -794,14 +889,14 @@ pub const Binder = struct {
             const s = b.mkSym("__global", F.namespace_module);
             s.exports = b.table();
             b.addDecl(s, n, 0);
-            n.symbol = s;
+            n.setSymbol(b.a, s);
             if (b.frozen == null) b.file.global_augs = append(b.a, b.file.global_augs, s);
         } else if (d.name.data == .string_lit) {
             const name = d.name.data.string_lit;
             const s = b.mkSym(name, F.value_module);
             s.exports = b.table();
             b.addDecl(s, n, 0);
-            n.symbol = s;
+            n.setSymbol(b.a, s);
             if (b.frozen != null) {
                 // Not legal in a function, and the file is no longer this binder's to change.
             } else if (b.file.is_module) {
@@ -817,13 +912,13 @@ pub const Binder = struct {
             const ex = if (inst) F.value_module_ex else F.none;
             if (n.parent != null and n.parent.?.data == .module_decl) {
                 // `namespace A.B`: the inner segment is an implicit export of the outer.
-                const outer = n.parent.?.symbol.?;
+                const outer = n.parent.?.symbol().?;
                 if (outer.exports == null) outer.exports = b.table();
                 _ = b.declare(outer.exports.?, outer, n, name, flags, ex, d.name);
             } else {
                 _ = b.declareBlock(n, name, flags, ex, n.mods, d.name);
             }
-            if (n.symbol.?.exports == null) n.symbol.?.exports = b.table();
+            if (n.symbol().?.exports == null) n.symbol().?.exports = b.table();
         }
         const save = .{ b.container, b.block, b.flow, b.export_context };
         b.container = n;
@@ -879,7 +974,8 @@ pub const Binder = struct {
         const t = b.exportTable() orelse return;
         if (d.clause == null) {
             const m = b.moduleScope().?;
-            m.stars = append(b.a, m.stars, n);
+            const rare = m.rareParts(b.a);
+            rare.stars = append(b.a, rare.stars, n);
             return;
         }
         switch (d.clause.?.data) {
@@ -978,10 +1074,10 @@ pub const Binder = struct {
 
     pub fn bind(b: *Binder, n: *Node) void {
         switch (n.data) {
-            .identifier, .this_expr, .super_expr => n.flow = b.flow,
+            .identifier, .this_expr, .super_expr => n.setFlow(b.a, b.flow),
             // `typeof a.b` is a read like any other and sees what `a.b` was narrowed to.
             .qualified_name => {
-                n.flow = b.flow;
+                n.setFlow(b.a, b.flow);
                 b.bindChildren(n);
             },
             .prop_access => |x| {
@@ -989,7 +1085,7 @@ pub const Binder = struct {
                 b.bind(x.expr);
                 if (x.optional) b.chainRest(x.expr);
                 b.bind(x.name);
-                n.flow = b.flow;
+                n.setFlow(b.a, b.flow);
                 b.leaveChain(n, saved);
             },
             .elem_access => |x| {
@@ -997,7 +1093,7 @@ pub const Binder = struct {
                 b.bind(x.expr);
                 if (x.optional) b.chainRest(x.expr);
                 b.bind(x.index);
-                n.flow = b.flow;
+                n.setFlow(b.a, b.flow);
                 b.leaveChain(n, saved);
             },
             .func => b.bindFunc(n),
@@ -1005,7 +1101,7 @@ pub const Binder = struct {
             .interface => |d| {
                 const s = b.declareBlock(n, d.name.data.identifier, F.interface, F.interface_ex, n.mods, d.name);
                 if (s.members == null) s.members = b.table();
-                n.symbol = s;
+                n.setSymbol(b.a, s);
                 b.enterTypeParams(n, d.type_params);
                 for (d.heritage) |h| b.bind(h);
                 b.bindTypeMembers(n, d.members);
@@ -1014,7 +1110,7 @@ pub const Binder = struct {
                 const s = b.mkSym("__type", F.type_literal);
                 s.members = b.table();
                 b.addDecl(s, n, 0);
-                n.symbol = s;
+                n.setSymbol(b.a, s);
                 b.bindTypeMembers(n, d.members);
             },
             .type_alias => |d| {
@@ -1038,7 +1134,7 @@ pub const Binder = struct {
                 }
                 const scope = c orelse n;
                 const td = d.tparam.data.type_param;
-                const existing = if (scope.locals) |l| l.map.get(td.name.data.identifier) else null;
+                const existing = if (scope.locals()) |l| l.raw(td.name.data.identifier) else null;
                 if (existing) |e| {
                     b.addDecl(e, d.tparam, 0);
                 } else _ = b.declare(b.localsOf(scope), null, d.tparam, td.name.data.identifier, F.type_param, F.none, null);
@@ -1242,7 +1338,7 @@ pub const Binder = struct {
                 for (d.args) |x| b.bind(x);
                 // The arguments of a function run on the spot are evaluated before its body.
                 if (inlined) b.bind(d.callee);
-                n.flow = b.flow;
+                n.setFlow(b.a, b.flow);
                 b.leaveChain(n, saved);
                 if (n.parent) |p| if (p.data == .expr_stmt and isDotted(d.callee)) {
                     b.flowEffect(.call, n);
@@ -1250,7 +1346,7 @@ pub const Binder = struct {
             },
             .new_expr => {
                 b.bindChildren(n);
-                n.flow = b.flow;
+                n.setFlow(b.a, b.flow);
             },
             else => b.bindChildren(n),
         }
@@ -1440,7 +1536,8 @@ pub const Binder = struct {
         const late = b.mkSym("__computed", 0);
         late.parent = s;
         b.addDecl(late, left, F.property | F.assignment);
-        s.late_members = append(b.a, s.late_members, late);
+        const rare = s.rareParts(b.a);
+        rare.late_members = append(b.a, rare.late_members, late);
     }
 
     fn expandoOwner(b: *Binder, target: *Node) ?*Symbol {
@@ -1455,7 +1552,7 @@ pub const Binder = struct {
                 if (b.scopeOf(scope)) |l| if (l.get(name)) |s| return s;
                 // A function's exports are its expandos, in the frozen tree and not in scope anyway.
                 if (scope == b.frozen) return null;
-                const owner = scope.symbol orelse return null;
+                const owner = scope.symbol() orelse return null;
                 return (owner.exports orelse return null).get(name);
             },
             .prop_access => |x| {
@@ -1541,7 +1638,7 @@ pub fn holdsExpandos(s: *Symbol) bool {
 pub fn expandoHolder(func: *Node) ?*Symbol {
     const v = func.parent orelse return null;
     if (v.data != .var_decl or v.data.var_decl.init != func) return null;
-    return v.symbol;
+    return v.symbol();
 }
 
 pub fn calledOnTheSpot(fnode: *Node) bool {
@@ -1652,8 +1749,8 @@ pub fn bindFile(a: Allocator, f: *ast.File) void {
         .unreachable_flow = unreachable_flow,
         .in_ambient = f.is_dts,
     };
-    if (f.is_module) f.root.symbol = b.fileSym();
-    if (f.root.locals == null) f.root.locals = b.table();
+    if (f.is_module) f.root.setSymbol(b.a, b.fileSym());
+    if (f.root.locals() == null) f.root.setLocals(b.a, b.table());
     b.export_context = f.is_dts and !Binder.hasExportStatements(f.root.data.source_file.stmts);
     b.bindList(f.root.data.source_file.stmts);
     f.bind_diags = b.diags.items;
@@ -1669,7 +1766,7 @@ pub fn bindBody(a: Allocator, f: *ast.File, n: *Node, block: *Node) struct { bod
         .file = f,
         .container = n,
         .block = n,
-        .flow = n.data.func.body.?.flow.?,
+        .flow = n.data.func.body.?.flow().?,
         .unreachable_flow = unreachable_flow,
         .frozen = n,
     };
@@ -1693,11 +1790,11 @@ pub fn isExportSpecifierOnly(s: *const Symbol) bool {
 pub fn lookupLocal(from: *Node, name: []const u8, meaning: u32) ?*Symbol {
     var c: ?*Node = from;
     while (c) |n| : (c = n.parent) {
-        if (n.locals) |l| if (l.get(name)) |s| {
+        if (n.locals()) |l| if (l.get(name)) |s| {
             if (s.flags & (meaning | F.alias) != 0) return s;
         };
         switch (n.data) {
-            .module_decl, .enum_decl => if (n.symbol) |s| if (s.exports) |e| if (e.get(name)) |x| {
+            .module_decl, .enum_decl => if (n.symbol()) |s| if (s.exports) |e| if (e.get(name)) |x| {
                 if (!isExportSpecifierOnly(x) and x.flags & (meaning | F.alias) != 0) return x;
             },
             else => {},
@@ -1713,7 +1810,7 @@ test "binder declares and merges function scope" {
     const f = parser.parse(a, "t.ts", "export function f(x: number) { var y = x; let z; { let z; } }\ninterface I {a: 1}\ninterface I {b: 2}\n");
     bindFile(a, f);
     try std.testing.expectEqual(@as(usize, 0), f.bind_diags.len);
-    const i = f.root.locals.?.get("I").?;
+    const i = f.root.locals().?.get("I").?;
     try std.testing.expectEqual(@as(usize, 2), i.decls.len);
     try std.testing.expect(i.members.?.get("b") != null);
     try std.testing.expect(f.symbol.?.exports.?.get("f") != null);
@@ -1726,10 +1823,10 @@ test "binder stores numeric member names the way lookups spell them" {
     const f = parser.parse(a, "t.ts", "interface I { 1.0: string; 0x10: number; 1e3: boolean; 2_000: symbol; [3.0]: bigint }\nclass C { 1.0 = 1; static 0x10 = 2 }\n");
     bindFile(a, f);
     try std.testing.expectEqual(@as(usize, 0), f.bind_diags.len);
-    const i = f.root.locals.?.get("I").?.members.?;
+    const i = f.root.locals().?.get("I").?.members.?;
     for ([_][]const u8{ "1", "16", "1000", "2000", "3" }) |name| try std.testing.expect(i.get(name) != null);
     try std.testing.expect(i.get("1.0") == null);
-    const c = f.root.locals.?.get("C").?;
+    const c = f.root.locals().?.get("C").?;
     try std.testing.expect(c.members.?.get("1") != null);
     try std.testing.expect(c.exports.?.get("16") != null);
 }
@@ -1743,14 +1840,14 @@ test "binder grows declaration lists in order and keeps the duplicate's value de
     src.appendSlice(a, "let x = 1;\nlet x = 2;\n") catch unreachable;
     const f = parser.parse(a, "t.ts", src.items);
     bindFile(a, f);
-    const i = f.root.locals.?.get("I").?;
+    const i = f.root.locals().?.get("I").?;
     try std.testing.expectEqual(@as(usize, 9), i.decls.len);
     for (i.decls, f.root.data.source_file.stmts[0..9]) |d, s| try std.testing.expectEqual(s, d);
     const second = f.root.data.source_file.stmts[10].data.var_stmt.list.data.var_list.decls[0];
-    try std.testing.expect(second.symbol != null);
-    try std.testing.expect(second.symbol.? != f.root.locals.?.get("x").?);
-    try std.testing.expectEqual(second, second.symbol.?.value_decl.?);
-    try std.testing.expect(second.symbol.?.flags & F.block_var != 0);
+    try std.testing.expect(second.symbol() != null);
+    try std.testing.expect(second.symbol().? != f.root.locals().?.get("x").?);
+    try std.testing.expectEqual(second, second.symbol().?.value_decl.?);
+    try std.testing.expect(second.symbol().?.flags & F.block_var != 0);
 }
 
 test "a body redeclaring a parameter leaves the shared symbol alone" {
@@ -1760,14 +1857,14 @@ test "a body redeclaring a parameter leaves the shared symbol alone" {
     const f = parser.parseLazily(a, "t.ts", "function f(x: string) { var x: string; function g() {} g.y = 1; }");
     bindFile(a, f);
     const n = f.root.data.source_file.stmts[0];
-    const shared = n.locals.?.get("x").?;
+    const shared = n.locals().?.get("x").?;
     const bound = bindBody(a, f, n, parser.parseBody(a, f, n).block);
     try std.testing.expectEqual(@as(usize, 1), shared.decls.len);
     const own = bound.body.locals.?.get("x").?;
     try std.testing.expect(own != shared);
     try std.testing.expectEqual(@as(usize, 2), own.decls.len);
     try std.testing.expect(own.decls[0] == shared.decls[0]);
-    try std.testing.expect(n.locals.?.get("g") == null);
+    try std.testing.expect(n.locals().?.get("g") == null);
     try std.testing.expect(bound.body.locals.?.get("g") != null);
 }
 

@@ -8,6 +8,7 @@ const ast = @import("ast.zig");
 const binder = @import("binder.zig");
 const parser = @import("parser.zig");
 const pool = @import("pool.zig");
+const Bump = @import("bump.zig").Bump;
 const emit = @import("emit.zig");
 const Symbol = binder.Symbol;
 const SymbolTable = binder.SymbolTable;
@@ -110,11 +111,29 @@ fn isDir(io: Io, path: []const u8) bool {
 pub fn readFile(a: Allocator, io: Io, path: []const u8) ![]u8 {
     const f = try Io.Dir.cwd().openFile(io, path, .{});
     defer f.close(io);
-    const size = try f.length(io);
+    return readOpen(a, io, f, path, try f.length(io));
+}
+
+fn readOpen(a: Allocator, io: Io, f: Io.File, path: []const u8, size: u64) ![]u8 {
     // A pipe or a device says nothing about its size; a file is one read into a buffer that fits.
     if (size == 0) return Io.Dir.cwd().readFileAlloc(io, path, a, .unlimited);
     const buf = try a.alloc(u8, size);
     return buf[0..try f.readPositionalAll(io, buf, 0)];
+}
+
+/// Below this a file shares its pages with too little to be worth a mapping.
+const least_mapped = 16 * 1024;
+
+/// The file cache has these bytes already, and a mapping leaves one copy the kernel can drop where
+/// a read makes a second it cannot. Most source bytes are in files this large.
+fn readSource(a: Allocator, io: Io, path: []const u8) ![]u8 {
+    const f = try Io.Dir.cwd().openFile(io, path, .{});
+    defer f.close(io);
+    const size = try f.length(io);
+    if (size >= least_mapped) {
+        if (f.createMemoryMap(io, .{ .len = size, .protection = .{ .read = true }, .populate = false })) |m| return m.memory else |_| {}
+    }
+    return readOpen(a, io, f, path, size);
 }
 
 /// tsconfig is JSON with comments and trailing commas; std.json takes neither.
@@ -306,7 +325,7 @@ pub fn isSourceFile(name: []const u8) bool {
 const WalkItem = struct { dirs: std.ArrayList([]const u8) = .empty, files: std.ArrayList([]const u8) = .empty, arena: std.heap.ArenaAllocator };
 
 const Walk = struct {
-    io: Io,
+    fs: *FsCache,
     level: []const []const u8,
     out: []WalkItem,
 };
@@ -315,34 +334,33 @@ fn walkOne(w: *const Walk, worker: usize, i: usize) void {
     const item = &w.out[worker];
     const a = item.arena.allocator();
     const path = w.level[i];
-    var dir = Io.Dir.cwd().openDir(w.io, path, .{ .iterate = true }) catch return;
-    defer dir.close(w.io);
-    var it = dir.iterate();
-    while (it.next(w.io) catch null) |e| {
+    const names = switch (w.fs.listing(path).*) {
+        .names => |*x| x,
+        else => return,
+    };
+    var it = names.iterator();
+    while (it.next()) |e| {
+        const name = e.key_ptr.*;
         // A symlink target may be a directory; tsc follows them, and pnpm stores rely on that.
-        var kind = e.kind;
-        const full = fspath.join(a, &.{ path, e.name }) catch oom();
-        if (kind == .sym_link) {
-            kind = (Io.Dir.cwd().statFile(w.io, full, .{}) catch continue).kind;
-        }
+        const kind = e.value_ptr.*;
         if (kind == .directory) {
-            if (std.mem.eql(u8, e.name, "node_modules") or std.mem.eql(u8, e.name, ".git") or std.mem.eql(u8, e.name, "bower_components") or std.mem.eql(u8, e.name, "jspm_packages")) continue;
-            item.dirs.append(a, full) catch oom();
-        } else if (kind == .file and isSourceFile(e.name)) {
-            item.files.append(a, full) catch oom();
+            if (std.mem.eql(u8, name, "node_modules") or std.mem.eql(u8, name, ".git") or std.mem.eql(u8, name, "bower_components") or std.mem.eql(u8, name, "jspm_packages")) continue;
+            item.dirs.append(a, fspath.join(a, &.{ path, name }) catch oom()) catch oom();
+        } else if (kind == .file and isSourceFile(name)) {
+            item.files.append(a, fspath.join(a, &.{ path, name }) catch oom()) catch oom();
         }
     }
 }
 
 /// Breadth-first, one parallel pass per directory level; no queue or lock needed.
-pub fn walkDirs(a: Allocator, io: Io, tp: *pool.ThreadPool, roots: []const []const u8) []const []const u8 {
+pub fn walkDirs(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, roots: []const []const u8) []const []const u8 {
     var files: std.ArrayList([]const u8) = .empty;
     var level: std.ArrayList([]const u8) = .empty;
     level.appendSlice(a, roots) catch oom();
     while (level.items.len > 0) {
         const items = a.alloc(WalkItem, tp.width()) catch oom();
         for (items) |*x| x.* = .{ .arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator) };
-        const w = Walk{ .io = io, .level = level.items, .out = items };
+        const w = Walk{ .fs = fs, .level = level.items, .out = items };
         pool.parallelFor(tp, level.items.len, &w, walkOne);
         var next: std.ArrayList([]const u8) = .empty;
         for (items) |*x| {
@@ -373,9 +391,10 @@ test "isWithin needs a component boundary" {
     try std.testing.expect(isWithin("/p/src2", "/p/"));
 }
 
-pub fn projectFiles(a: Allocator, io: Io, tp: *pool.ThreadPool, cfg: *const Config) []const []const u8 {
+pub fn projectFiles(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, cfg: *const Config) []const []const u8 {
+    const io = fs.io;
     var out: std.ArrayList([]const u8) = .empty;
-    if (cfg.files) |fs| out.appendSlice(a, fs) catch oom();
+    if (cfg.files) |listed| out.appendSlice(a, listed) catch oom();
     if (cfg.files != null and cfg.include == null) return out.items;
 
     const include = cfg.include orelse absList(a, cfg.root, &.{"**/*"});
@@ -400,7 +419,7 @@ pub fn projectFiles(a: Allocator, io: Io, tp: *pool.ThreadPool, cfg: *const Conf
         for (ex) |e| excludes.append(a, expandInclude(a, e)) catch oom();
     } else if (cfg.options.outDir) |d| excludes.append(a, expandInclude(a, d)) catch oom();
 
-    next: for (walkDirs(a, io, tp, roots.items)) |f| {
+    next: for (walkDirs(a, fs, tp, roots.items)) |f| {
         var hit = false;
         for (patterns.items) |p| {
             if (globMatch(p, f)) {
@@ -418,9 +437,16 @@ pub fn projectFiles(a: Allocator, io: Io, tp: *pool.ThreadPool, cfg: *const Conf
 /// Every import probes up to a dozen names, nearly all missing, and each failed stat takes a
 /// kernel lock the other workers want. Listing a directory once answers all of them from memory.
 /// Entries live as long as the process, so they come straight from the thread-safe allocator.
-const FsCache = struct {
+/// Walking the project fills it too, or resolving imports would list all those directories again.
+pub const FsCache = struct {
     io: Io,
     shards: [64]Shard = @splat(.{}),
+
+    pub fn create(a: Allocator, io: Io) *FsCache {
+        const f = a.create(FsCache) catch oom();
+        f.* = .{ .io = io };
+        return f;
+    }
 
     const Listing = union(enum) {
         missing,
@@ -764,7 +790,6 @@ const Resolver = struct {
 
 pub const SourceFile = struct {
     file: *ast.File,
-    arena: *std.heap.ArenaAllocator,
     /// Parallel to `file.module_specs`.
     resolved: []?*SourceFile = &.{},
     /// Paths found this round, before the owning file exists.
@@ -784,6 +809,9 @@ const Loading = struct {
     list: []*SourceFile,
     lib_dir: ?[]const u8,
     lazy_bodies: bool,
+    /// Per worker: what a file keeps lasts as long as the program, and one arena a file wastes its tail.
+    keeps: []Bump,
+    scratch: []Bump,
 };
 
 fn libFile(a: Allocator, io: Io, dir: []const u8, name: []const u8) []const u8 {
@@ -806,8 +834,8 @@ fn libFile(a: Allocator, io: Io, dir: []const u8, name: []const u8) []const u8 {
 const lib_order = [_][]const u8{
     "es5",            "es6",                     "es2015",               "es7",             "es2016",                  "es2017",             "es2018",                  "es2019",              "es2020",         "es2021",              "es2022",             "es2023",                  "es2024",               "es2025",            "esnext",
     "dom",            "dom.iterable",            "dom.asynciterable",    "webworker",       "webworker.importscripts", "webworker.iterable", "webworker.asynciterable", "scripthost",          "es2015.core",    "es2015.collection",   "es2015.generator",   "es2015.iterable",         "es2015.promise",       "es2015.proxy",      "es2015.reflect",
-    "es2015.symbol",  "es2015.symbol.wellknown", "es2016.array.include", "es2016.intl",     "es2017.arraybuffer",      "es2017.date",        "es2017.object",           "es2017.sharedmemory", "es2017.string",  "es2017.intl",         "es2017.typedarrays", "es2018.asyncgenerator",   "es2018.asynciterable", "es2018.intl",       "es2018.promise",
-    "es2018.regexp",  "es2019.array",            "es2019.object",        "es2019.string",   "es2019.symbol",           "es2019.intl",        "es2020.bigint",           "es2020.date",         "es2020.promise", "es2020.sharedmemory", "es2020.string",      "es2020.symbol.wellknown", "es2020.intl",          "es2020.number",     "es2021.promise",
+    "es2015.symbol()",  "es2015.symbol().wellknown", "es2016.array.include", "es2016.intl",     "es2017.arraybuffer",      "es2017.date",        "es2017.object",           "es2017.sharedmemory", "es2017.string",  "es2017.intl",         "es2017.typedarrays", "es2018.asyncgenerator",   "es2018.asynciterable", "es2018.intl",       "es2018.promise",
+    "es2018.regexp",  "es2019.array",            "es2019.object",        "es2019.string",   "es2019.symbol()",           "es2019.intl",        "es2020.bigint",           "es2020.date",         "es2020.promise", "es2020.sharedmemory", "es2020.string",      "es2020.symbol().wellknown", "es2020.intl",          "es2020.number",     "es2021.promise",
     "es2021.string",  "es2021.weakref",          "es2021.intl",          "es2022.array",    "es2022.error",            "es2022.intl",        "es2022.object",           "es2022.string",       "es2022.regexp",  "es2023.array",        "es2023.collection",  "es2023.intl",             "es2024.arraybuffer",   "es2024.collection", "es2024.object",
     "es2024.promise", "es2024.regexp",           "es2024.sharedmemory",  "es2024.string",   "es2025.collection",       "es2025.float16",     "es2025.intl",             "es2025.iterator",     "es2025.promise", "es2025.regexp",       "esnext.array",       "esnext.collection",       "esnext.date",          "esnext.decorators", "esnext.disposable",
     "esnext.error",   "esnext.intl",             "esnext.sharedmemory",  "esnext.temporal", "esnext.typedarrays",      "decorators",         "decorators.legacy",
@@ -822,11 +850,11 @@ fn libRank(path: []const u8) usize {
     return lib_order.len + 2;
 }
 
-fn loadOne(l: *const Loading, _: usize, i: usize) void {
+fn loadOne(l: *const Loading, worker: usize, i: usize) void {
     const sf = l.list[i];
-    const a = sf.arena.allocator();
+    const a = l.keeps[worker].allocator();
     const path = sf.file.path;
-    var src = readFile(a, l.io, path) catch {
+    var src = readSource(a, l.io, path) catch {
         sf.read_failed = true;
         return;
     };
@@ -837,8 +865,8 @@ fn loadOne(l: *const Loading, _: usize, i: usize) void {
     sf.file = f;
     sf.pending = a.alloc(?[]const u8, f.module_specs.len) catch oom();
     // Every path tried and package.json read goes here: resolving keeps only what it found.
-    var scratch = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
-    defer scratch.deinit();
+    const scratch = &l.scratch[worker];
+    defer scratch.reset();
     const r = Resolver{ .io = l.io, .a = scratch.allocator(), .fs = l.fs, .cfg = l.cfg };
     for (f.module_specs, 0..) |s, n| sf.pending[n] = if (r.resolve(path, s.data.string_lit)) |p| a.dupe(u8, p) catch oom() else null;
     var extra: std.ArrayList([]const u8) = .empty;
@@ -857,7 +885,7 @@ pub const Program = struct {
     cfg: *const Config,
     tp: *pool.ThreadPool,
     files: std.ArrayList(*SourceFile) = .empty,
-    fs: FsCache,
+    fs: *FsCache,
     by_path: std.StringHashMapUnmanaged(*SourceFile) = .empty,
     /// Paths as imports spelled them; one file is reached through many imports.
     by_import: std.StringHashMapUnmanaged(*SourceFile) = .empty,
@@ -939,11 +967,9 @@ pub const Program = struct {
             p.by_path.put(p.a, key, sf) catch oom();
             return sf;
         };
-        const arena = std.heap.smp_allocator.create(std.heap.ArenaAllocator) catch oom();
-        arena.* = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
         const sf = p.a.create(SourceFile) catch oom();
         // Replaced once the file is parsed; until then only the path is meaningful.
-        sf.* = .{ .file = parser.parse(p.a, key, ""), .arena = arena, .is_lib = is_lib or p.isLibPath(key), .is_root = is_root };
+        sf.* = .{ .file = parser.parse(p.a, key, ""), .is_lib = is_lib or p.isLibPath(key), .is_root = is_root };
         p.by_path.put(p.a, key, sf) catch oom();
         if (pkg) |k| p.by_package.put(p.a, k, sf) catch oom();
         next.append(p.a, sf) catch oom();
@@ -952,12 +978,17 @@ pub const Program = struct {
 
     /// Loads level by level so each round parses and binds in parallel; new files only join between rounds.
     fn load(p: *Program, roots: []const []const u8, libs: []const []const u8) void {
+        const keeps = p.a.alloc(Bump, p.tp.width()) catch oom();
+        for (keeps) |*x| x.* = .init(std.heap.smp_allocator);
+        const scratch = p.a.alloc(Bump, p.tp.width()) catch oom();
+        for (scratch) |*x| x.* = .init(std.heap.smp_allocator);
+        defer for (scratch) |*x| x.deinit();
         var level: std.ArrayList(*SourceFile) = .empty;
         for (libs) |l| _ = p.add(l, &level, true, false);
         for (roots) |r| _ = p.add(r, &level, false, true);
         p.addTypeRoots(&level);
         while (level.items.len > 0) {
-            const l = Loading{ .io = p.io, .fs = &p.fs, .cfg = p.cfg, .list = level.items, .lib_dir = p.lib_dir, .lazy_bodies = p.lazy_bodies };
+            const l = Loading{ .io = p.io, .fs = p.fs, .cfg = p.cfg, .list = level.items, .lib_dir = p.lib_dir, .lazy_bodies = p.lazy_bodies, .keeps = keeps, .scratch = scratch };
             pool.parallelFor(p.tp, level.items.len, &l, loadOne);
             var next: std.ArrayList(*SourceFile) = .empty;
             for (level.items) |sf| {
@@ -1009,7 +1040,7 @@ pub const Program = struct {
     /// for every package it can see.
     fn addTypeRoots(p: *Program, level: *std.ArrayList(*SourceFile)) void {
         const names = p.cfg.options.types orelse return;
-        const r = Resolver{ .io = p.io, .a = p.a, .fs = &p.fs, .cfg = p.cfg };
+        const r = Resolver{ .io = p.io, .a = p.a, .fs = p.fs, .cfg = p.cfg };
         for (names) |n| {
             if (std.mem.eql(u8, n, "*")) {
                 p.addEveryTypePackage(r, level);
@@ -1058,17 +1089,17 @@ pub const Program = struct {
     }
 
     fn mergeTable(p: *Program, dst: *SymbolTable, src: *SymbolTable) void {
-        var it = src.map.iterator();
-        while (it.next()) |e| p.mergeInto(dst, e.key_ptr.*, e.value_ptr.*);
+        var it = src.map.keyIterator();
+        while (it.next()) |e| p.mergeInto(dst, e.*.name, e.*);
     }
 
     fn mergeInto(p: *Program, dst: *SymbolTable, name: []const u8, sym: *Symbol) void {
-        const gop = dst.map.getOrPut(p.a, name) catch oom();
-        if (!gop.found_existing) {
-            gop.value_ptr.* = sym;
+        const entry = dst.slot(p.a, name);
+        if (!entry.found_existing) {
+            entry.symbol.* = sym;
             return;
         }
-        const t = gop.value_ptr.*.resolve();
+        const t = entry.symbol.*.resolve();
         const s = sym.resolve();
         if (t == s) return;
         p.mergeSymbol(t, s);
@@ -1081,9 +1112,12 @@ pub const Program = struct {
         }
         t.flags |= s.flags;
         t.decls = std.mem.concat(p.a, *ast.Node, &.{ t.decls, s.decls }) catch oom();
-        t.stars = std.mem.concat(p.a, *ast.Node, &.{ t.stars, s.stars }) catch oom();
-        t.late_members = std.mem.concat(p.a, *Symbol, &.{ t.late_members, s.late_members }) catch oom();
-        t.late_statics = std.mem.concat(p.a, *Symbol, &.{ t.late_statics, s.late_statics }) catch oom();
+        if (s.rare) |from| {
+            const into = t.rareParts(p.a);
+            into.stars = std.mem.concat(p.a, *ast.Node, &.{ into.stars, from.stars }) catch oom();
+            into.late_members = std.mem.concat(p.a, *Symbol, &.{ into.late_members, from.late_members }) catch oom();
+            into.late_statics = std.mem.concat(p.a, *Symbol, &.{ into.late_statics, from.late_statics }) catch oom();
+        }
         if (t.value_decl == null) t.value_decl = s.value_decl;
         if (s.members) |m| {
             if (t.members == null) t.members = p.table();
@@ -1200,7 +1234,7 @@ pub const Program = struct {
         for (seen[0..depth]) |x| if (x == m) return null;
         seen[depth] = m;
         const sf = p.sourceOf(m.file) orelse return null;
-        for (m.stars) |star| {
+        for (m.stars()) |star| {
             const spec = star.data.export_decl.specifier orelse continue;
             const t = p.resolveModuleName(sf, spec.data.string_lit) orelse continue;
             if (p.exportOfRec(t.resolve(), name, seen, depth + 1)) |x| return x;
@@ -1213,17 +1247,17 @@ pub const Program = struct {
         for (p.files.items) |sf| {
             const f = sf.file;
             if (f.is_module) continue;
-            if (f.root.locals) |l| p.mergeTable(p.globals, l);
+            if (f.root.locals()) |l| p.mergeTable(p.globals, l);
         }
         for (p.files.items) |sf| {
             for (sf.file.global_augs) |s| if (s.exports) |e| p.mergeTable(p.globals, e);
             if (sf.file.umd_name) |n| if (sf.file.symbol) |s| {
-                if (!p.globals.map.contains(n)) p.globals.map.put(p.a, n, s) catch oom();
+                if (!p.globals.contains(n)) p.globals.put(p.a, n, s);
             };
         }
         const global_this = p.a.create(Symbol) catch oom();
         global_this.* = .{ .name = "globalThis", .flags = F.value_module, .exports = p.globals };
-        p.globals.map.put(p.a, "globalThis", global_this) catch oom();
+        p.globals.put(p.a, "globalThis", global_this);
         for (p.files.items) |sf| for (sf.file.ambient_modules) |s| {
             const gop = p.ambient.getOrPut(p.a, s.name) catch oom();
             if (gop.found_existing) p.mergeSymbol(gop.value_ptr.*.resolve(), s) else gop.value_ptr.* = s;
@@ -1232,20 +1266,20 @@ pub const Program = struct {
             const target = p.resolveModuleName(sf, s.name) orelse continue;
             const e = s.exports orelse continue;
             if (target.exports == null) target.exports = p.table();
-            if (target.stars.len == 0) {
+            if (target.stars().len == 0) {
                 p.mergeTable(target.exports.?, e);
                 continue;
             }
             // An interface re-exported through `export *` is extended where it lives; a copy
             // here would shadow it with only the augmented members.
-            var it = e.map.iterator();
+            var it = e.map.keyIterator();
             while (it.next()) |kv| {
-                const own = target.exports.?.get(kv.key_ptr.*) != null;
-                if (!own) if (p.exportOf(target, kv.key_ptr.*)) |x| {
-                    p.mergeSymbol(x.resolve(), kv.value_ptr.*);
+                const own = target.exports.?.get(kv.*.name) != null;
+                if (!own) if (p.exportOf(target, kv.*.name)) |x| {
+                    p.mergeSymbol(x.resolve(), kv.*);
                     continue;
                 };
-                p.mergeInto(target.exports.?, kv.key_ptr.*, kv.value_ptr.*);
+                p.mergeInto(target.exports.?, kv.*.name, kv.*);
             }
         };
     }
@@ -1263,7 +1297,7 @@ pub const Program = struct {
     }
 };
 
-pub const LoadOptions = struct { lib_dir_flag: ?[]const u8 = null, lib_dir_env: ?[]const u8 = null, want_libs: bool = true, lazy_bodies: bool = false };
+pub const LoadOptions = struct { fs: ?*FsCache = null, lib_dir_flag: ?[]const u8 = null, lib_dir_env: ?[]const u8 = null, want_libs: bool = true, lazy_bodies: bool = false };
 
 fn findLibDir(a: Allocator, io: Io, root: []const u8, o: LoadOptions) ?[]const u8 {
     if (o.lib_dir_flag) |d| return d;
@@ -1309,7 +1343,7 @@ pub fn loadProgram(a: Allocator, io: Io, tp: *pool.ThreadPool, cfg: *const Confi
     const p = a.create(Program) catch oom();
     const g = a.create(SymbolTable) catch oom();
     g.* = .{};
-    p.* = .{ .a = a, .io = io, .fs = .{ .io = io }, .cfg = cfg, .tp = tp, .globals = g, .lazy_bodies = o.lazy_bodies };
+    p.* = .{ .a = a, .io = io, .fs = o.fs orelse FsCache.create(a, io), .cfg = cfg, .tp = tp, .globals = g, .lazy_bodies = o.lazy_bodies };
     p.lib_dir = findLibDir(a, io, cfg.root, o);
     if (p.lib_dir) |d| p.lib_dir_real = Io.Dir.cwd().realPathFileAlloc(io, d, a) catch d;
     var libs: std.ArrayList([]const u8) = .empty;

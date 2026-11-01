@@ -103,7 +103,7 @@ const Emitter = struct {
     fn isInsideDecl(n: *Node, owner: *Symbol) bool {
         var c = n.parent;
         while (c) |p| : (c = p.parent) {
-            if ((p.data == .module_decl or p.data == .enum_decl) and p.symbol != null and p.symbol.?.resolve() == owner.resolve()) return true;
+            if ((p.data == .module_decl or p.data == .enum_decl) and p.symbol() != null and p.symbol().?.resolve() == owner.resolve()) return true;
         }
         return false;
     }
@@ -231,7 +231,7 @@ const Emitter = struct {
     fn enclosingNs(n: *Node) ?*Symbol {
         var c = n.parent;
         while (c) |p| : (c = p.parent) {
-            if (p.data == .module_decl) return p.symbol;
+            if (p.data == .module_decl) return p.symbol();
             if (p.data != .module_block) return null;
         }
         return null;
@@ -436,7 +436,7 @@ const Emitter = struct {
 
     /// `var X;` is skipped when another declaration in this file already introduces the name.
     fn varPrefix(e: *Emitter, n: *Node, name: []const u8, exported: bool) []const u8 {
-        const s = (n.symbol orelse return "").resolve();
+        const s = (n.symbol() orelse return "").resolve();
         for (s.decls) |d| {
             if (!e.inThisFile(d)) continue;
             if (d == n) break;
@@ -537,7 +537,7 @@ const Emitter = struct {
 
     fn nestedTail(e: *Emitter, n: *Node, name: []const u8) []const u8 {
         if (n.parent != null and n.parent.?.data == .module_decl) {
-            const outer = n.parent.?.symbol.?.name;
+            const outer = n.parent.?.symbol().?.name;
             return e.fmt("\n}})({s} = {s}.{s} || ({s}.{s} = {{}}));", .{ name, outer, name, outer, name });
         }
         return e.iifeTail(n, name);
@@ -547,7 +547,7 @@ const Emitter = struct {
         const d = n.data.import_equals;
         const name = d.name.data.identifier;
         if (d.type_only) return e.eraseNode(n);
-        const sym = n.symbol;
+        const sym = n.symbol();
         if (d.ref.data == .external_module_ref) {
             e.needs_require = true;
             const spec = e.f.src[d.ref.data.external_module_ref.expr.start..d.ref.data.external_module_ref.expr.end];
@@ -665,7 +665,7 @@ const Emitter = struct {
     }
 
     fn isUsed(e: *Emitter, decl: *Node) bool {
-        const s = decl.symbol orelse return true;
+        const s = decl.symbol() orelse return true;
         return e.used.contains(s) and !e.aliasIsType(s);
     }
 
@@ -692,7 +692,7 @@ const Emitter = struct {
 
     fn exportIsType(e: *Emitter, spec: *Node, reexport: bool) bool {
         const sd = spec.data.export_spec;
-        if (reexport) return if (spec.symbol) |s| e.aliasIsType(s) else false;
+        if (reexport) return if (spec.symbol()) |s| e.aliasIsType(s) else false;
         const local = sd.prop_name orelse sd.name;
         const name = binder.specName(local);
         const s = binder.lookupLocal(spec, name, F.value | F.type) orelse return false;

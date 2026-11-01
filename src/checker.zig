@@ -5,6 +5,7 @@ const ast = @import("ast.zig");
 const binder = @import("binder.zig");
 const project = @import("project.zig");
 const pool = @import("pool.zig");
+const Bump = @import("bump.zig").Bump;
 const T = @import("types.zig");
 const d = @import("decls.zig");
 const expr = @import("expr.zig");
@@ -83,7 +84,7 @@ fn checkBindings(c: *Checker, pat: *Node) void {
     for (elems) |e| {
         if (e.data != .binding_elem) continue;
         const x = e.data.binding_elem;
-        if (e.symbol) |s| {
+        if (e.symbol()) |s| {
             _ = d.typeOfSymbol(c, s);
             if (x.name.data == .identifier) checkRedeclared(c, e, s, x.name);
         }
@@ -242,7 +243,7 @@ fn checkVarDecl(c: *Checker, n: *Node) void {
         checkBindings(c, v.name);
         return;
     }
-    if (n.symbol) |s| {
+    if (n.symbol()) |s| {
         const declared = d.typeOfSymbol(c, s);
         // Exported and ambient variables are read from elsewhere, so no flow can type them.
         if (c.no_implicit_any and v.type == null and v.init == null and declared.data == .err and isPlainDeclaration(n) and !expr.inJs(c, n) and d.isReadElsewhere(c, n.parent.?, n)) {
@@ -490,7 +491,7 @@ fn missingExport(c: *Checker, m: *Symbol, at: *Node, name: []const u8) void {
         return;
     }
     var local = false;
-    if (m.file) |f| if (f.root.locals) |l| {
+    if (m.file) |f| if (f.root.locals()) |l| {
         local = l.get(name) != null;
     };
     if (local) {
@@ -624,7 +625,7 @@ fn checkStmt(c: *Checker, n: *Node) void {
         },
         .enum_decl => |x| {
             checkStatementMods(c, n);
-            if (n.symbol) |s| _ = d.declaredType(c, s);
+            if (n.symbol()) |s| _ = d.declaredType(c, s);
             for (x.members) |m| if (m.data.enum_member.init) |i| {
                 _ = expr.checkExpression(c, i);
             };
@@ -661,7 +662,7 @@ fn isOverrideOk(c: *Checker, p: *T.Prop, b: *T.Prop) bool {
 fn checkClass(c: *Checker, n: *Node) void {
     const x = n.data.class;
     for (x.decorators) |dn| _ = expr.checkExpression(c, dn.data.decorator.expr);
-    const s = n.symbol orelse {
+    const s = n.symbol() orelse {
         checkMembers(c, n, x.members);
         return;
     };
@@ -686,7 +687,7 @@ fn checkClass(c: *Checker, n: *Node) void {
         if (base.data != .obj) continue;
         for (d.propsOf(c, base)) |bp| {
             if (bp.private) continue;
-            const p = d.membersOf(c, this_t).props.get(bp.name) orelse continue;
+            const p = d.ownProp(c, this_t, bp.name) orelse continue;
             if (p == bp or p.decl == bp.decl) continue;
             if (!isOverrideOk(c, p, bp)) {
                 const at = if (p.decl) |dn| nameOfMember(dn) else n;
@@ -723,7 +724,7 @@ fn checkOverrides(c: *Checker, n: *Node, t: *Type, this_t: *Type) void {
     const x = n.data.class;
     const required = (c.prog.cfg.options.noImplicitOverride orelse false) and !d.isAmbient(c, n);
     if (!required and !mentionsOverride(x)) return;
-    var o: Overriding = .{ .t = t, .this_t = this_t, .static_t = d.typeOfSymbol(c, n.symbol.?), .base_static = c.t_any, .required = required };
+    var o: Overriding = .{ .t = t, .this_t = this_t, .static_t = d.typeOfSymbol(c, n.symbol().?), .base_static = c.t_any, .required = required };
     if (extendsNode(x)) |e| {
         const bases = d.basesOf(c, t);
         if (bases.len > 0) {
@@ -822,12 +823,12 @@ fn checkAbstract(c: *Checker, n: *Node, t: *Type, base: *Type) void {
     var missing = c.newList(*T.Prop);
     for (d.propsOf(c, base)) |bp| {
         if (!bp.abstract) continue;
-        const p = d.membersOf(c, t).props.get(bp.name) orelse continue;
+        const p = d.ownProp(c, t, bp.name) orelse continue;
         if (p.abstract) missing.append(c.a, bp) catch oom();
     }
     if (missing.items.len == 0) return;
     const nm = n.data.class.name orelse n;
-    const cname = if (n.symbol) |s| s.name else "?";
+    const cname = if (n.symbol()) |s| s.name else "?";
     const bname = expr.show(c, base);
     if (missing.items.len == 1) {
         err(c, nm, 2515, c.fmt("Non-abstract class '{s}' does not implement inherited abstract member '{s}' from class '{s}'.", .{ cname, missing.items[0].name, bname }));
@@ -922,7 +923,7 @@ fn checkMembers(c: *Checker, cls: *Node, members: []*Node) void {
 }
 
 fn checkInterface(c: *Checker, n: *Node) void {
-    const s = n.symbol orelse return;
+    const s = n.symbol() orelse return;
     const t = d.declaredType(c, s);
     if (t.data != .obj) return;
     for (d.basesOf(c, t)) |b0| {
@@ -931,7 +932,7 @@ fn checkInterface(c: *Checker, n: *Node) void {
         if (base.data != .obj) continue;
         const this_t = if (t.data.obj.thisType()) |x| d.withThis(c, t, x) else t;
         for (d.propsOf(c, base)) |bp| {
-            const p = d.membersOf(c, this_t).props.get(bp.name) orelse continue;
+            const p = d.ownProp(c, this_t, bp.name) orelse continue;
             if (p == bp or p.decl == bp.decl) continue;
             if (!isOverrideOk(c, p, bp)) {
                 err(c, n.data.interface.name, 2430, c.fmt("Interface '{s}' incorrectly extends interface '{s}'.", .{ s.name, expr.show(c, b0) }));
@@ -981,10 +982,30 @@ fn checkFile(c: *Checker, f: *ast.File) void {
     checkBlock(c, f.root.data.source_file.stmts);
     drainDeferred(c);
     walkTypes(c, f.root);
+    forgetBodies(c);
 }
 
-/// More runs hold less at once and rebuild lib types more often: 16 costs 0.13 s of CPU per worker.
-const runs_per_worker = 16;
+/// These answer for nodes inside bodies, and a checked file's bodies are not asked about again:
+/// what other files need from them lives on its symbols. Tables grown for one file would otherwise
+/// keep growing, and they make up a fifth of what a run allocates.
+fn forgetBodies(c: *Checker) void {
+    c.name_syms.clearRetainingCapacity();
+    c.resolved_calls.clearRetainingCapacity();
+    c.call_results.clearRetainingCapacity();
+    c.effects.clearRetainingCapacity();
+    c.flow_cache.clearRetainingCapacity();
+    c.reach_cache.clearRetainingCapacity();
+    c.ref_answers.clearRetainingCapacity();
+    c.const_keys.clearRetainingCapacity();
+    c.constant_refs.clearRetainingCapacity();
+    c.logical_left.clearRetainingCapacity();
+    c.sensitive_args.clearRetainingCapacity();
+    c.elem_index.clearRetainingCapacity();
+}
+
+/// More runs hold less at once and rebuild lib types more often. On VS Code 24 holds a quarter less
+/// than 16 for 2% more cycles; what each worker holds is the larger part of the peak.
+const runs_per_worker = 24;
 
 /// A fresh checker costs about 20 ms of lib types, which is what 100 KB of source takes to check.
 const least_run_bytes = 256 * 1024;
@@ -992,21 +1013,28 @@ const least_run_bytes = 256 * 1024;
 const Work = struct {
     prog: *project.Program,
     runs: [][]*ast.File,
+    turns: []const u32,
     results: [][]Diag,
-    arenas: []std.heap.ArenaAllocator,
+    bumps: []Bump,
 };
 
 /// What a checker builds for one run is little use to the next, while keeping it all costs more
-/// than the AST does, so each run gets a fresh checker and the worker's arena comes back whole.
-fn runFiles(w: *Work, worker: usize, i: usize) void {
+/// than the AST does, so each run gets a fresh checker and the worker's memory comes back whole.
+fn runFiles(w: *Work, worker: usize, turn: usize) void {
+    const i = w.turns[turn];
     w.results[i] = &.{};
     if (w.prog.body_failed.load(.monotonic)) return;
-    const arena = &w.arenas[worker];
-    defer _ = arena.reset(.retain_capacity);
-    const a = arena.allocator();
+    const bump = &w.bumps[worker];
+    defer bump.reset();
+    const a = bump.allocator();
     const c = Checker.new(a, w.prog);
     d.initGlobals(c);
-    for (w.runs[i]) |f| c.owned.put(a, f, {}) catch oom();
+    var source: usize = 0;
+    for (w.runs[i]) |f| {
+        c.owned.put(a, f, {}) catch oom();
+        source += f.src.len;
+    }
+    c.reserveFor(source);
     for (w.runs[i]) |f| checkFile(c, f);
     w.results[i] = keepDiags(c.diags.items);
 }
@@ -1038,6 +1066,34 @@ fn partition(a: std.mem.Allocator, files: []*ast.File, most: usize) [][]*ast.Fil
     return out;
 }
 
+/// The order to take runs in. A run's memory follows its source, and the largest are neighbours in
+/// the heaviest directories, so in path order they are all up at once and that is the peak. Dealing
+/// them out by a step near the golden ratio of the count keeps any few of them far apart. Workers
+/// start together, so the first of them get the smallest runs, or they would all top out at once.
+fn spreadTurns(a: std.mem.Allocator, runs: []const []*ast.File, workers: usize) []u32 {
+    const sizes = a.alloc(u64, runs.len) catch oom();
+    const by_size = a.alloc(u32, runs.len) catch oom();
+    for (runs, sizes, by_size, 0..) |r, *s, *x, i| {
+        s.* = 0;
+        for (r) |f| s.* += f.src.len;
+        x.* = @intCast(i);
+    }
+    std.mem.sort(u32, by_size, sizes, struct {
+        fn more(ctx: []const u64, l: u32, r: u32) bool {
+            return if (ctx[l] != ctx[r]) ctx[l] > ctx[r] else l < r;
+        }
+    }.more);
+    const turns = a.alloc(u32, runs.len) catch oom();
+    const first = @min(workers, runs.len);
+    const rest = runs.len - first;
+    @memcpy(turns[0..first], by_size[rest..]);
+    if (rest == 0) return turns;
+    var step = rest * 618 / 1000 | 1;
+    while (std.math.gcd(step, rest) != 1) step += 2;
+    for (by_size[0..rest], 0..) |run, k| turns[first + k * step % rest] = run;
+    return turns;
+}
+
 pub fn checkProgram(a: std.mem.Allocator, p: *project.Program) []Diag {
     var files: std.ArrayList(*ast.File) = .empty;
     const skip_lib = p.cfg.options.skipLibCheck orelse false;
@@ -1049,10 +1105,10 @@ pub fn checkProgram(a: std.mem.Allocator, p: *project.Program) []Diag {
     if (files.items.len == 0) return &.{};
     const runs = partition(a, files.items, p.tp.width() * runs_per_worker);
     const results = a.alloc([]Diag, runs.len) catch oom();
-    const arenas = a.alloc(std.heap.ArenaAllocator, p.tp.width()) catch oom();
-    for (arenas) |*x| x.* = .init(std.heap.smp_allocator);
-    defer for (arenas) |*x| x.deinit();
-    var w = Work{ .prog = p, .runs = runs, .results = results, .arenas = arenas };
+    const bumps = a.alloc(Bump, p.tp.width()) catch oom();
+    for (bumps) |*x| x.* = .init(std.heap.smp_allocator);
+    defer for (bumps) |*x| x.deinit();
+    var w = Work{ .prog = p, .runs = runs, .turns = spreadTurns(a, runs, p.tp.width()), .results = results, .bumps = bumps };
     pool.parallelForEach(p.tp, runs.len, &w, runFiles);
     var out: std.ArrayList(Diag) = .empty;
     for (results) |r| out.appendSlice(a, r) catch oom();
