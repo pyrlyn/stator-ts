@@ -9,7 +9,7 @@ stator-ts scan             # parse the whole project in parallel, print stats
 stator-ts test             # compile and run *.test.ts files in parallel on Node or Bun
 ```
 
-Build with Zig 0.16.0: `zig build -Doptimize=ReleaseFast`.
+Build with Zig 0.17.0: `zig build -Doptimize=ReleaseFast`.
 
 `--all-diagnostics` also shows semantic errors when the project has syntax errors, which the default, like the tsc command line, holds back.
 

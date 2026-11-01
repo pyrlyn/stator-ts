@@ -40,7 +40,7 @@ test "parallelFor visits every index once" {
     defer arena.deinit();
     const tp = try ThreadPool.init(arena.allocator(), std.testing.io, 8);
     defer tp.deinit();
-    var seen = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(0)} ** 64;
+    var seen: [64]std.atomic.Value(u32) = @splat(.init(0));
     const visit = struct {
         fn f(s: *[64]std.atomic.Value(u32), _: usize, i: usize) void {
             _ = s[i].fetchAdd(1, .monotonic);

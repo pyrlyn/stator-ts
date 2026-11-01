@@ -2,7 +2,7 @@
 
 | Program | How to install | Why here | Source |
 | --- | --- | --- | --- |
-| zig 0.16.0 | mise | Compiler and build system | https://github.com/ziglang/zig |
+| zig 0.17.0 | mise, pinned in `mise.toml` | Compiler and build system | https://github.com/ziglang/zig |
 | node | mise | Default test runtime, differential tests | https://github.com/nodejs/node |
 | bun | mise | Alternative test runtime | https://github.com/oven-sh/bun |
 | git | system | `tests/ts7/sync.sh` fetches upstream's tests | https://github.com/git/git |

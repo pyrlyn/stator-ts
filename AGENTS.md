@@ -1,6 +1,6 @@
 # stator-ts
 
-A TypeScript compiler written in Zig 0.16: parses TypeScript, type-checks it, emits JavaScript, scans projects in parallel and runs their tests on Node or Bun.
+A TypeScript compiler written in Zig 0.17: parses TypeScript, type-checks it, emits JavaScript, scans projects in parallel and runs their tests on Node or Bun.
 
 If an `AGENTS.md` or `CLAUDE.md` exists higher in the tree, follow it too; on conflict, ask the creator.
 

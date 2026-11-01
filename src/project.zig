@@ -172,17 +172,18 @@ fn stringList(a: Allocator, v: json.Value) ?[]const []const u8 {
 }
 
 fn applyOptions(a: Allocator, cfg: *Config, base: []const u8, co: json.ObjectMap) void {
-    inline for (std.meta.fields(Options)) |f| {
-        if (co.get(f.name)) |v| {
-            if (f.type == ?bool) {
-                if (v == .bool) @field(cfg.options, f.name) = v.bool;
-            } else if (f.type == ?[]const u8) {
+    const info = @typeInfo(Options).@"struct";
+    inline for (info.field_names, info.field_types) |name, T| {
+        if (co.get(name)) |v| {
+            if (T == ?bool) {
+                if (v == .bool) @field(cfg.options, name) = v.bool;
+            } else if (T == ?[]const u8) {
                 if (v == .string) {
-                    const is_path = comptime (std.mem.eql(u8, f.name, "outDir") or std.mem.eql(u8, f.name, "rootDir") or std.mem.eql(u8, f.name, "baseUrl"));
-                    @field(cfg.options, f.name) = if (is_path) fspath.resolve(a, &.{ base, v.string }) catch oom() else v.string;
+                    const is_path = comptime (std.mem.eql(u8, name, "outDir") or std.mem.eql(u8, name, "rootDir") or std.mem.eql(u8, name, "baseUrl"));
+                    @field(cfg.options, name) = if (is_path) fspath.resolve(a, &.{ base, v.string }) catch oom() else v.string;
                 }
             } else {
-                if (stringList(a, v)) |l| @field(cfg.options, f.name) = l;
+                if (stringList(a, v)) |l| @field(cfg.options, name) = l;
             }
         }
     }

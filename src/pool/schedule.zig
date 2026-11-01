@@ -43,7 +43,7 @@ pub fn runsByWeight(a: Allocator, weights: []const u64, most: usize, least: u64)
 
 test "cursor hands out every index once" {
     var c = Cursor{ .total = 10, .chunk = 3 };
-    var seen = [_]u8{0} ** 10;
+    var seen: [10]u8 = @splat(0);
     while (c.claim()) |r| for (r.start..r.end) |i| {
         seen[i] += 1;
     };
