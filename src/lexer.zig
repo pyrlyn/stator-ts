@@ -228,6 +228,19 @@ pub const Diag = struct {
     msg: []const u8,
 };
 
+/// For each first letter, the lengths of the keywords that start with it. Most identifiers are
+/// not keywords and this tells without comparing them to anything.
+const keyword_lengths = blk: {
+    var t: [256]u16 = @splat(0);
+    for (keywords.keys()) |k| t[k[0]] |= 1 << k.len;
+    break :blk t;
+};
+
+fn keywordOf(text: []const u8) Tok {
+    if (text.len >= 16 or keyword_lengths[text[0]] >> @intCast(text.len) & 1 == 0) return .identifier;
+    return keywords.get(text) orelse .identifier;
+}
+
 fn isIdentStart(c: u8) bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '$' or c == '_' or c >= 0x80;
 }
@@ -253,8 +266,16 @@ fn spaceLen(src: []const u8, i: usize) u8 {
     return if (hit) 3 else 0;
 }
 
+const ascii_ident_part = blk: {
+    var t: [128]bool = undefined;
+    for (&t, 0..) |*x, i| x.* = isIdentPart(i);
+    break :blk t;
+};
+
 fn identPartAt(src: []const u8, i: usize) bool {
-    return i < src.len and isIdentPart(src[i]) and spaceLen(src, i) == 0;
+    if (i >= src.len) return false;
+    const c = src[i];
+    return if (c < 0x80) ascii_ident_part[c] else spaceLen(src, i) == 0;
 }
 fn isDigit(c: u8) bool {
     return c >= '0' and c <= '9';
@@ -349,22 +370,21 @@ pub const Lexer = struct {
                     } else if (n == '*') {
                         const s = l.pos;
                         l.pos += 2;
-                        var closed = false;
-                        var last_line = s;
-                        while (l.pos < l.src.len) {
-                            const d = l.src[l.pos];
-                            if (d == '*' and l.peek(1) == '/') {
-                                l.pos += 2;
-                                closed = true;
-                                break;
-                            }
-                            l.pos += 1;
-                            if (d == '\n' or d == '\r') {
-                                l.nl_before = true;
-                                last_line = l.pos;
-                            }
+                        // Comments are a good part of a source file, so this jumps between stars.
+                        const body = l.pos;
+                        var star = std.mem.indexOfScalarPos(u8, l.src, body, '*');
+                        while (star) |x| {
+                            if (x + 1 < l.src.len and l.src[x + 1] == '/') break;
+                            star = std.mem.indexOfScalarPos(u8, l.src, x + 1, '*');
                         }
-                        if (!closed) l.err(l.pos, 0, 1010, "'*/' expected.");
+                        const end = star orelse l.src.len;
+                        var last_line = s;
+                        if (std.mem.lastIndexOfAny(u8, l.src[body..end], "\n\r")) |i| {
+                            l.nl_before = true;
+                            last_line = body + @as(u32, @intCast(i)) + 1;
+                        }
+                        l.pos = @intCast(end);
+                        if (star != null) l.pos += 2 else l.err(l.pos, 0, 1010, "'*/' expected.");
                         l.scanDirective(l.src[last_line..l.pos], l.pos);
                     } else return;
                 },
@@ -509,7 +529,7 @@ pub const Lexer = struct {
                     while (identPartAt(l.src, l.pos)) l.pos += 1;
                     if (l.pos < l.src.len and l.src[l.pos] == '\\') return l.scanEscapedIdentifier();
                     l.value = l.src[l.start..l.pos];
-                    return keywords.get(l.value) orelse .identifier;
+                    return keywordOf(l.value);
                 }
                 l.err(l.pos, 1, 1127, "Invalid character.");
                 l.pos += 1;
