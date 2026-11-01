@@ -19,6 +19,11 @@ pub const EnumValue = union(enum) { num: f64, str: []const u8, none };
 
 pub const EnumLit = struct { sym: *Symbol, parent: *Symbol, value: EnumValue };
 
+pub const Tmpl = struct { texts: []const []const u8, types: []*Type };
+
+pub const Alias = struct { sym: *Symbol, args: []*Type };
+
+/// The two largest variants sit behind pointers: every type pays for the widest one.
 pub const Data = union(enum) {
     any,
     /// `any` that came from a failure or from something the checker does not model: never reported on.
@@ -38,7 +43,7 @@ pub const Data = union(enum) {
     big_lit: []const u8,
     bool_lit: bool,
     unique: *Symbol,
-    enum_lit: EnumLit,
+    enum_lit: *const EnumLit,
     enum_: *Symbol,
     union_: []*Type,
     inter: []*Type,
@@ -47,7 +52,7 @@ pub const Data = union(enum) {
     keyof: *Type,
     access: struct { obj: *Type, index: *Type },
     cond: *Cond,
-    tmpl: struct { texts: []const []const u8, types: []*Type },
+    tmpl: *const Tmpl,
     /// `NoInfer<T>`: only ever generic, a concrete argument unwraps on instantiation.
     noinfer: *Type,
     strmap: struct { kind: StrMapKind, ty: *Type },
@@ -63,8 +68,7 @@ pub const Type = struct {
     data: Data,
     /// May mention a type variable, so instantiation has to look inside.
     vars: bool = false,
-    alias: ?*Symbol = null,
-    alias_args: []*Type = &.{},
+    alias: ?*Alias = null,
     /// On a fresh literal or fresh object literal: the same type without freshness.
     regular: ?*Type = null,
     fresh: ?*Type = null,

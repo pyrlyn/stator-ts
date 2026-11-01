@@ -185,10 +185,10 @@ const P = struct {
         p.depth += 1;
         defer p.depth -= 1;
         if (t.alias) |a| {
-            p.w(a.name);
-            if (t.alias_args.len > 0) {
+            p.w(a.sym.name);
+            if (a.args.len > 0) {
                 p.w("<");
-                p.list(t.alias_args, ", ");
+                p.list(a.args, ", ");
                 p.w(">");
             }
             return;

@@ -448,8 +448,7 @@ fn declareAlias(c: *Checker, s: *Symbol) *Type {
         if (t.data == .obj and t.data.obj.kind != .anon and t.data.obj.kind != .mapped) {
             out = t;
         } else {
-            t.alias = s;
-            t.alias_args = params;
+            t.alias = c.create(T.Alias, .{ .sym = s, .args = params });
         }
     }
     c.declared.put(c.a, s, out) catch oom();
@@ -637,8 +636,7 @@ fn declareEnum(c: *Checker, s: *Symbol) *Type {
             }
             next = if (val == .num) val.num + 1 else null;
             if (val == .none) literal = false;
-            const t = c.mk(.{ .enum_lit = .{ .sym = ms, .parent = s, .value = val } });
-            t.fresh = null;
+            const t = c.mk(.{ .enum_lit = c.create(T.EnumLit, .{ .sym = ms, .parent = s, .value = val }) });
             c.declared.put(c.a, ms, t) catch oom();
             types.append(c.a, t) catch oom();
         }
@@ -1303,8 +1301,7 @@ fn keepAlias(c: *Checker, t: *Type, out: *Type, m: *Mapper) *Type {
     // Interned results are shared, so only a type of the same shape may take the alias.
     const same = std.meta.activeTag(t.data) == std.meta.activeTag(out.data) and (out.data == .union_ or out.data == .inter or out.data == .cond);
     if (t.alias != null and out.alias == null and out != c.t_boolean and (same or (t.data == .inter and allMapped(out)))) {
-        out.alias = t.alias;
-        out.alias_args = mapAll(c, m, t.alias_args);
+        out.alias = c.create(T.Alias, .{ .sym = t.alias.?.sym, .args = mapAll(c, m, t.alias.?.args) });
     }
     return out;
 }
@@ -1336,8 +1333,7 @@ fn instantiateAnon(c: *Checker, t: *Type, m: *Mapper) *Type {
         if (arg != hp) if (instantiateHomomorphic(c, root, hp, arg, outer, mapped)) |r| {
             // Inference sees `Shape<A | B>` as one argument, not as `A` and `B` apart.
             if (root.alias != null and r.alias == null and allMapped(r)) {
-                r.alias = root.alias;
-                r.alias_args = mapAll(c, combined, root.alias_args);
+                r.alias = c.create(T.Alias, .{ .sym = root.alias.?.sym, .args = mapAll(c, combined, root.alias.?.args) });
             }
             return r;
         };
@@ -1371,8 +1367,9 @@ fn anonInstance(c: *Checker, root: *Type, outer: []*Type, mapped: []*Type, o: *O
     // Set before the alias arguments recurse: they can grow the table or come back to this key.
     gop.value_ptr.* = r;
     if (root.alias) |al| {
-        r.alias = al;
-        r.alias_args = mapAll(c, r.data.obj.mapper.?, root.alias_args);
+        const named = c.create(T.Alias, .{ .sym = al.sym, .args = &.{} });
+        r.alias = named;
+        named.args = mapAll(c, r.data.obj.mapper.?, al.args);
     }
     return r;
 }
@@ -3553,7 +3550,7 @@ pub fn getTemplate(c: *Checker, texts: []const []const u8, types: []const *Type)
     @memcpy(key[1 + ntypes.items.len ..], pieces);
     const gop = c.slot(key);
     if (gop.found_existing) return gop.value_ptr.*;
-    const t = c.mk(.{ .tmpl = .{ .texts = ntexts.items, .types = ntypes.items } });
+    const t = c.mk(.{ .tmpl = c.create(T.Tmpl, .{ .texts = ntexts.items, .types = ntypes.items }) });
     for (ntypes.items) |x| if (x.vars) {
         t.vars = true;
     };

@@ -1317,7 +1317,7 @@ fn isNonInferrable(c: *Checker, t: *Type) bool {
             if (o.non_inferrable) return true;
             if (o.args) |args| for (args) |a| if (isNonInferrable(c, a)) return true;
             // `Box<never>` over an unresolved parameter says as little as that parameter.
-            for (t.alias_args) |a| if (isNonInferrable(c, a)) return true;
+            if (t.alias) |al| for (al.args) |a| if (isNonInferrable(c, a)) return true;
             return false;
         },
         .union_, .inter => |x| for (x) |m| {
@@ -1627,10 +1627,10 @@ const Infer = struct {
             st.reverse_out.append(c.a, s) catch oom();
             return;
         };
-        if (s.alias != null and s.alias == t.alias and s.alias_args.len == t.alias_args.len) {
-            st.args(aliasVariances(st.c, s.alias.?), s.alias_args, t.alias_args);
+        if (s.alias) |a| if (t.alias) |b| if (a.sym == b.sym and a.args.len == b.args.len) {
+            st.args(aliasVariances(st.c, a.sym), a.args, b.args);
             return;
-        }
+        };
         if (s.data == .noinfer) s = s.data.noinfer;
         switch (t.data) {
             .noinfer => return,
@@ -1773,7 +1773,9 @@ const Infer = struct {
             if (a.sym != null and a.sym == b.sym) return true;
             if (a.node != null and a.node == b.node) return true;
         }
-        return s.alias != null and s.alias_args.len > 0 and s.alias == t.alias;
+        const a = s.alias orelse return false;
+        const b = t.alias orelse return false;
+        return a.args.len > 0 and a.sym == b.sym;
     }
 
     /// Pairs off members that match, infers between them, and leaves the rest of both sides.
