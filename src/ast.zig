@@ -124,6 +124,26 @@ pub const VarKind = enum { @"var", let, @"const", using, await_using };
 
 pub const KwType = enum { any, unknown, never, void, number, string, boolean, bigint, symbol, object, undefined, null, intrinsic };
 
+/// These would cost every node their size if they sat in `Data`, and VS Code has 22 million nodes.
+pub const Call = struct { callee: *Node, type_args: TypeList, args: []*Node, optional: bool };
+pub const NewExpr = struct { callee: *Node, type_args: TypeList, args: []*Node };
+pub const TypeRef = struct { name: *Node, type_args: TypeList };
+pub const BindingElem = struct { prop_name: ?*Node, dotdotdot: bool, name: *Node, init: ?*Node };
+pub const TemplateExpr = struct { head: []const u8, spans: []*Node };
+pub const ExprWithTypeArgs = struct { expr: *Node, type_args: TypeList };
+pub const ForOf = struct { is_await: bool, init: *Node, expr: *Node, body: *Node };
+pub const TypeAlias = struct { name: *Node, type_params: TypeList, type: *Node };
+pub const ForStmt = struct { init: ?*Node, cond: ?*Node, update: ?*Node, body: *Node };
+pub const TypeQuery = struct { name: *Node, type_args: TypeList };
+pub const ExportDecl = struct { clause: ?*Node, specifier: ?*Node, type_only: bool, attrs: ?*Node };
+pub const ConditionalType = struct { check: *Node, extends: *Node, then: *Node, els: *Node };
+pub const ImportType = struct { is_typeof: bool, arg: *Node, qualifier: ?*Node, type_args: TypeList };
+pub const TaggedTemplate = struct { tag: *Node, type_args: TypeList, template: *Node };
+pub const TemplateLiteralType = struct { head: []const u8, spans: []*Node };
+pub const JsxSelfClosing = struct { tag: *Node, type_args: TypeList, attrs: []*Node };
+pub const JsxOpening = struct { tag: *Node, type_args: TypeList, attrs: []*Node };
+pub const JsxElement = struct { open: *Node, children: []*Node, close: *Node };
+
 /// Field order is source order: forEachChild relies on it.
 pub const Data = union(enum) {
     source_file: struct { stmts: []*Node },
@@ -143,9 +163,9 @@ pub const Data = union(enum) {
     import_kw,
     omitted_expr,
 
-    template_expr: struct { head: []const u8, spans: []*Node },
+    template_expr: *TemplateExpr,
     template_span: struct { expr: *Node, text: []const u8 },
-    tagged_template: struct { tag: *Node, type_args: TypeList, template: *Node },
+    tagged_template: *TaggedTemplate,
     array_lit: struct { elems: []*Node },
     object_lit: struct { props: []*Node },
     property_assign: struct { name: *Node, value: *Node },
@@ -155,8 +175,8 @@ pub const Data = union(enum) {
     paren: struct { expr: *Node },
     prop_access: struct { expr: *Node, name: *Node, optional: bool },
     elem_access: struct { expr: *Node, index: *Node, optional: bool },
-    call: struct { callee: *Node, type_args: TypeList, args: []*Node, optional: bool },
-    new_expr: struct { callee: *Node, type_args: TypeList, args: []*Node },
+    call: *Call,
+    new_expr: *NewExpr,
     prefix: struct { op: Tok, expr: *Node },
     postfix: struct { expr: *Node, op: Tok },
     typeof_expr: struct { expr: *Node },
@@ -172,10 +192,10 @@ pub const Data = union(enum) {
     type_assertion: struct { type: *Node, expr: *Node },
     meta_property: struct { keyword: Tok, name: []const u8 },
 
-    jsx_element: struct { open: *Node, children: []*Node, close: *Node },
-    jsx_self_closing: struct { tag: *Node, type_args: TypeList, attrs: []*Node },
+    jsx_element: *JsxElement,
+    jsx_self_closing: *JsxSelfClosing,
     jsx_fragment: struct { children: []*Node },
-    jsx_opening: struct { tag: *Node, type_args: TypeList, attrs: []*Node },
+    jsx_opening: *JsxOpening,
     jsx_closing: struct { tag: *Node },
     jsx_attr: struct { name: *Node, value: ?*Node },
     jsx_spread_attr: struct { expr: *Node },
@@ -190,9 +210,9 @@ pub const Data = union(enum) {
     if_stmt: struct { cond: *Node, then: *Node, els: ?*Node },
     do_stmt: struct { body: *Node, cond: *Node },
     while_stmt: struct { cond: *Node, body: *Node },
-    for_stmt: struct { init: ?*Node, cond: ?*Node, update: ?*Node, body: *Node },
+    for_stmt: *ForStmt,
     for_in: struct { init: *Node, expr: *Node, body: *Node },
-    for_of: struct { is_await: bool, init: *Node, expr: *Node, body: *Node },
+    for_of: *ForOf,
     continue_stmt: struct { label: ?*Node },
     break_stmt: struct { label: ?*Node },
     return_stmt: struct { expr: ?*Node },
@@ -210,7 +230,7 @@ pub const Data = union(enum) {
     func: *Func,
     class: *Class,
     interface: *Interface,
-    type_alias: struct { name: *Node, type_params: TypeList, type: *Node },
+    type_alias: *TypeAlias,
     enum_decl: struct { name: *Node, members: []*Node },
     enum_member: struct { name: *Node, init: ?*Node },
     module_decl: struct { name: *Node, body: ?*Node, is_global: bool, is_namespace: bool },
@@ -221,7 +241,7 @@ pub const Data = union(enum) {
     namespace_import: struct { name: *Node },
     named_imports: struct { elems: []*Node },
     import_spec: struct { prop_name: ?*Node, name: *Node, type_only: bool },
-    export_decl: struct { clause: ?*Node, specifier: ?*Node, type_only: bool, attrs: ?*Node },
+    export_decl: *ExportDecl,
     named_exports: struct { elems: []*Node },
     namespace_export: struct { name: *Node },
     export_spec: struct { prop_name: ?*Node, name: *Node, type_only: bool },
@@ -232,7 +252,7 @@ pub const Data = union(enum) {
 
     object_pattern: struct { elems: []*Node },
     array_pattern: struct { elems: []*Node },
-    binding_elem: struct { prop_name: ?*Node, dotdotdot: bool, name: *Node, init: ?*Node },
+    binding_elem: *BindingElem,
 
     param: *Param,
     decorator: struct { expr: *Node },
@@ -244,9 +264,9 @@ pub const Data = union(enum) {
 
     kw_type: KwType,
     this_type,
-    type_ref: struct { name: *Node, type_args: TypeList },
+    type_ref: *TypeRef,
     qualified_name: struct { left: *Node, right: *Node },
-    type_query: struct { name: *Node, type_args: TypeList },
+    type_query: *TypeQuery,
     type_literal: struct { members: []*Node },
     array_type: struct { elem: *Node },
     tuple_type: struct { elems: []*Node },
@@ -255,21 +275,21 @@ pub const Data = union(enum) {
     rest_type: struct { type: *Node },
     union_type: struct { types: []*Node },
     intersection_type: struct { types: []*Node },
-    conditional_type: struct { check: *Node, extends: *Node, then: *Node, els: *Node },
+    conditional_type: *ConditionalType,
     infer_type: struct { tparam: *Node },
     paren_type: struct { type: *Node },
     type_operator: struct { op: Tok, type: *Node },
     indexed_access: struct { object: *Node, index: *Node },
     mapped_type: *Mapped,
     literal_type: struct { lit: *Node },
-    template_literal_type: struct { head: []const u8, spans: []*Node },
+    template_literal_type: *TemplateLiteralType,
     template_type_span: struct { type: *Node, text: []const u8 },
-    import_type: struct { is_typeof: bool, arg: *Node, qualifier: ?*Node, type_args: TypeList },
+    import_type: *ImportType,
     type_predicate: struct { asserts: bool, param: *Node, type: ?*Node },
     type_param: struct { name: *Node, constraint: ?*Node, default: ?*Node },
     property_sig: struct { name: *Node, question: bool, type: ?*Node },
     heritage_clause: struct { tok: Tok, types: []*Node },
-    expr_with_type_args: struct { expr: *Node, type_args: TypeList },
+    expr_with_type_args: *ExprWithTypeArgs,
 };
 
 pub const Kind = std.meta.Tag(Data);

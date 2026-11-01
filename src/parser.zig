@@ -565,7 +565,7 @@ const Parser = struct {
             const e = p.parseAssignment();
             p.expect(.r_paren);
             const body = p.parseStatement();
-            return p.mk(s, .{ .for_of = .{ .is_await = is_await, .init = init_node.?, .expr = e, .body = body } });
+            return p.mk(s, .{ .for_of = p.box(ast.ForOf{ .is_await = is_await, .init = init_node.?, .expr = e, .body = body }) });
         }
         if (init_node != null and p.t() == .kw_in) {
             p.next();
@@ -580,7 +580,7 @@ const Parser = struct {
         const update = if (p.t() != .r_paren) p.parseExpressionAllowIn() else null;
         p.expect(.r_paren);
         const body = p.parseStatement();
-        return p.mk(s, .{ .for_stmt = .{ .init = init_node, .cond = cond, .update = update, .body = body } });
+        return p.mk(s, .{ .for_stmt = p.box(ast.ForStmt{ .init = init_node, .cond = cond, .update = update, .body = body }) });
     }
 
     fn isLetDecl(p: *Parser) bool {
@@ -705,7 +705,7 @@ const Parser = struct {
                 }
             }
             const in = if (p.eat(.assign)) p.parseAssignmentAllowIn() else null;
-            p.push(&elems, p.mk(es, .{ .binding_elem = .{ .prop_name = prop, .dotdotdot = dots, .name = name, .init = in } }));
+            p.push(&elems, p.mk(es, .{ .binding_elem = p.box(ast.BindingElem{ .prop_name = prop, .dotdotdot = dots, .name = name, .init = in }) }));
             if (!p.eat(.comma)) break;
         }
         p.expect(.r_brace);
@@ -726,7 +726,7 @@ const Parser = struct {
             const dots = p.eat(.dot3);
             const name = p.parseBindingName();
             const in = if (p.eat(.assign)) p.parseAssignmentAllowIn() else null;
-            p.push(&elems, p.mk(es, .{ .binding_elem = .{ .prop_name = null, .dotdotdot = dots, .name = name, .init = in } }));
+            p.push(&elems, p.mk(es, .{ .binding_elem = p.box(ast.BindingElem{ .prop_name = null, .dotdotdot = dots, .name = name, .init = in }) }));
             if (p.lx.start == es) break;
             if (p.t() != .r_bracket) p.expect(.comma);
         }
@@ -1047,7 +1047,7 @@ const Parser = struct {
                 const es = p.lx.start;
                 const e = p.parseLeftHandSideNoTypeArgs();
                 const ta = p.parseOptionalTypeArgs();
-                p.push(&types, p.mk(es, .{ .expr_with_type_args = .{ .expr = e, .type_args = ta } }));
+                p.push(&types, p.mk(es, .{ .expr_with_type_args = p.box(ast.ExprWithTypeArgs{ .expr = e, .type_args = ta }) }));
                 if (!p.eat(.comma)) break;
             }
             p.push(&list, p.mk(s, .{ .heritage_clause = .{ .tok = tok, .types = types.items } }));
@@ -1066,7 +1066,7 @@ const Parser = struct {
             } else if (p.t() == .l_paren) {
                 // Mixin bases: `class A extends Mixin(B) {}`.
                 const args = p.parseArgs();
-                e = p.mk(s, .{ .call = .{ .callee = e, .type_args = .{}, .args = args, .optional = false } });
+                e = p.mk(s, .{ .call = p.box(ast.Call{ .callee = e, .type_args = .{}, .args = args, .optional = false }) });
             } else if (p.t() == .lt) {
                 // `class A extends mock<B>() {}`; a plain `extends B<T>` is left to the caller.
                 const st = p.save();
@@ -1076,7 +1076,7 @@ const Parser = struct {
                     break;
                 }
                 const args = p.parseArgs();
-                e = p.mk(s, .{ .call = .{ .callee = e, .type_args = tl, .args = args, .optional = false } });
+                e = p.mk(s, .{ .call = p.box(ast.Call{ .callee = e, .type_args = tl, .args = args, .optional = false }) });
             } else break;
         }
         return e;
@@ -1257,7 +1257,7 @@ const Parser = struct {
             break :blk p.mk(is, .{ .kw_type = .intrinsic });
         } else p.parseType();
         p.semi();
-        return p.mk(s, .{ .type_alias = .{ .name = name, .type_params = tp, .type = ty } });
+        return p.mk(s, .{ .type_alias = p.box(ast.TypeAlias{ .name = name, .type_params = tp, .type = ty }) });
     }
 
     fn isIntrinsicAlias(p: *Parser) bool {
@@ -1512,7 +1512,7 @@ const Parser = struct {
             attrs = p.parseAttrs();
         }
         p.semi();
-        return p.mk(s, .{ .export_decl = .{ .clause = clause, .specifier = spec, .type_only = type_only, .attrs = attrs } });
+        return p.mk(s, .{ .export_decl = p.box(ast.ExportDecl{ .clause = clause, .specifier = spec, .type_only = type_only, .attrs = attrs }) });
     }
 
     // Expressions
@@ -1899,7 +1899,7 @@ const Parser = struct {
                     p.next();
                     if (optional and p.t() == .l_paren) {
                         const args = p.parseArgs();
-                        e = p.mk(s, .{ .call = .{ .callee = e, .type_args = .{}, .args = args, .optional = true } });
+                        e = p.mk(s, .{ .call = p.box(ast.Call{ .callee = e, .type_args = .{}, .args = args, .optional = true }) });
                     } else if (optional and p.t() == .l_bracket) {
                         p.next();
                         const idx = p.parseExpressionAllowIn();
@@ -1908,7 +1908,7 @@ const Parser = struct {
                     } else if (optional and (p.t() == .lt or p.t() == .shl)) {
                         const tl = p.tryTypeArgsInExpr() orelse return e;
                         const args = p.parseArgs();
-                        e = p.mk(s, .{ .call = .{ .callee = e, .type_args = tl, .args = args, .optional = true } });
+                        e = p.mk(s, .{ .call = p.box(ast.Call{ .callee = e, .type_args = tl, .args = args, .optional = true }) });
                     } else {
                         const name = p.parseMemberName();
                         e = p.mk(s, .{ .prop_access = .{ .expr = e, .name = name, .optional = optional } });
@@ -1932,28 +1932,28 @@ const Parser = struct {
                 },
                 .no_subst_template, .template_head => {
                     const tpl = p.parseTemplate(true);
-                    e = p.mk(s, .{ .tagged_template = .{ .tag = e, .type_args = .{}, .template = tpl } });
+                    e = p.mk(s, .{ .tagged_template = p.box(ast.TaggedTemplate{ .tag = e, .type_args = .{}, .template = tpl }) });
                 },
                 .l_paren => {
                     if (!allow_call) return e;
                     const args = p.parseArgs();
-                    e = p.mk(s, .{ .call = .{ .callee = e, .type_args = .{}, .args = args, .optional = false } });
+                    e = p.mk(s, .{ .call = p.box(ast.Call{ .callee = e, .type_args = .{}, .args = args, .optional = false }) });
                 },
                 .lt, .shl => {
                     const tl = p.tryTypeArgsInExpr() orelse return e;
                     if (p.t() == .l_paren and allow_call) {
                         const args = p.parseArgs();
-                        e = p.mk(s, .{ .call = .{ .callee = e, .type_args = tl, .args = args, .optional = false } });
+                        e = p.mk(s, .{ .call = p.box(ast.Call{ .callee = e, .type_args = tl, .args = args, .optional = false }) });
                     } else if (p.t() == .no_subst_template or p.t() == .template_head) {
                         const tpl = p.parseTemplate(true);
-                        e = p.mk(s, .{ .tagged_template = .{ .tag = e, .type_args = tl, .template = tpl } });
+                        e = p.mk(s, .{ .tagged_template = p.box(ast.TaggedTemplate{ .tag = e, .type_args = tl, .template = tpl }) });
                     } else if (p.t() == .l_paren) {
                         // `new Foo<T>(x)`: the caller consumes the arguments.
                         p.pending_new_args = tl;
                         return e;
                     } else {
                         // Instantiation expression `f<T>`; at run time it is just `f`.
-                        e = p.mk(s, .{ .expr_with_type_args = .{ .expr = e, .type_args = tl } });
+                        e = p.mk(s, .{ .expr_with_type_args = p.box(ast.ExprWithTypeArgs{ .expr = e, .type_args = tl }) });
                     }
                 },
                 else => return e,
@@ -1978,7 +1978,7 @@ const Parser = struct {
             p.pending_new_args = null;
         }
         const args: []*Node = if (p.t() == .l_paren) p.parseArgs() else &.{};
-        return p.mk(s, .{ .new_expr = .{ .callee = callee, .type_args = ta, .args = args } });
+        return p.mk(s, .{ .new_expr = p.box(ast.NewExpr{ .callee = callee, .type_args = ta, .args = args }) });
     }
 
     fn parseArgs(p: *Parser) []*Node {
@@ -2038,7 +2038,7 @@ const Parser = struct {
             p.push(&spans, p.mk(ss, .{ .template_span = .{ .expr = e, .text = text } }));
             if (tok != .template_middle) break;
         }
-        return p.mk(s, .{ .template_expr = .{ .head = head, .spans = spans.items } });
+        return p.mk(s, .{ .template_expr = p.box(ast.TemplateExpr{ .head = head, .spans = spans.items }) });
     }
 
     fn parsePrimary(p: *Parser) *Node {
@@ -2355,11 +2355,11 @@ const Parser = struct {
             p.next();
             if (p.t() != .gt) p.errHere(1005, "'>' expected.");
             p.closeJsx(in_children);
-            return p.mk(s, .{ .jsx_self_closing = .{ .tag = tag, .type_args = ta, .attrs = attrs } });
+            return p.mk(s, .{ .jsx_self_closing = p.box(ast.JsxSelfClosing{ .tag = tag, .type_args = ta, .attrs = attrs }) });
         }
         if (p.t() != .gt) p.errHere(1005, "'>' expected.");
         p.prev_end = p.lx.pos;
-        const open = p.mk(s, .{ .jsx_opening = .{ .tag = tag, .type_args = ta, .attrs = attrs } });
+        const open = p.mk(s, .{ .jsx_opening = p.box(ast.JsxOpening{ .tag = tag, .type_args = ta, .attrs = attrs }) });
         _ = p.lx.nextJsxChild();
         const children = p.parseJsxChildren();
         const cs = p.lx.start;
@@ -2368,7 +2368,7 @@ const Parser = struct {
         if (p.t() != .gt) p.errHere(1005, "'>' expected.");
         p.closeJsx(in_children);
         const close = p.mk(cs, .{ .jsx_closing = .{ .tag = close_tag } });
-        return p.mk(s, .{ .jsx_element = .{ .open = open, .children = children, .close = close } });
+        return p.mk(s, .{ .jsx_element = p.box(ast.JsxElement{ .open = open, .children = children, .close = close }) });
     }
 
     fn parseJsxChildren(p: *Parser) []*Node {
@@ -2511,7 +2511,7 @@ const Parser = struct {
             p.expect(.colon);
             const els = p.parseType();
             p.no_cond_type = save_cond;
-            return p.mk(s, .{ .conditional_type = .{ .check = ty, .extends = ext, .then = then, .els = els } });
+            return p.mk(s, .{ .conditional_type = p.box(ast.ConditionalType{ .check = ty, .extends = ext, .then = then, .els = els }) });
         }
         return ty;
     }
@@ -2718,7 +2718,7 @@ const Parser = struct {
                 if (p.t() == .kw_import) return p.parseImportType(s, true);
                 const name = p.parseEntityNameInQuery();
                 const ta = if (!p.lx.nl_before) p.parseOptionalTypeArgs() else ast.TypeList{};
-                return p.mk(s, .{ .type_query = .{ .name = name, .type_args = ta } });
+                return p.mk(s, .{ .type_query = p.box(ast.TypeQuery{ .name = name, .type_args = ta }) });
             },
             .kw_import => return p.parseImportType(s, false),
             .l_brace => return if (p.isMappedType()) p.parseMappedType() else blk: {
@@ -2738,14 +2738,14 @@ const Parser = struct {
             .kw_const => {
                 // `x as const`
                 const name = p.identNode();
-                return p.mk(s, .{ .type_ref = .{ .name = name, .type_args = .{} } });
+                return p.mk(s, .{ .type_ref = p.box(ast.TypeRef{ .name = name, .type_args = .{} }) });
             },
             else => {},
         }
         if (p.isIdent()) {
             const name = p.parseEntityName();
             const ta = if (!p.lx.nl_before) p.parseOptionalTypeArgs() else ast.TypeList{};
-            return p.mk(s, .{ .type_ref = .{ .name = name, .type_args = ta } });
+            return p.mk(s, .{ .type_ref = p.box(ast.TypeRef{ .name = name, .type_args = ta }) });
         }
         p.errHere(1110, "Type expected.");
         return p.mk(s, .{ .kw_type = .any });
@@ -2780,7 +2780,7 @@ const Parser = struct {
             qualifier = q;
         }
         const ta = p.parseOptionalTypeArgs();
-        return p.mk(s, .{ .import_type = .{ .is_typeof = is_typeof, .arg = arg, .qualifier = qualifier, .type_args = ta } });
+        return p.mk(s, .{ .import_type = p.box(ast.ImportType{ .is_typeof = is_typeof, .arg = arg, .qualifier = qualifier, .type_args = ta }) });
     }
 
     fn parseTemplateType(p: *Parser) *Node {
@@ -2803,7 +2803,7 @@ const Parser = struct {
             p.push(&spans, p.mk(ss, .{ .template_type_span = .{ .type = ty, .text = text } }));
             if (tok != .template_middle) break;
         }
-        return p.mk(s, .{ .template_literal_type = .{ .head = head, .spans = spans.items } });
+        return p.mk(s, .{ .template_literal_type = p.box(ast.TemplateLiteralType{ .head = head, .spans = spans.items }) });
     }
 
     fn isMappedType(p: *Parser) bool {
