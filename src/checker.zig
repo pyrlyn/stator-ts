@@ -251,6 +251,7 @@ fn checkVarDecl(c: *Checker, n: *Node) void {
         checkRedeclared(c, n, s, v.name);
     }
     const i = v.init orelse return;
+    if (v.type == null) if (c.settled_inits.get(i)) |funcs| return expr.deferQuietFuncs(c, i, funcs);
     const t = expr.checkExpression(c, i);
     if (v.type) |ann| {
         const want = d.typeFromNode(c, ann);
@@ -982,8 +983,8 @@ fn checkFile(c: *Checker, f: *ast.File) void {
     walkTypes(c, f.root);
 }
 
-/// More runs hold less at once and rebuild lib types more often: 24 costs 0.2 s of CPU per worker.
-const runs_per_worker = 24;
+/// More runs hold less at once and rebuild lib types more often: 16 costs 0.13 s of CPU per worker.
+const runs_per_worker = 16;
 
 /// A fresh checker costs about 20 ms of lib types, which is what 100 KB of source takes to check.
 const least_run_bytes = 256 * 1024;

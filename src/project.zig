@@ -108,7 +108,13 @@ fn isDir(io: Io, path: []const u8) bool {
 }
 
 pub fn readFile(a: Allocator, io: Io, path: []const u8) ![]u8 {
-    return Io.Dir.cwd().readFileAlloc(io, path, a, .unlimited);
+    const f = try Io.Dir.cwd().openFile(io, path, .{});
+    defer f.close(io);
+    const size = try f.length(io);
+    // A pipe or a device says nothing about its size; a file is one read into a buffer that fits.
+    if (size == 0) return Io.Dir.cwd().readFileAlloc(io, path, a, .unlimited);
+    const buf = try a.alloc(u8, size);
+    return buf[0..try f.readPositionalAll(io, buf, 0)];
 }
 
 /// tsconfig is JSON with comments and trailing commas; std.json takes neither.

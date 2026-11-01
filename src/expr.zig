@@ -30,21 +30,54 @@ pub fn show(c: *Checker, t: *Type) []const u8 {
 }
 
 pub fn err(c: *Checker, n: *Node, code: u32, msg: []const u8) void {
-    if (c.silent > 0) return;
+    if (quiet(c)) return;
     d.report(c, n, code, msg);
 }
 
 fn errSpan(c: *Checker, n: *Node, start: u32, end: u32, code: u32, msg: []const u8) void {
-    if (c.silent > 0) return;
+    if (quiet(c)) return;
     d.reportSpan(c, n, start, end, code, msg);
+}
+
+/// Whether this visit is quiet, in which case what it was about to do is owed to one in the open.
+pub fn quiet(c: *Checker) bool {
+    if (c.silent == 0) return false;
+    c.quiet_debt += 1;
+    return true;
 }
 
 pub fn checkExpression(c: *Checker, n: *Node) *Type {
     return checkExpr(c, n);
 }
 
+/// A declaration's type is read from its initializer before the declaration's own turn comes, and
+/// that turn has nothing to add when the first visit was in the open or owes it nothing.
 pub fn checkInit(c: *Checker, n: *Node) *Type {
-    return quickType(c, n) orelse checkExpr(c, n);
+    // Its arguments are not visited, so the declaration's own turn still has them to check.
+    if (quickType(c, n)) |t| return t;
+    const debt = c.quiet_debt;
+    const funcs = c.quiet_funcs.items.len;
+    const cycles = c.cycles;
+    const t = checkExpr(c, n);
+    if (c.flow_active.count() == 0 and (c.silent == 0 or c.quiet_debt == debt) and c.cycles == cycles) {
+        c.settled_inits.put(c.a, n, c.dupe(*Node, c.quiet_funcs.items[funcs..])) catch oom();
+    }
+    return t;
+}
+
+/// The lambdas a quiet visit passed over inside `root`, for a visit in the open that will not happen.
+/// A lambda inside another one is left to the body around it.
+pub fn deferQuietFuncs(c: *Checker, root: *Node, funcs: []const *Node) void {
+    for (funcs) |f| {
+        var cur = f;
+        const inside = while (cur != root) {
+            cur = cur.parent orelse break false;
+            if (cur != root and (cur.data == .func or cur.data == .class)) break false;
+        } else true;
+        if (!inside) continue;
+        const gop = c.checked_funcs.getOrPut(c.a, f) catch oom();
+        if (!gop.found_existing) c.deferred.append(c.a, f) catch oom();
+    }
 }
 
 /// What an initializer comes to without looking at its arguments, so a declaration they mention
@@ -476,6 +509,19 @@ pub fn removeUndefined(c: *Checker, t: *Type) *Type {
     return relate.removeDefinitelyUndefined(c, t);
 }
 
+/// A reference means the same on every visit, and a call around it visits it on every pass, each
+/// time with a walk over the flow graph. What a visit owes or met half done cannot stand for the rest.
+fn checkRef(c: *Checker, n: *Node) *Type {
+    if (c.ref_answers.get(n)) |t| return t;
+    const debt = c.quiet_debt;
+    const funcs = c.quiet_funcs.items.len;
+    const cycles = c.cycles;
+    const t = if (n.data == .identifier) checkIdentifier(c, n) else checkPropAccess(c, n);
+    if (c.quiet_debt == debt and c.quiet_funcs.items.len == funcs and c.cycles == cycles and
+        c.flow_active.count() == 0) c.ref_answers.put(c.a, n, t) catch oom();
+    return t;
+}
+
 fn checkIdentifier(c: *Checker, n: *Node) *Type {
     const name = n.data.identifier;
     if (name.len == 0) return c.t_err;
@@ -554,6 +600,8 @@ fn autoTyped(c: *Checker, n: *Node, s: *Symbol, t: *Type) *Type {
 /// `if (t) t.x` has to get past the `undefined`.
 fn narrowableRef(c: *Checker, n: *Node, t: *Type) *Type {
     if (!hasUnionConstraint(c, t)) return t;
+    // The answer depends on the context of this very visit.
+    c.quiet_debt += 1;
     if (!isConstraintPosition(c, n, t) and !(inferFor(c, n) == null and hasPlainContext(c, n))) return t;
     return constraintOrSelf(c, t);
 }
@@ -1852,7 +1900,7 @@ pub fn assignContext(c: *Checker, fnode: *Node) void {
     const ctx = inferFor(c, fnode);
     if (ct.data == .err and ct != c.t_unresolved) {
         // A failed call hands out `any` context only for the final, reporting visit.
-        if (c.silent == 0) {
+        if (!quiet(c)) {
             c.context_assigned.put(c.a, fnode, {}) catch oom();
             for (f.params) |p| if (p.data.param.type == null) c.param_types.put(c.a, p, c.t_err) catch oom();
         }
@@ -1952,12 +2000,15 @@ fn restFrom(c: *Checker, sig: *Sig, i: usize) *Type {
 }
 
 fn checkFunctionExpr(c: *Checker, n: *Node) *Type {
-    if (c.skip_sensitive and isSensitive(n)) return c.t_pending_fn;
+    if (c.skip_sensitive and isSensitive(n)) {
+        c.quiet_debt += 1;
+        return c.t_pending_fn;
+    }
     assignContext(c, n);
     if (c.silent == 0) {
         const gop = c.checked_funcs.getOrPut(c.a, n) catch oom();
         if (!gop.found_existing) c.deferred.append(c.a, n) catch oom();
-    }
+    } else c.quiet_funcs.append(c.a, n) catch oom();
     // An object literal's method has a symbol, but only the node carries its signature.
     const t = if (n.symbol != null and n.data.func.kind != .method) d.typeOfSymbol(c, n.symbol.?) else lambdaType(c, n);
     // The return type must come from the body while the call's context is still on the stack;
@@ -3200,7 +3251,7 @@ fn checkObjectLit(c: *Checker, n: *Node) *Type {
                 if (f.kind == .getter or f.kind == .setter) {
                     if (d.outerTParams(c, p).len > 0) vars = true;
                     assignContext(c, p);
-                    if (c.silent == 0) {
+                    if (!quiet(c)) {
                         const gop = c.checked_funcs.getOrPut(c.a, p) catch oom();
                         if (!gop.found_existing) c.deferred.append(c.a, p) catch oom();
                     }
@@ -3829,7 +3880,7 @@ fn incOperand(c: *Checker, t0: *Type, n: *Node) void {
 /// Reports `value` not fitting `target`, at the innermost place the literal shape allows.
 pub fn checkAssignable(c: *Checker, s: *Type, t: *Type, value: ?*Node, at: *Node) void {
     if (relate.isAssignable(c, s, t)) return;
-    if (c.silent > 0) return;
+    if (quiet(c)) return;
     if (value) |v| if (elaborate(c, v, s, t)) return;
     reportNotAssignable(c, s, t, at, value);
 }
@@ -4050,7 +4101,16 @@ fn propNameNode(p: *Node) *Node {
 
 // ---- calls ----
 
-const Arg = struct { node: ?*Node, ty: ?*Type = null, spread: bool = false };
+const Arg = struct {
+    node: ?*Node,
+    ty: ?*Type = null,
+    spread: bool = false,
+    /// How the last quiet visit went: reached at all, whether it owes anything, and which lambdas
+    /// it passed over, as a range of `quiet_funcs`.
+    visited: bool = false,
+    owes: bool = false,
+    funcs: [2]u32 = .{ 0, 0 },
+};
 
 fn effectiveArgs(c: *Checker, nodes: []*Node) []Arg {
     var out = std.ArrayList(Arg).initCapacity(c.a, nodes.len) catch oom();
@@ -4209,9 +4269,15 @@ fn firstBadArg(c: *Checker, s: *Sig, args: []Arg, sensitive_ok: bool, strict: bo
     const save = c.skip_sensitive;
     defer c.skip_sensitive = save;
     c.skip_sensitive = !sensitive_ok;
-    for (args, 0..) |a, i| {
+    for (args) |*a| a.visited = false;
+    for (args, 0..) |*a, i| {
         const pt = relate.typeAt(c, s, i) orelse break;
-        const at = argType(c, a, pt, null);
+        const debt = c.quiet_debt;
+        const funcs: u32 = @intCast(c.quiet_funcs.items.len);
+        const at = argType(c, a.*, pt, null);
+        a.visited = true;
+        a.owes = c.quiet_debt != debt;
+        a.funcs = .{ funcs, @intCast(c.quiet_funcs.items.len) };
         const ok = if (strict) relate.isSubtype(c, at, pt) else relate.isAssignable(c, at, pt);
         if (!ok) return .{ .arg = i, .s = at, .t = pt };
     }
@@ -4386,6 +4452,7 @@ fn hasLiteralParam(s: *Sig) bool {
 
 fn resolveCall(c: *Checker, n: *Node, sigs: []*Sig, node_args: []*Node, type_args: []*Node, is_decor: bool) ?*Sig {
     _ = is_decor;
+    const quiet_funcs = c.quiet_funcs.items.len;
     const args = effectiveArgs(c, node_args);
     var cands = std.ArrayList(*Sig).initCapacity(c.a, sigs.len) catch oom();
     for (reorderCandidates(c, sigs)) |s| {
@@ -4439,8 +4506,9 @@ fn resolveCall(c: *Checker, n: *Node, sigs: []*Sig, node_args: []*Node, type_arg
         }
     }
     c.silent -= 1;
+    defer if (c.silent == 0) c.quiet_funcs.shrinkRetainingCapacity(quiet_funcs);
     if (chosen) |sig| {
-        checkArgsIn(c, args, sig);
+        settleArgs(c, args, sig);
         return sig;
     }
     if (failed.items.len == 0) if (wrong_count) |s| {
@@ -4491,7 +4559,7 @@ fn resolveCall(c: *Checker, n: *Node, sigs: []*Sig, node_args: []*Node, type_arg
 
 fn reportArg(c: *Checker, sig: *Sig, args: []Arg, f: Failure) void {
     _ = sig;
-    if (c.silent > 0) return;
+    if (quiet(c)) return;
     const a = args[f.arg];
     const at = a.node orelse return;
     if (a.ty == null and elaborate(c, at, f.s, f.t)) return;
@@ -4510,6 +4578,20 @@ fn reportArg(c: *Checker, sig: *Sig, args: []Arg, f: Failure) void {
 fn checkArgsIn(c: *Checker, args: []Arg, sig: *Sig) void {
     for (args, 0..) |a, i| {
         if (a.ty != null) continue;
+        _ = argType(c, a, relate.typeAt(c, sig, i), null);
+    }
+}
+
+/// The pass that chose `sig` has just visited the arguments in this very context, so a visit in
+/// the open has only the errors and lambdas of that one to catch up on, and a quiet one nothing.
+fn settleArgs(c: *Checker, args: []Arg, sig: *Sig) void {
+    for (args, 0..) |a, i| {
+        if (a.ty != null) continue;
+        const root = a.node orelse continue;
+        if (a.visited and (c.silent > 0 or !a.owes)) {
+            if (c.silent == 0) deferQuietFuncs(c, root, c.quiet_funcs.items[a.funcs[0]..a.funcs[1]]);
+            continue;
+        }
         _ = argType(c, a, relate.typeAt(c, sig, i), null);
     }
 }
@@ -4568,29 +4650,49 @@ fn symbolCallOwner(c: *Checker, n: *Node) ?*Symbol {
 
 fn checkCall(c: *Checker, n: *Node) *Type {
     if (firstAnswer(c, n)) |t| return t;
-    const t = checkCallResult(c, n);
-    if (t.data == .symbol) if (symbolCallOwner(c, n)) |s| return keepAnswer(c, n, d.uniqueSymbol(c, s));
-    return keepAnswer(c, n, t);
+    const debt = c.quiet_debt;
+    const funcs = c.quiet_funcs.items.len;
+    const cycles = c.cycles;
+    var sig: ?*Sig = null;
+    var t = checkCallResult(c, n, &sig);
+    if (t.data == .symbol) if (symbolCallOwner(c, n)) |s| {
+        t = d.uniqueSymbol(c, s);
+    };
+    const settled = c.cycles == cycles and (c.silent == 0 or (c.flow_active.count() == 0 and c.quiet_debt == debt and
+        c.quiet_funcs.items.len == funcs and (isFixed(sig) or contextualType(c, n) == null)));
+    if (settled) if (sig) |s| c.resolved_calls.put(c.a, n, s) catch oom();
+    return keepAnswer(c, n, t, sig, settled);
 }
 
 /// A call inside an argument would be resolved again on every pass of the call around it, and
 /// those passes multiply with depth. Like tsc, a later quiet visit takes the first answer; the
-/// visit in the open still resolves, for the errors a quiet one could not report.
+/// visit in the open still resolves, for the errors a quiet one could not report, unless the
+/// answer is settled: reached in the open, or owing nothing in a context that cannot change.
 fn firstAnswer(c: *Checker, n: *Node) ?*Type {
-    return if (c.silent > 0) c.call_results.get(n) else null;
+    const answer = c.call_results.get(n) orelse return null;
+    if (answer.settled) return answer.ty;
+    if (!quiet(c)) return null;
+    return answer.ty;
 }
 
 /// A loop still being settled feeds on temporary types, so what it computes must not stick.
 /// The first answer stands even when the visit in the open knows a better context: the call
 /// around it has already been decided on that answer.
-fn keepAnswer(c: *Checker, n: *Node, t: *Type) *Type {
+fn keepAnswer(c: *Checker, n: *Node, t: *Type, sig: ?*Sig, settled: bool) *Type {
     if (c.flow_active.count() != 0) return t;
     const gop = c.call_results.getOrPut(c.a, n) catch oom();
-    if (!gop.found_existing) gop.value_ptr.* = t;
-    return gop.value_ptr.*;
+    if (!gop.found_existing) gop.value_ptr.* = .{ .ty = t, .sig = sig, .settled = settled };
+    if (settled) gop.value_ptr.settled = true;
+    return gop.value_ptr.ty;
 }
 
-fn checkCallResult(c: *Checker, n: *Node) *Type {
+/// What a call to `sig` gives does not depend on the context around it.
+fn isFixed(sig: ?*Sig) bool {
+    const s = sig orelse return false;
+    return s.tparams.len == 0 and s.target == null;
+}
+
+fn checkCallResult(c: *Checker, n: *Node, resolved: *?*Sig) *Type {
     const x = n.data.call;
     if (x.callee.data == .import_kw) {
         for (x.args) |a| _ = checkExpr(c, a);
@@ -4629,7 +4731,7 @@ fn checkCallResult(c: *Checker, n: *Node) *Type {
         _ = c.resolving_calls.remove(n);
     };
     const sig = resolveCall(c, n, sigs, x.args, typeList(x.type_args), false) orelse return c.t_err;
-    if (c.silent == 0) c.resolved_calls.put(c.a, n, sig) catch oom();
+    resolved.* = sig;
     var r = d.returnOf(c, sig);
     if (chain) r = d.addOptional(c, r);
     return r;
@@ -4740,7 +4842,7 @@ fn classHeritage(cls: *Node) []*Node {
 
 fn checkNew(c: *Checker, n: *Node) *Type {
     if (firstAnswer(c, n)) |t| return t;
-    return keepAnswer(c, n, checkNewResult(c, n));
+    return keepAnswer(c, n, checkNewResult(c, n), null, c.silent == 0);
 }
 
 fn checkNewResult(c: *Checker, n: *Node) *Type {
@@ -4804,8 +4906,22 @@ fn checkTagged(c: *Checker, n: *Node) *Type {
 
 /// A signature that can narrow or end flow: tsc limits these to explicitly annotated callees.
 pub fn effectsSig(c: *Checker, n: *Node) ?*Sig {
-    if (c.effects.get(n)) |s| return s;
-    c.effects.put(c.a, n, null) catch oom();
+    const gop = c.effects.getOrPut(c.a, n) catch oom();
+    if (gop.found_existing) {
+        if (gop.value_ptr.* != &effects_pending) return gop.value_ptr.*;
+        _ = c.metCycle();
+        return null;
+    }
+    gop.value_ptr.* = &effects_pending;
+    const s = findEffects(c, n);
+    c.effects.put(c.a, n, s) catch oom();
+    return s;
+}
+
+/// Marks a lookup still running, for the reference inside it that asks again.
+var effects_pending: Sig = undefined;
+
+fn findEffects(c: *Checker, n: *Node) ?*Sig {
     if (n.data != .call) return null;
     const x = n.data.call;
     const t = explicitType(c, binder.stripParens(x.callee), 0) orelse return null;
@@ -4817,14 +4933,11 @@ pub fn effectsSig(c: *Checker, n: *Node) ?*Sig {
             if (hasFlowEffect(c, s)) break;
         } else return null;
         const r = resolvedSig(c, n) orelse return null;
-        if (!hasFlowEffect(c, r)) return null;
-        c.effects.put(c.a, n, r) catch oom();
-        return r;
+        return if (hasFlowEffect(c, r)) r else null;
     }
     if (sigs.len != 1) return null;
     const s = sigs[0];
     if (s.decl) |dn| if (dn.data == .func and dn.data.func.ret == null) return null;
-    c.effects.put(c.a, n, s) catch oom();
     return s;
 }
 
@@ -4873,7 +4986,10 @@ fn explicitType(c: *Checker, n: *Node, depth: u32) ?*Type {
 
 pub fn resolvedSig(c: *Checker, n: *Node) ?*Sig {
     if (c.resolved_calls.get(n)) |s| return s;
-    if (c.resolving_calls.contains(n)) return null;
+    if (c.resolving_calls.contains(n)) {
+        _ = c.metCycle();
+        return null;
+    }
     c.resolving_calls.put(c.a, n, {}) catch oom();
     defer _ = c.resolving_calls.remove(n);
     if (n.data == .call) {
@@ -4881,6 +4997,12 @@ pub fn resolvedSig(c: *Checker, n: *Node) ?*Sig {
         if (x.callee.data == .import_kw or x.callee.data == .super_expr) return null;
         c.silent += 1;
         defer c.silent -= 1;
+        // Nothing around a statement gives it a context, so the visit its own turn would make is
+        // this one, and doing it now saves that turn the resolution.
+        if (n.parent != null and n.parent.?.data == .expr_stmt) {
+            _ = checkCall(c, n);
+            if (c.call_results.get(n)) |a| if (a.sig != null) return a.sig;
+        }
         var callee = checkExpr(c, x.callee);
         if (x.optional or flow.isOptionalChain(x.callee)) callee = nonNull(c, callee);
         if (T.isAny(callee)) return null;
@@ -5084,7 +5206,7 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         c.context_for_signature = saved_signature;
     }
     return switch (n.data) {
-        .identifier => checkIdentifier(c, n),
+        .identifier, .prop_access => checkRef(c, n),
         .string_lit, .no_subst_template => |v| c.freshOf(c.strLit(v)),
         .numeric_lit => |v| c.freshOf(c.numLit((emit.parseNumber(v) orelse 0))),
         .bigint_lit => |v| c.freshOf(c.bigLit(v)),
@@ -5103,7 +5225,6 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         .tagged_template => checkTagged(c, n),
         .array_lit => checkArrayLit(c, n),
         .object_lit => checkObjectLit(c, n),
-        .prop_access => checkPropAccess(c, n),
         .elem_access => checkElemAccess(c, n),
         .call => checkCall(c, n),
         .new_expr => checkNew(c, n),
@@ -5141,7 +5262,7 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         .satisfies_expr => |x| blk: {
             const s = checkExpr(c, x.expr);
             const t = d.typeFromNode(c, x.type);
-            if (!T.isAny(t) and !relate.isAssignable(c, s, t) and c.silent == 0) {
+            if (!T.isAny(t) and !relate.isAssignable(c, s, t) and !quiet(c)) {
                 if (!elaborate(c, x.expr, s, t)) {
                     if (relate.excessProp(c, s, t)) |p| {
                         err(c, if (p.decl) |y| propNameNode(y) else x.expr, 2353, c.fmt("Object literal may only specify known properties, and '{s}' does not exist in type '{s}'.", .{ p.name, show(c, t) }));
@@ -5153,7 +5274,7 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         .non_null => |x| nonNull(c, checkExpr(c, x.expr)),
         .func => checkFunctionExpr(c, n),
         .class => blk: {
-            if (c.silent == 0) c.deferred.append(c.a, n) catch oom();
+            if (!quiet(c)) c.deferred.append(c.a, n) catch oom();
             break :blk if (n.symbol) |s| d.typeOfSymbol(c, s) else c.t_err;
         },
         .spread_elem => |x| iteratedOf(c, x.expr, checkExpr(c, x.expr), false),

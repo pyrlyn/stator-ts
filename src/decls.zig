@@ -1236,7 +1236,7 @@ pub fn fillArgs(c: *Checker, out: []*Type, params: []*Type, targs: []*Node) void
 /// Waits until declarations are done: `class A extends B<A>` reaches this while resolving
 /// `A`'s bases, and relating `A` to a constraint then would see a class with no members.
 fn checkConstraints(c: *Checker, nodes: []*Node, params: []*Type, args: []*Type) void {
-    if (c.silent == 0) c.pending_constraints.append(c.a, .{ .nodes = nodes, .params = params, .args = args }) catch oom();
+    if (!expr.quiet(c)) c.pending_constraints.append(c.a, .{ .nodes = nodes, .params = params, .args = args }) catch oom();
 }
 
 pub fn verifyConstraints(c: *Checker, p: T.PendingConstraint) void {
@@ -1646,7 +1646,7 @@ pub fn typeOfSymbol(c: *Checker, s0: *Symbol) *Type {
     }
     if (c.sym_resolving.contains(s)) {
         c.closeCycle(s);
-        return c.t_err;
+        return c.metCycle();
     }
     c.sym_resolving.put(c.a, s, {}) catch oom();
     c.pushResolution(s);
@@ -2120,7 +2120,7 @@ pub fn returnOf(c: *Checker, s: *Sig) *Type {
     if (s.ret) |t| return t;
     if (s.ret_resolving) {
         c.closeCycle(s);
-        return c.t_err;
+        return c.metCycle();
     }
     s.ret_resolving = true;
     c.pushResolution(s);
