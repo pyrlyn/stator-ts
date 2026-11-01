@@ -7,6 +7,12 @@
 | bun | mise | Alternative test runtime | https://github.com/oven-sh/bun |
 | git | system | `tests/ts7/sync.sh` fetches upstream's tests | https://github.com/git/git |
 
+## Zig
+
+| Package | Where | Source | Why here |
+| --- | --- | --- | --- |
+| coroutines | local, `build.zig.zon` | https://github.com/pyrlyn/coroutines | `state_machine.runParallel` runs the parallel passes |
+
 ## npm
 
 | Package | Where | Source | Why here |

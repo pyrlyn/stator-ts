@@ -1,5 +1,6 @@
 zig-out/
 .zig-cache/
+zig-pkg/
 node_modules/
 tests/ts7/upstream/
 tests/ts7/results/
