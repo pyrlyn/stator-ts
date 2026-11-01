@@ -2762,6 +2762,10 @@ const Parser = struct {
             },
             else => {},
         }
+        // Only the operand of `extends` is ambiguous: inside any bracket a conditional is back on.
+        const save_cond = p.no_cond_type;
+        p.no_cond_type = false;
+        defer p.no_cond_type = save_cond;
         return p.parsePostfixType();
     }
 
@@ -2780,10 +2784,7 @@ const Parser = struct {
                     if (p.eat(.r_bracket)) {
                         ty = p.mk(s, .{ .array_type = .{ .elem = ty } });
                     } else {
-                        const save_cond = p.no_cond_type;
-                        p.no_cond_type = false;
                         const idx = p.parseType();
-                        p.no_cond_type = save_cond;
                         p.expect(.r_bracket);
                         ty = p.mk(s, .{ .indexed_access = .{ .object = ty, .index = idx } });
                     }
@@ -2859,10 +2860,7 @@ const Parser = struct {
             .l_bracket => return p.parseTupleType(),
             .l_paren => {
                 p.next();
-                const save_cond = p.no_cond_type;
-                p.no_cond_type = false;
                 const ty = p.parseType();
-                p.no_cond_type = save_cond;
                 p.expect(.r_paren);
                 return p.mk(s, .{ .paren_type = .{ .type = ty } });
             },
@@ -2988,14 +2986,10 @@ const Parser = struct {
         const s = p.lx.start;
         p.next();
         var list: NodeList = .empty;
-        // The brackets delimit the elements, so a conditional is unambiguous here even inside `extends`.
-        const save_cond = p.no_cond_type;
-        p.no_cond_type = false;
         while (p.t() != .r_bracket and p.t() != .eof) {
             p.push(&list, p.parseTupleElement());
             if (!p.eat(.comma)) break;
         }
-        p.no_cond_type = save_cond;
         p.expect(.r_bracket);
         return p.mk(s, .{ .tuple_type = .{ .elems = list.items } });
     }
@@ -3034,14 +3028,11 @@ const Parser = struct {
     fn parseTypeMembers(p: *Parser) []*Node {
         p.expect(.l_brace);
         var list: NodeList = .empty;
-        const save_cond = p.no_cond_type;
-        p.no_cond_type = false;
         while (p.t() != .r_brace and p.t() != .eof) {
             const before = p.lx.start;
             p.push(&list, p.parseTypeMember());
             if (p.lx.start == before) p.skipBadToken(1131, "Property or signature expected.");
         }
-        p.no_cond_type = save_cond;
         p.expect(.r_brace);
         return list.items;
     }

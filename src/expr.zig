@@ -1006,7 +1006,11 @@ fn elemOfCtx(c: *Checker, n: *Node, t: *Type, i: usize) ?*Type {
     if (T.isTupleType(t)) {
         const o = t.data.obj;
         if (i < o.tuple.elems.len and o.tuple.eflags[i] != .rest and o.tuple.eflags[i] != .variadic) return o.tuple.elems[i];
-        for (o.tuple.eflags, 0..) |f, k| if (f == .rest) return o.tuple.elems[k];
+        for (o.tuple.eflags, 0..) |f, k| switch (f) {
+            .rest => return o.tuple.elems[k],
+            .variadic => return d.getIndexedAccess(c, o.tuple.elems[k], c.t_number),
+            else => {},
+        };
         return null;
     }
     if (c.isArrayType(t)) return t.data.obj.args.?[0];
@@ -1688,7 +1692,7 @@ fn widenLiteralAmong(c: *Checker, t: *Type, w: *Widening) *Type {
         m.props.put(c.a, p.name, q) catch oom();
     }
     for (w.names(c)) |k| if (!props.contains(k)) {
-        m.props.put(c.a, k, c.create(Prop, .{ .name = k, .ty = c.t_undefined, .optional = true })) catch oom();
+        m.props.put(c.a, k, c.create(Prop, .{ .name = k, .ty = c.t_undefined, .optional = true, .missing = c.exact_optional })) catch oom();
     };
     return settledLiteral(c, t, m);
 }
@@ -4971,11 +4975,14 @@ fn explicitType(c: *Checker, n: *Node, depth: u32) ?*Type {
         .prop_access => |x| {
             const l = explicitType(c, binder.stripParens(x.expr), depth + 1) orelse return null;
             const p = d.getProp(c, l, ast.memberText(x.name)) orelse return null;
-            const dn = p.decl orelse return null;
+            // `export { ok }` in a namespace: the member is the alias, the declaration is behind it.
+            const s = if (p.sym) |y| if (y.flags & F.alias != 0) d.targetOf(c, y) orelse return null else y else null;
+            const dn = (if (s) |y| y.value_decl else null) orelse p.decl orelse return null;
             switch (dn.data) {
                 .func => {},
                 .property_decl => |v| if (v.type == null) return null,
                 .property_sig => |v| if (v.type == null) return null,
+                .var_decl => |v| if (v.type == null) return null,
                 else => return null,
             }
             return d.propType(c, p);
@@ -5033,7 +5040,7 @@ pub fn resolvedSig(c: *Checker, n: *Node) ?*Sig {
 pub fn isExhaustive(c: *Checker, sw: *Node) bool {
     const x = sw.data.switch_stmt;
     const e = binder.stripParens(x.expr);
-    if (e.data == .typeof_expr) return false;
+    if (e.data == .typeof_expr) return typeofExhausted(c, x.clauses, e.data.typeof_expr.expr);
     const t = checkSilent(c, x.expr);
     const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
     if (members.len == 0 or t.data == .never) return true;
@@ -5050,6 +5057,33 @@ pub fn isExhaustive(c: *Checker, sw: *Node) bool {
             if (v == reg) break true;
         } else false;
         if (!hit) return false;
+    }
+    return true;
+}
+
+fn typeofExhausted(c: *Checker, clauses: []*Node, operand: *Node) bool {
+    const words = [_][]const u8{ "string", "number", "bigint", "boolean", "symbol", "undefined", "object", "function" };
+    var seen: [words.len]bool = @splat(false);
+    for (clauses) |cl| {
+        if (cl.data != .case_clause) continue;
+        const v = binder.stripParens(cl.data.case_clause.expr);
+        const word = switch (v.data) {
+            .string_lit, .no_subst_template => |w| w,
+            else => return false,
+        };
+        for (words, 0..) |w, i| if (std.mem.eql(u8, w, word)) {
+            seen[i] = true;
+        };
+    }
+    const t = d.baseConstraint(c, checkSilent(c, operand));
+    if (t.data == .unknown or T.isAny(t)) return std.mem.allEqual(bool, &seen, true);
+    const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
+    for (members) |m| {
+        // An empty object has no `typeof` to name, so a case for every one still lets it through.
+        const kind = flow.typeofKind(c, m) orelse return false;
+        for (words, seen) |w, hit| {
+            if (hit and std.mem.eql(u8, w, kind)) break;
+        } else return false;
     }
     return true;
 }

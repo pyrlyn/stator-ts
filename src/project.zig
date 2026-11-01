@@ -50,6 +50,7 @@ pub const Options = struct {
     target: ?[]const u8 = null,
     module: ?[]const u8 = null,
     moduleResolution: ?[]const u8 = null,
+    moduleDetection: ?[]const u8 = null,
     jsx: ?[]const u8 = null,
     jsxFactory: ?[]const u8 = null,
     jsxFragmentFactory: ?[]const u8 = null,
@@ -63,6 +64,21 @@ pub const Options = struct {
 
     pub fn flag(o: Options, comptime name: []const u8) bool {
         return @field(o, name) orelse o.strict orelse false;
+    }
+
+    /// tsc's `moduleDetection`: what makes a file a module with no import or export in it.
+    /// Declaration files stay out, as `declare` globals rely on it.
+    pub fn forcesModule(o: Options, path: []const u8) bool {
+        const eql = std.ascii.eqlIgnoreCase;
+        const kind = o.moduleDetection orelse blk: {
+            const m = o.module orelse break :blk "auto";
+            const node = eql(m, "node16") or eql(m, "node18") or eql(m, "node20") or eql(m, "nodenext");
+            break :blk if (node) "force" else "auto";
+        };
+        if (eql(kind, "force")) return true;
+        if (eql(kind, "legacy")) return false;
+        for ([_][]const u8{ ".mts", ".cts", ".mjs", ".cjs" }) |ext| if (std.mem.endsWith(u8, path, ext)) return true;
+        return false;
     }
 
     pub fn jsxMode(o: Options) emit.Jsx {
@@ -861,6 +877,7 @@ fn loadOne(l: *const Loading, worker: usize, i: usize) void {
     // tsc types a JSON module as `export =` of its one value.
     if (std.mem.endsWith(u8, path, ".json")) src = std.mem.concat(a, u8, &.{ "export = ", src, ";" }) catch oom();
     const f = if (l.lazy_bodies) parser.parseLazily(a, path, src) else parser.parse(a, path, src);
+    if (!f.is_dts and l.cfg.options.forcesModule(path)) f.is_module = true;
     binder.bindFile(a, f);
     sf.file = f;
     sf.pending = a.alloc(?[]const u8, f.module_specs.len) catch oom();
@@ -1266,19 +1283,19 @@ pub const Program = struct {
             const target = p.resolveModuleName(sf, s.name) orelse continue;
             const e = s.exports orelse continue;
             if (target.exports == null) target.exports = p.table();
-            if (target.stars().len == 0) {
-                p.mergeTable(target.exports.?, e);
-                continue;
-            }
-            // An interface re-exported through `export *` is extended where it lives; a copy
-            // here would shadow it with only the augmented members.
+            // An interface re-exported is extended where it lives; a copy here would shadow it
+            // with only the augmented members.
             var it = e.map.keyIterator();
             while (it.next()) |kv| {
-                const own = target.exports.?.get(kv.*.name) != null;
-                if (!own) if (p.exportOf(target, kv.*.name)) |x| {
-                    p.mergeSymbol(x.resolve(), kv.*);
-                    continue;
-                };
+                const own = target.exports.?.get(kv.*.name);
+                if (own orelse p.exportOf(target, kv.*.name)) |x| {
+                    const named = x.resolve();
+                    const real = p.resolveAlias(named, 0) orelse named;
+                    if (own == null or real != named) {
+                        p.mergeSymbol(real, kv.*);
+                        continue;
+                    }
+                }
                 p.mergeInto(target.exports.?, kv.*.name, kv.*);
             }
         };

@@ -859,25 +859,58 @@ pub const Binder = struct {
     }
 
     pub fn isInstantiatedDecl(n: *Node) bool {
-        return isInstantiated(n);
+        return isInstantiated(n, 0);
     }
 
-    fn isInstantiated(n: *Node) bool {
+    fn isInstantiated(n: *Node, depth: u32) bool {
         const stmts = switch (n.data) {
             .module_block => |x| x.stmts,
-            .module_decl => |x| return if (x.body) |c| isInstantiated(c) else false,
+            .module_decl => |x| return if (x.body) |c| isInstantiated(c, depth) else false,
+            .interface, .type_alias => return false,
             else => return true,
         };
         for (stmts) |s| {
             switch (s.data) {
-                .interface, .type_alias, .export_decl => {},
-                .module_decl => if (isInstantiated(s)) return true,
                 .import_decl => {},
                 .import_equals => if (s.mods.@"export") return true,
-                else => return true,
+                .export_decl => |x| if (exportsValue(x, depth)) return true,
+                else => if (isInstantiated(s, depth)) return true,
             }
         }
         return false;
+    }
+
+    fn exportsValue(x: *ast.ExportDecl, depth: u32) bool {
+        if (x.specifier != null) return true;
+        const clause = x.clause orelse return true;
+        if (clause.data != .named_exports) return true;
+        for (clause.data.named_exports.elems) |spec| if (aliasesValue(spec, depth)) return true;
+        return false;
+    }
+
+    /// A name found nowhere, or found only as an import, may be a value.
+    fn aliasesValue(spec: *Node, depth: u32) bool {
+        // Namespaces exporting each other in a circle have no value in them.
+        if (depth > 16) return false;
+        const x = spec.data.export_spec;
+        const name = specName(x.prop_name orelse x.name);
+        var p = spec.parent;
+        while (p) |scope| : (p = scope.parent) {
+            const stmts = switch (scope.data) {
+                .module_block => |b| b.stmts,
+                .source_file => |b| b.stmts,
+                else => continue,
+            };
+            var found = false;
+            for (stmts) |s| {
+                const named = nameNode(s) orelse continue;
+                if (named.data != .identifier or !std.mem.eql(u8, named.data.identifier, name)) continue;
+                found = true;
+                if (s.data == .import_equals or isInstantiated(s, depth + 1)) return true;
+            }
+            if (found) return false;
+        }
+        return true;
     }
 
     fn bindModule(b: *Binder, n: *Node) void {
@@ -907,7 +940,7 @@ pub const Binder = struct {
             }
         } else {
             const name = d.name.data.identifier;
-            const inst = isInstantiated(n);
+            const inst = isInstantiated(n, 0);
             const flags = if (inst) F.value_module else F.namespace_module;
             const ex = if (inst) F.value_module_ex else F.none;
             if (n.parent != null and n.parent.?.data == .module_decl) {

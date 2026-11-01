@@ -1149,7 +1149,7 @@ fn indexesRelated(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
             return false;
         }
         for (d.propsOf(c, s)) |p| {
-            if (!keyApplies(c, ti.key, p.name)) continue;
+            if (p.missing or !keyApplies(c, ti.key, p.name)) continue;
             var pt = d.propType(c, p);
             // A property that can only be undefined keeps it: `{ a?: never }` is not `{ [k: string]: T }`.
             if (p.optional and pt.data != .undefined) pt = removeDefinitelyUndefined(c, pt);
@@ -1185,15 +1185,18 @@ fn hasInferableIndex(c: *Checker, s: *Type) bool {
         .inter => |x| for (x) |y| {
             if (!hasInferableIndex(c, y)) break false;
         } else true,
-        .obj => |o| !o.closed and (o.kind == .mapped or (o.kind == .anon and (o.lit or isTypeLiteralLike(s)))),
+        .obj => |o| !o.closed and (o.kind == .mapped or (o.kind == .anon and (o.lit or isTypeLiteralLike(c, s)))),
         else => false,
     };
 }
 
-fn isTypeLiteralLike(s: *Type) bool {
+fn isTypeLiteralLike(c: *Checker, s: *Type) bool {
     const o = s.data.obj;
     const sym = o.sym orelse return true;
-    return sym.flags & (binder.F.type_literal | binder.F.object_literal) != 0;
+    const F = binder.F;
+    if (sym.flags & (F.type_literal | F.object_literal | F.enum_any | F.value_module) == 0 or sym.flags & F.class != 0) return false;
+    const m = d.membersOf(c, s);
+    return m.calls.len == 0 and m.ctors.len == 0;
 }
 
 fn keyApplies(_: *Checker, key: *Type, name: []const u8) bool {

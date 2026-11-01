@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "moduleDetection": "auto",
+    "noEmit": true,
+    "lib": ["es2022"],
+    "types": []
+  },
+  "include": ["*.ts", "*.mts", "*.cts"]
+}

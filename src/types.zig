@@ -188,6 +188,8 @@ pub const Prop = struct {
     ty: ?*Type = null,
     mapper: ?*Mapper = null,
     optional: bool = false,
+    /// Under `exactOptionalPropertyTypes`, added by widening: absent, not holding `undefined`.
+    missing: bool = false,
     readonly: bool = false,
     method: bool = false,
     private: bool = false,

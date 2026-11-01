@@ -942,7 +942,7 @@ fn isFunctionObject(c: *Checker, t: *Type) bool {
     return relate.isSubtype(c, t, d.globalType(c, "Function") orelse return false);
 }
 
-fn typeofKind(c: *Checker, t: *Type) ?[]const u8 {
+pub fn typeofKind(c: *Checker, t: *Type) ?[]const u8 {
     return switch (t.data) {
         .string, .str_lit, .tmpl, .strmap => "string",
         .number, .num_lit, .enum_ => "number",

@@ -157,6 +157,7 @@ compiler/assertInWrapSomeTypeParameter
 compiler/assertedGenericPartialIndexedAssignment
 compiler/assertedReadonlyParameterPropertyAssignment
 compiler/assertionFunctionWildcardImport1
+compiler/assertionFunctionWildcardImport2
 compiler/assertionFunctionsCanNarrowByDiscriminant
 compiler/assertionWithNoArgument
 compiler/assign1
@@ -251,6 +252,7 @@ compiler/asyncSuperDefaultParameters
 compiler/asyncYieldStarContextualType
 compiler/augmentArray
 compiler/augmentExportEquals5
+compiler/augmentExportEquals6
 compiler/augmentedTypeBracketNamedPropertyAccess
 compiler/augmentedTypesClass
 compiler/augmentedTypesClass2
@@ -2356,6 +2358,7 @@ compiler/implicitAnyInCatch
 compiler/implicitAnyWidenToAny
 compiler/implicitConstParameters
 compiler/implicitEmptyObjectType
+compiler/implicitIndexSignatures
 compiler/impliedNodeFormatEmit1(module=commonjs)
 compiler/impliedNodeFormatEmit1(module=preserve)
 compiler/impliedNodeFormatEmit2(module=commonjs)
@@ -2516,6 +2519,7 @@ compiler/inferentialTypingWithFunctionTypeSyntacticScenarios
 compiler/inferentialTypingWithFunctionTypeZip
 compiler/inferentialTypingWithObjectLiteralProperties
 compiler/inferredFunctionReturnTypeIsEmptyType
+compiler/inferredIndexerOnNamespaceImport
 compiler/inferredNonidentifierTypesGetQuotes
 compiler/inferredReturnTypeIncorrectReuse1
 compiler/inferrenceInfiniteLoopWithSubtyping
@@ -2931,6 +2935,7 @@ compiler/mapOnTupleTypes01
 compiler/mapOnTupleTypes02
 compiler/mapUpsert
 compiler/mappedArrayTupleIntersections
+compiler/mappedToToIndexSignatureInference
 compiler/mappedTypeAndIndexSignatureRelation
 compiler/mappedTypeAsClauseIntersectionConstraintIndexedAccess
 compiler/mappedTypeAsStringTemplate
@@ -3077,6 +3082,7 @@ compiler/moduleCodeGenTest5
 compiler/moduleCodegenTest4
 compiler/moduleCrashBug1
 compiler/moduleDeclarationExportStarShadowingGlobalIsNameable
+compiler/moduleDetectionIsolatedModulesCjsFileScope
 compiler/moduleElementsInWrongContext2
 compiler/moduleElementsInWrongContext3
 compiler/moduleExportNonStructured
@@ -3151,6 +3157,7 @@ compiler/moduleWithValuesAsType
 compiler/module_augmentExistingAmbientVariable
 compiler/module_augmentExistingVariable
 compiler/module_augmentUninstantiatedModule
+compiler/module_augmentUninstantiatedModule2
 compiler/moduledecl(target=es2015)
 compiler/multiCallOverloads
 compiler/multiExtendsSplitInterfaces1
@@ -6219,6 +6226,7 @@ conformance/inferThis
 conformance/inferThisType
 conformance/inferTypes2
 conformance/inferTypesInvalidExtendsDeclaration
+conformance/inferTypesWithExtends1
 conformance/inferTypesWithExtendsDependingOnTypeVariables
 conformance/inferringClassMembersFromAssignments7
 conformance/inferringClassMembersFromAssignments8
@@ -7095,7 +7103,6 @@ conformance/parserRegularExpressionDivideAmbiguity6
 conformance/parserRegularExpressionDivideAmbiguity7
 conformance/parserReturnStatement3
 conformance/parserReturnStatement4
-conformance/parserReturnStatement4
 conformance/parserS12.11_A3_T4
 conformance/parserS7.3_A1.1_T2
 conformance/parserS7.6.1.1_A1.10
@@ -7310,6 +7317,7 @@ conformance/protectedStaticClassPropertyAccessibleWithinSubclass
 conformance/protectedStaticClassPropertyAccessibleWithinSubclass2(target=es2015)
 conformance/protectedStaticNotAccessibleInClodule
 conformance/quotedConstructors
+conformance/reExportAliasMakesInstantiated
 conformance/reExportDefaultExport(target=es2015)
 conformance/readonlyArraysAndTuples2
 conformance/readonlyRestParameters
@@ -7985,6 +7993,7 @@ conformance/typingsSuggestion2
 conformance/uint8ArrayBase64Hex
 conformance/umd-augmentation-1
 conformance/umd-augmentation-2
+conformance/umd-augmentation-3
 conformance/umd1
 conformance/umd2
 conformance/umd3
