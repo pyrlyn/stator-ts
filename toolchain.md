@@ -6,6 +6,8 @@
 | node | mise | Default test runtime, differential tests | https://github.com/nodejs/node |
 | bun | mise | Alternative test runtime | https://github.com/oven-sh/bun |
 | git | system | `tests/ts7/sync.sh` fetches upstream's tests | https://github.com/git/git |
+| clang 23.1.4 | mise, `conda:clang`, through `mise exec` | `scripts/pgo.sh` optimizes Zig's bitcode with a profile, which Zig cannot do | https://github.com/llvm/llvm-project |
+| llvm-profdata 23.1.4 | mise, `conda:llvm-tools`, through `mise exec` | `scripts/pgo.sh` merges the raw profile | https://github.com/llvm/llvm-project |
 
 ## Zig
 
