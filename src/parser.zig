@@ -172,6 +172,13 @@ const Parser = struct {
         return n;
     }
 
+    /// `std.ArrayList` reserves 17 items on the first append, and a node list usually holds two.
+    /// The list is kept in the tree as it stands, so what it reserves stays for the whole run.
+    fn push(p: *Parser, list: *NodeList, n: *Node) void {
+        if (list.items.len == list.capacity) list.ensureTotalCapacityPrecise(p.a, @max(1, list.capacity * 2)) catch oom();
+        list.appendAssumeCapacity(n);
+    }
+
     fn box(p: *Parser, value: anytype) *@TypeOf(value) {
         const b = p.a.create(@TypeOf(value)) catch oom();
         b.* = value;
@@ -338,7 +345,7 @@ const Parser = struct {
     fn parseListStatement(p: *Parser, list: *NodeList) void {
         if (!p.startsStatement()) return p.skipBadToken(1128, "Declaration or statement expected.");
         const before = p.lx.start;
-        list.append(p.a, p.parseStatement()) catch oom();
+        p.push(list, p.parseStatement());
         if (p.lx.start == before and p.t() != .eof) p.skipBadToken(1128, "Declaration or statement expected.");
     }
 
@@ -485,11 +492,11 @@ const Parser = struct {
                 const test_expr = p.parseExpressionAllowIn();
                 p.expect(.colon);
                 const stmts = p.parseClauseStatements();
-                clauses.append(p.a, p.mk(cs, .{ .case_clause = .{ .expr = test_expr, .stmts = stmts } })) catch oom();
+                p.push(&clauses, p.mk(cs, .{ .case_clause = .{ .expr = test_expr, .stmts = stmts } }));
             } else if (p.eat(.kw_default)) {
                 p.expect(.colon);
                 const stmts = p.parseClauseStatements();
-                clauses.append(p.a, p.mk(cs, .{ .default_clause = .{ .stmts = stmts } })) catch oom();
+                p.push(&clauses, p.mk(cs, .{ .default_clause = .{ .stmts = stmts } }));
             } else {
                 p.skipBadToken(1130, "'case' or 'default' expected.");
             }
@@ -620,7 +627,7 @@ const Parser = struct {
         var decls: NodeList = .empty;
         while (true) {
             if (p.startsBinding()) {
-                decls.append(p.a, p.parseVarDecl()) catch oom();
+                p.push(&decls, p.parseVarDecl());
                 if (p.eat(.comma)) continue;
                 if (p.endsVarList()) break;
                 p.expect(.comma);
@@ -698,7 +705,7 @@ const Parser = struct {
                 }
             }
             const in = if (p.eat(.assign)) p.parseAssignmentAllowIn() else null;
-            elems.append(p.a, p.mk(es, .{ .binding_elem = .{ .prop_name = prop, .dotdotdot = dots, .name = name, .init = in } })) catch oom();
+            p.push(&elems, p.mk(es, .{ .binding_elem = .{ .prop_name = prop, .dotdotdot = dots, .name = name, .init = in } }));
             if (!p.eat(.comma)) break;
         }
         p.expect(.r_brace);
@@ -713,13 +720,13 @@ const Parser = struct {
             const es = p.lx.start;
             if (p.t() == .comma) {
                 p.next();
-                elems.append(p.a, p.mk(es, .omitted_expr)) catch oom();
+                p.push(&elems, p.mk(es, .omitted_expr));
                 continue;
             }
             const dots = p.eat(.dot3);
             const name = p.parseBindingName();
             const in = if (p.eat(.assign)) p.parseAssignmentAllowIn() else null;
-            elems.append(p.a, p.mk(es, .{ .binding_elem = .{ .prop_name = null, .dotdotdot = dots, .name = name, .init = in } })) catch oom();
+            p.push(&elems, p.mk(es, .{ .binding_elem = .{ .prop_name = null, .dotdotdot = dots, .name = name, .init = in } }));
             if (p.lx.start == es) break;
             if (p.t() != .r_bracket) p.expect(.comma);
         }
@@ -889,7 +896,7 @@ const Parser = struct {
             p.in_decorator = true;
             const e = p.parseLeftHandSide();
             p.in_decorator = save_dec;
-            list.append(p.a, p.mk(s, .{ .decorator = .{ .expr = e } })) catch oom();
+            p.push(&list, p.mk(s, .{ .decorator = .{ .expr = e } }));
         }
         return list.items;
     }
@@ -990,7 +997,7 @@ const Parser = struct {
         p.no_in = false;
         while (p.t() != .r_paren and p.t() != .eof) {
             const before = p.lx.start;
-            list.append(p.a, p.parseParam()) catch oom();
+            p.push(&list, p.parseParam());
             if (p.t() != .r_paren) {
                 if (!p.eat(.comma)) {
                     p.expect(.comma);
@@ -1040,10 +1047,10 @@ const Parser = struct {
                 const es = p.lx.start;
                 const e = p.parseLeftHandSideNoTypeArgs();
                 const ta = p.parseOptionalTypeArgs();
-                types.append(p.a, p.mk(es, .{ .expr_with_type_args = .{ .expr = e, .type_args = ta } })) catch oom();
+                p.push(&types, p.mk(es, .{ .expr_with_type_args = .{ .expr = e, .type_args = ta } }));
                 if (!p.eat(.comma)) break;
             }
-            list.append(p.a, p.mk(s, .{ .heritage_clause = .{ .tok = tok, .types = types.items } })) catch oom();
+            p.push(&list, p.mk(s, .{ .heritage_clause = .{ .tok = tok, .types = types.items } }));
         }
         return list.items;
     }
@@ -1091,7 +1098,7 @@ const Parser = struct {
         var members: NodeList = .empty;
         while (p.t() != .r_brace and p.t() != .eof) {
             const before = p.lx.start;
-            members.append(p.a, p.parseClassMember()) catch oom();
+            p.push(&members, p.parseClassMember());
             if (p.lx.start == before) p.skipBadToken(1068, "Unexpected token. A constructor, method, accessor, or property was expected.");
         }
         p.expect(.r_brace);
@@ -1120,7 +1127,7 @@ const Parser = struct {
         p.next();
         var params: NodeList = .empty;
         while (p.t() != .r_bracket and p.t() != .eof) {
-            params.append(p.a, p.parseParam()) catch oom();
+            p.push(&params, p.parseParam());
             if (!p.eat(.comma)) break;
         }
         p.expect(.r_bracket);
@@ -1269,7 +1276,7 @@ const Parser = struct {
             const ms = p.lx.start;
             const mn = p.parsePropertyName();
             const in = if (p.eat(.assign)) p.parseAssignmentAllowIn() else null;
-            members.append(p.a, p.mk(ms, .{ .enum_member = .{ .name = mn, .init = in } })) catch oom();
+            p.push(&members, p.mk(ms, .{ .enum_member = .{ .name = mn, .init = in } }));
             if (!p.eat(.comma)) break;
         }
         p.expect(.r_brace);
@@ -1428,7 +1435,7 @@ const Parser = struct {
                 .{ .import_spec = .{ .prop_name = prop, .name = first, .type_only = type_only } }
             else
                 .{ .export_spec = .{ .prop_name = prop, .name = first, .type_only = type_only } };
-            list.append(p.a, p.mk(s, d)) catch oom();
+            p.push(&list, p.mk(s, d));
             if (!p.eat(.comma)) break;
         }
         p.expect(.r_brace);
@@ -1987,9 +1994,9 @@ const Parser = struct {
             const s = p.lx.start;
             if (p.eat(.dot3)) {
                 const e = p.parseAssignment();
-                list.append(p.a, p.mk(s, .{ .spread_elem = .{ .expr = e } })) catch oom();
+                p.push(&list, p.mk(s, .{ .spread_elem = .{ .expr = e } }));
             } else {
-                list.append(p.a, p.parseAssignment()) catch oom();
+                p.push(&list, p.parseAssignment());
             }
             if (p.t() != .r_paren and !p.eat(.comma)) {
                 p.expect(.r_paren);
@@ -2028,7 +2035,7 @@ const Parser = struct {
             if (!tagged) p.lx.commitTemplateEscapes();
             const text = p.lx.value;
             p.next();
-            spans.append(p.a, p.mk(ss, .{ .template_span = .{ .expr = e, .text = text } })) catch oom();
+            p.push(&spans, p.mk(ss, .{ .template_span = .{ .expr = e, .text = text } }));
             if (tok != .template_middle) break;
         }
         return p.mk(s, .{ .template_expr = .{ .head = head, .spans = spans.items } });
@@ -2140,14 +2147,14 @@ const Parser = struct {
             const es = p.lx.start;
             if (p.t() == .comma) {
                 p.next();
-                list.append(p.a, p.mk(es, .omitted_expr)) catch oom();
+                p.push(&list, p.mk(es, .omitted_expr));
                 continue;
             }
             if (p.eat(.dot3)) {
                 const e = p.parseAssignment();
-                list.append(p.a, p.mk(es, .{ .spread_elem = .{ .expr = e } })) catch oom();
+                p.push(&list, p.mk(es, .{ .spread_elem = .{ .expr = e } }));
             } else {
-                list.append(p.a, p.parseAssignment()) catch oom();
+                p.push(&list, p.parseAssignment());
             }
             if (p.t() != .r_bracket and !p.eat(.comma)) break;
         }
@@ -2164,7 +2171,7 @@ const Parser = struct {
         var list: NodeList = .empty;
         while (p.t() != .r_brace and p.t() != .eof) {
             const before = p.lx.start;
-            list.append(p.a, p.parseObjectMember()) catch oom();
+            p.push(&list, p.parseObjectMember());
             if (p.t() != .r_brace and !p.eat(.comma)) {
                 if (p.lx.start == before) p.next();
                 p.errHere(1005, "',' expected.");
@@ -2250,7 +2257,7 @@ const Parser = struct {
                 p.expect(.dot3);
                 const e = p.parseAssignment();
                 p.expect(.r_brace);
-                list.append(p.a, p.mk(s, .{ .jsx_spread_attr = .{ .expr = e } })) catch oom();
+                p.push(&list, p.mk(s, .{ .jsx_spread_attr = .{ .expr = e } }));
                 continue;
             }
             // Anything else cannot start an attribute and would hold the loop on this token.
@@ -2270,7 +2277,7 @@ const Parser = struct {
                     else => p.errHere(1145, "'{' or JSX element expected."),
                 }
             }
-            list.append(p.a, p.mk(s, .{ .jsx_attr = .{ .name = name, .value = value } })) catch oom();
+            p.push(&list, p.mk(s, .{ .jsx_attr = .{ .name = name, .value = value } }));
         }
         return list.items;
     }
@@ -2373,10 +2380,10 @@ const Parser = struct {
                     const v = p.lx.value;
                     p.prev_end = p.lx.pos;
                     _ = p.lx.nextJsxChild();
-                    list.append(p.a, p.mk(s, .{ .jsx_text = v })) catch oom();
+                    p.push(&list, p.mk(s, .{ .jsx_text = v }));
                 },
-                .l_brace => list.append(p.a, p.parseJsxExprContainer(true)) catch oom(),
-                .lt => list.append(p.a, p.parseJsx(true)) catch oom(),
+                .l_brace => p.push(&list, p.parseJsxExprContainer(true)),
+                .lt => p.push(&list, p.parseJsx(true)),
                 .lt_slash => return list.items,
                 else => {
                     p.errHere(17008, "JSX element has no corresponding closing tag.");
@@ -2402,7 +2409,7 @@ const Parser = struct {
             const default = if (p.eat(.assign)) p.parseType() else null;
             const n = p.mk(ts, .{ .type_param = .{ .name = name, .constraint = constraint, .default = default } });
             n.mods = mods;
-            list.append(p.a, n) catch oom();
+            p.push(&list, n);
             if (!p.eat(.comma)) break;
         }
         p.expect(.gt);
@@ -2429,7 +2436,7 @@ const Parser = struct {
         p.next();
         var list: NodeList = .empty;
         while (p.t() != .gt and p.t() != .eof) {
-            list.append(p.a, p.parseType()) catch oom();
+            p.push(&list, p.parseType());
             if (!p.eat(.comma)) break;
         }
         p.expect(.gt);
@@ -2578,8 +2585,8 @@ const Parser = struct {
         const first = p.parseConstituent(op);
         if (p.t() != op) return first;
         var list: NodeList = .empty;
-        list.append(p.a, first) catch oom();
-        while (p.eat(op)) list.append(p.a, p.parseConstituent(op)) catch oom();
+        p.push(&list, first);
+        while (p.eat(op)) p.push(&list, p.parseConstituent(op));
         if (op == .pipe) return p.mk(s, .{ .union_type = .{ .types = list.items } });
         return p.mk(s, .{ .intersection_type = .{ .types = list.items } });
     }
@@ -2793,7 +2800,7 @@ const Parser = struct {
             p.lx.commitTemplateEscapes();
             const text = p.lx.value;
             p.next();
-            spans.append(p.a, p.mk(ss, .{ .template_type_span = .{ .type = ty, .text = text } })) catch oom();
+            p.push(&spans, p.mk(ss, .{ .template_type_span = .{ .type = ty, .text = text } }));
             if (tok != .template_middle) break;
         }
         return p.mk(s, .{ .template_literal_type = .{ .head = head, .spans = spans.items } });
@@ -2851,7 +2858,7 @@ const Parser = struct {
         p.next();
         var list: NodeList = .empty;
         while (p.t() != .r_bracket and p.t() != .eof) {
-            list.append(p.a, p.parseTupleElement()) catch oom();
+            p.push(&list, p.parseTupleElement());
             if (!p.eat(.comma)) break;
         }
         p.expect(.r_bracket);
@@ -2896,7 +2903,7 @@ const Parser = struct {
         p.no_cond_type = false;
         while (p.t() != .r_brace and p.t() != .eof) {
             const before = p.lx.start;
-            list.append(p.a, p.parseTypeMember()) catch oom();
+            p.push(&list, p.parseTypeMember());
             if (p.lx.start == before) p.skipBadToken(1131, "Property or signature expected.");
         }
         p.no_cond_type = save_cond;
