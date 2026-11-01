@@ -83,7 +83,10 @@ fn checkBindings(c: *Checker, pat: *Node) void {
     for (elems) |e| {
         if (e.data != .binding_elem) continue;
         const x = e.data.binding_elem;
-        if (e.symbol) |s| _ = d.typeOfSymbol(c, s);
+        if (e.symbol) |s| {
+            _ = d.typeOfSymbol(c, s);
+            if (x.name.data == .identifier) checkRedeclared(c, e, s, x.name);
+        }
         if (x.init) |i| _ = expr.checkExpression(c, i);
         if (x.prop_name) |k| if (k.data == .computed_name) {
             _ = expr.checkExpression(c, k.data.computed_name.expr);
@@ -245,6 +248,7 @@ fn checkVarDecl(c: *Checker, n: *Node) void {
         if (c.no_implicit_any and v.type == null and v.init == null and declared.data == .err and isPlainDeclaration(n) and !expr.inJs(c, n) and d.isReadElsewhere(c, n.parent.?, n)) {
             expr.err(c, v.name, 7005, c.fmt("Variable '{s}' implicitly has an 'any' type.", .{s.name}));
         }
+        checkRedeclared(c, n, s, v.name);
     }
     const i = v.init orelse return;
     const t = expr.checkExpression(c, i);
@@ -252,6 +256,26 @@ fn checkVarDecl(c: *Checker, n: *Node) void {
         const want = d.typeFromNode(c, ann);
         if (!T.isAny(want)) expr.checkAssignable(c, t, want, i, v.name);
     }
+}
+
+/// `var x` can be written many times, and every declaration after the first must agree with it.
+fn checkRedeclared(c: *Checker, n: *Node, s0: *Symbol, name: *Node) void {
+    const s = s0.resolve();
+    const first = s.value_decl orelse return;
+    // Without a type for a missing property, `exactOptionalPropertyTypes` could not be told apart.
+    if (first == n or s.flags & F.assignment != 0 or expr.inJs(c, n) or c.exact_optional) return;
+    const want = declaredAsAny(c, first, d.typeOfSymbol(c, s));
+    const got = declaredAsAny(c, n, d.typeOfDeclaration(c, n));
+    if (want.data == .err or got.data == .err or relate.isIdentical(c, want, got)) return;
+    err(c, name, 2403, c.fmt("Subsequent variable declarations must have the same type.  Variable '{s}' must be of type '{s}', but here has type '{s}'.", .{ s.name, expr.show(c, want), expr.show(c, got) }));
+}
+
+/// The stand-ins for a variable with nothing to go on are `any` to everyone who compares it.
+fn declaredAsAny(c: *Checker, n: *Node, t: *Type) *Type {
+    if (t == c.t_auto) return c.t_any;
+    if (t.data != .err or n.data != .var_decl) return t;
+    const v = n.data.var_decl;
+    return if (v.type == null and v.init == null) c.t_any else t;
 }
 
 const node_core = std.StaticStringMap(void).initComptime(.{
@@ -347,6 +371,68 @@ pub fn checkModuleRef(c: *Checker, n: *Node, spec: *Node) void {
     err(c, spec, 2307, c.fmt("Cannot find module '{s}' or its corresponding type declarations.", .{name}));
 }
 
+const import_context = "An import declaration can only be used at the top level of a namespace or module.";
+
+/// A file that does not parse has bigger problems, and a misplaced token is usually a symptom.
+fn grammarErr(c: *Checker, n: *Node, code: u32, msg: []const u8) void {
+    const f = d.fileOf(c, n) orelse return;
+    if (f.diags.len == 0) err(c, n, code, msg);
+}
+
+/// Reports `n` when it sits outside a file or a module. What it would have checked stays unchecked.
+fn misplaced(c: *Checker, n: *Node, code: u32, msg: []const u8) bool {
+    const p = n.parent orelse return false;
+    if (p.data == .source_file or p.data == .module_block or p.data == .module_decl) return false;
+    grammarErr(c, n, code, msg);
+    return true;
+}
+
+fn isAmbientModule(n: *Node) bool {
+    const x = n.data.module_decl;
+    return x.is_global or x.name.data == .string_lit;
+}
+
+fn canNameModule(c: *Checker, n: *Node, spec: *Node, is_export: bool) bool {
+    const p = n.parent orelse return true;
+    if (p.data == .source_file or (p.data == .module_block and isAmbientModule(p.parent.?))) return true;
+    if (is_export) {
+        err(c, spec, 1194, "Export declarations are not permitted in a namespace.");
+    } else {
+        err(c, spec, 1147, "Import declarations in a namespace cannot reference a module.");
+    }
+    return false;
+}
+
+fn checkExportAssign(c: *Checker, n: *Node) void {
+    const x = n.data.export_assign;
+    const context = if (x.is_equals) "An export assignment must be at the top level of a file or module declaration." else "A default export must be at the top level of a file or module declaration.";
+    if (misplaced(c, n, if (x.is_equals) 1231 else 1258, context)) return;
+    const p = n.parent.?;
+    if (p.data == .module_block and !isAmbientModule(p.parent.?)) {
+        if (x.is_equals) {
+            err(c, n, 1063, "An export assignment cannot be used in a namespace.");
+        } else {
+            err(c, n, 1319, "A default export can only be used in an ECMAScript-style module.");
+        }
+        return;
+    }
+    _ = expr.checkExpression(c, x.expr);
+}
+
+/// `export` and `declare` mean something only at the top of a file or a module.
+fn checkStatementMods(c: *Checker, n: *Node) void {
+    const p = n.parent orelse return;
+    if (p.data == .source_file or p.data == .module_block) return;
+    var m = n.mods;
+    switch (n.data) {
+        .func => m.async = false,
+        .class => m.abstract = false,
+        .enum_decl => m.@"const" = false,
+        else => {},
+    }
+    if (m != ast.Mods{}) grammarErr(c, n, 1184, "Modifiers cannot appear here.");
+}
+
 fn isSideEffectImport(n: *Node) bool {
     return n.data == .import_decl and n.data.import_decl.clause == null;
 }
@@ -360,6 +446,7 @@ fn moduleOf(c: *Checker, n: *Node, spec: *Node) ?*Symbol {
 
 fn checkImport(c: *Checker, n: *Node) void {
     const x = n.data.import_decl;
+    if (misplaced(c, n, 1232, import_context) or !canNameModule(c, n, x.specifier, false)) return;
     checkModuleRef(c, n, x.specifier);
     const clause = x.clause orelse return;
     const m = moduleOf(c, n, x.specifier) orelse return;
@@ -414,7 +501,13 @@ fn missingExport(c: *Checker, m: *Symbol, at: *Node, name: []const u8) void {
 
 fn checkExportDecl(c: *Checker, n: *Node) void {
     const x = n.data.export_decl;
-    if (x.specifier) |sp| checkModuleRef(c, n, sp);
+    if (misplaced(c, n, 1233, "An export declaration can only be used at the top level of a namespace or module.")) return;
+    if (x.specifier) |sp| {
+        if (!canNameModule(c, n, sp, true)) return;
+        checkModuleRef(c, n, sp);
+    } else if (n.parent.?.data != .source_file and !d.isAmbient(c, n)) {
+        err(c, n, 1194, "Export declarations are not permitted in a namespace.");
+    }
     const clause = x.clause orelse return;
     if (clause.data != .named_exports) return;
     const m: ?*Symbol = if (x.specifier) |sp| moduleOf(c, n, sp) else null;
@@ -440,7 +533,10 @@ fn checkStmt(c: *Checker, n: *Node) void {
     c.instantiation_count = 0;
     switch (n.data) {
         .block => |x| checkBlock(c, x.stmts),
-        .var_stmt => |x| checkStmt(c, x.list),
+        .var_stmt => |x| {
+            checkStatementMods(c, n);
+            checkStmt(c, x.list);
+        },
         .var_list => |x| for (x.decls) |v| checkVarDecl(c, v),
         .expr_stmt => |x| _ = expr.checkExpression(c, x.expr),
         .if_stmt => |x| {
@@ -509,23 +605,44 @@ fn checkStmt(c: *Checker, n: *Node) void {
             }
             if (x.finally) |f| checkStmt(c, f);
         },
-        .func => checkFuncBody(c, n),
-        .class => checkClass(c, n),
-        .interface => checkInterface(c, n),
-        .type_alias => |x| _ = d.typeFromNode(c, x.type),
+        .func => {
+            checkStatementMods(c, n);
+            checkFuncBody(c, n);
+        },
+        .class => {
+            checkStatementMods(c, n);
+            checkClass(c, n);
+        },
+        .interface => {
+            checkStatementMods(c, n);
+            checkInterface(c, n);
+        },
+        .type_alias => |x| {
+            checkStatementMods(c, n);
+            _ = d.typeFromNode(c, x.type);
+        },
         .enum_decl => |x| {
+            checkStatementMods(c, n);
             if (n.symbol) |s| _ = d.declaredType(c, s);
             for (x.members) |m| if (m.data.enum_member.init) |i| {
                 _ = expr.checkExpression(c, i);
             };
         },
-        .module_decl => |x| if (x.body) |b| checkStmt(c, b),
+        .module_decl => |x| {
+            if (x.body) |b| checkStmt(c, b);
+            if (isAmbientModule(n)) {
+                _ = misplaced(c, n, 1234, "An ambient module declaration is only allowed at the top level in a file.");
+            } else {
+                _ = misplaced(c, n, 1235, "A namespace declaration is only allowed at the top level of a namespace or module.");
+            }
+        },
         .module_block => |x| checkBlock(c, x.stmts),
         .import_decl => checkImport(c, n),
         .export_decl => checkExportDecl(c, n),
-        .export_assign => |x| _ = expr.checkExpression(c, x.expr),
-        .import_equals => |x| {
-            if (x.ref.data == .external_module_ref) checkModuleRef(c, n, x.ref.data.external_module_ref.expr);
+        .export_assign => checkExportAssign(c, n),
+        .import_equals => |x| if (!misplaced(c, n, 1232, import_context) and x.ref.data == .external_module_ref) {
+            const spec = x.ref.data.external_module_ref.expr;
+            if (canNameModule(c, n, spec, false)) checkModuleRef(c, n, spec);
         },
         else => {},
     }

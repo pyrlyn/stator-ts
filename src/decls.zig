@@ -68,10 +68,8 @@ pub fn resolveName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?*S
         const hidden = n.data == .conditional_type and last != n.data.conditional_type.then;
         if (!hidden) if (localsOf(c, n)) |l| if (l.get(name)) |s| {
             if (matches(c, s, meaning)) |r| {
-                // A parameter's own scope does not include the function's return type for values.
-                return r;
-            }
-            if (n.data == .source_file) if (fileOf(c, n)) |f| if (f.symbol) |m| if (m.exports) |e| if (e.get(name)) |x| {
+                if (n.data != .func or visibleInFunc(c, n, last, r, meaning)) return r;
+            } else if (n.data == .source_file) if (fileOf(c, n)) |f| if (f.symbol) |m| if (m.exports) |e| if (e.get(name)) |x| {
                 if (x != s and !binder.isExportSpecifierOnly(x)) if (matches(c, x, meaning)) |r| return r;
             };
         };
@@ -86,6 +84,61 @@ pub fn resolveName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?*S
     return null;
 }
 
+/// One table holds a function's parameters and what its block declares, but `last`, the way in,
+/// decides what can be seen: only the block sees all of it.
+fn visibleInFunc(c: *Checker, n: *Node, last: ?*Node, s: *Symbol, meaning: u32) bool {
+    const from = last orelse return true;
+    const f = n.data.func;
+    if (f.body) |b| if (from == b or from.parent == b) return true;
+    if (c.bodies.get(n)) |b| if (from == b.block) return true;
+    const in_param = from.data == .param;
+    if (meaning & s.flags & F.type != 0) {
+        if (s.flags & F.type_param == 0) return false;
+        if (!(in_param or from == f.ret or from.data == .type_param)) return false;
+    }
+    if (meaning & s.flags & F.variable == 0) return true;
+    const vd = s.value_decl orelse return true;
+    const in_body = if (f.body) |b| vd.start >= b.start and vd.end <= b.end else false;
+    if (in_param and in_body and !paramsMoveToBody(c, f.params)) return false;
+    if (s.flags & F.func_var == 0) return true;
+    if (in_param) return true;
+    if (from != f.ret) return false;
+    var cur: ?*Node = vd;
+    while (cur) |x| : (cur = x.parent) if (x.data == .param) return true;
+    return false;
+}
+
+/// Below these targets a parameter that needs a temporary is emitted into the body, where the
+/// body's variables are in scope.
+fn paramsMoveToBody(c: *Checker, params: []const *Node) bool {
+    const Scan = struct {
+        year: u32,
+        found: bool = false,
+        fn visit(s: *@This(), n: *Node) void {
+            if (n.data == .func) return;
+            s.found = s.found or switch (n.data) {
+                .binary => |x| x.op == .qq and s.year < 2021,
+                .prop_access => |x| x.optional and s.year < 2020,
+                .elem_access => |x| x.optional and s.year < 2020,
+                .call => |x| x.optional and s.year < 2020,
+                .property_decl => n.mods.static and s.year < 2022,
+                else => false,
+            };
+            ast.forEachChild(n, s, visit);
+        }
+    };
+    var scan = Scan{ .year = targetYear(c.prog.cfg.options.target orelse return false) };
+    for (params) |p| ast.forEachChild(p, &scan, Scan.visit);
+    return scan.found;
+}
+
+fn targetYear(target: []const u8) u32 {
+    if (std.ascii.eqlIgnoreCase(target, "es3") or std.ascii.eqlIgnoreCase(target, "es5")) return 2009;
+    if (std.ascii.eqlIgnoreCase(target, "es6")) return 2015;
+    if (target.len < 2) return std.math.maxInt(u32);
+    return std.fmt.parseInt(u32, target[2..], 10) catch std.math.maxInt(u32);
+}
+
 pub fn fileOf(c: *Checker, n: *Node) ?*ast.File {
     var cur = n;
     while (cur.parent) |p| cur = p;
@@ -94,7 +147,24 @@ pub fn fileOf(c: *Checker, n: *Node) ?*ast.File {
 
 pub fn targetOf(c: *Checker, s: *Symbol) ?*Symbol {
     if (s.flags & F.alias == 0) return s.resolve();
-    return c.prog.resolveAlias(s, 0);
+    const t = c.prog.resolveAlias(s, 0);
+    if (t == null) reportImportOf(c, s);
+    return t;
+}
+
+/// The walk never looks at an import that is out of place, so it fails where its name is used.
+fn reportImportOf(c: *Checker, s: *Symbol) void {
+    if (s.decls.len == 0) return;
+    var cur: ?*Node = s.decls[0];
+    while (cur) |n| : (cur = n.parent) switch (n.data) {
+        .import_clause, .namespace_import, .named_imports, .import_spec => {},
+        .import_decl => |x| return checker.checkModuleRef(c, n, x.specifier),
+        .import_equals => |x| {
+            if (x.ref.data == .external_module_ref) checker.checkModuleRef(c, n, x.ref.data.external_module_ref.expr);
+            return;
+        },
+        else => return,
+    };
 }
 
 /// `import { join } from 'path'` when the module says `export = path` and `path` is a value:
@@ -811,8 +881,12 @@ fn memberSym(c: *Checker, base: ?*Symbol, name: []const u8, meaning: u32) ?*Symb
 
 pub fn typeFromNode(c: *Checker, n: *Node) *Type {
     if (c.node_types.get(n)) |t| return t;
-    if (c.node_resolving.contains(n)) return c.t_err;
+    if (c.node_resolving.contains(n)) {
+        c.closeCycle(n);
+        return c.t_err;
+    }
     c.node_resolving.put(c.a, n, {}) catch oom();
+    c.pushResolution(n);
     const saved = c.current_node;
     const saved_is_type = c.current_is_type;
     c.current_node = n;
@@ -821,6 +895,7 @@ pub fn typeFromNode(c: *Checker, n: *Node) *Type {
     c.current_node = saved;
     c.current_is_type = saved_is_type;
     _ = c.node_resolving.remove(n);
+    _ = c.popResolution();
     c.node_types.put(c.a, n, t) catch oom();
     return t;
 }
@@ -1569,16 +1644,75 @@ pub fn typeOfSymbol(c: *Checker, s0: *Symbol) *Type {
         c.sym_types.put(c.a, s, out) catch oom();
         return out;
     }
-    if (c.sym_resolving.contains(s)) return c.t_err;
+    if (c.sym_resolving.contains(s)) {
+        c.closeCycle(s);
+        return c.t_err;
+    }
     c.sym_resolving.put(c.a, s, {}) catch oom();
+    c.pushResolution(s);
     // What a symbol is does not depend on the pass over a call that first asks.
     const skip = c.skip_sensitive;
     c.skip_sensitive = false;
-    const t = typeOfSymbolWorker(c, s);
+    var t = typeOfSymbolWorker(c, s);
     c.skip_sensitive = skip;
     _ = c.sym_resolving.remove(s);
+    if (c.popResolution()) t = circularSymbol(c, s, t);
     c.sym_types.put(c.a, s, t) catch oom();
     return t;
+}
+
+fn circularSymbol(c: *Checker, s: *Symbol, t: *Type) *Type {
+    if (s.flags & (F.variable | F.property) == 0) return t;
+    const d = s.value_decl orelse return t;
+    const has_type, const has_init = switch (d.data) {
+        .var_decl => |x| .{ x.type != null, x.init != null },
+        .param => |x| .{ x.type != null, x.init != null },
+        .property_decl => |x| .{ x.type != null, x.init != null },
+        .binding_elem => |x| .{ false, x.init != null },
+        else => return t,
+    };
+    const at = binder.nameNode(d) orelse d;
+    if (has_type) {
+        report(c, at, 2502, c.fmt("'{s}' is referenced directly or indirectly in its own type annotation.", .{s.name}));
+        return c.t_err;
+    }
+    // A parameter without an initializer had its context reported as an implicit `any` already.
+    if (c.no_implicit_any and (d.data != .param or has_init)) {
+        report(c, at, 7022, c.fmt("'{s}' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.", .{s.name}));
+    }
+    return c.t_any;
+}
+
+/// A function without a name of its own goes by what it is assigned to.
+fn nameOfFunc(n: *Node) ?*Node {
+    if (n.data.func.name) |x| return x;
+    if (n.data.func.kind != .expr and n.data.func.kind != .arrow) return null;
+    const p = n.parent orelse return null;
+    return switch (p.data) {
+        .property_assign => |x| x.name,
+        .binding_elem => |x| x.name,
+        .var_decl => |x| if (x.name.data == .identifier) x.name else null,
+        .binary => |x| if (x.right != n) null else switch (x.left.data) {
+            .identifier => x.left,
+            .prop_access => |y| y.name,
+            .elem_access => |y| y.index,
+            else => null,
+        },
+        else => null,
+    };
+}
+
+fn circularReturn(c: *Checker, s: *Sig) void {
+    const d = s.decl orelse return;
+    if (d.data != .func) return;
+    if (d.data.func.ret) |r| return report(c, r, 2577, "Return type annotation circularly references itself.");
+    if (!c.no_implicit_any) return;
+    if (nameOfFunc(d)) |nm| {
+        const name = if (nm.data == .identifier) nm.data.identifier else fileOf(c, nm).?.src[nm.start..nm.end];
+        report(c, nm, 7023, c.fmt("'{s}' implicitly has return type 'any' because it does not have a return type annotation and is referenced directly or indirectly in one of its return expressions.", .{name}));
+    } else {
+        report(c, d, 7024, "Function implicitly has return type 'any' because it does not have a return type annotation and is referenced directly or indirectly in one of its return expressions.");
+    }
 }
 
 fn valueObject(c: *Checker, s: *Symbol) *Type {
@@ -1610,7 +1744,12 @@ fn baseTypeVariable(c: *Checker, s: *Symbol) ?*Type {
 fn typeOfSymbolWorker(c: *Checker, s: *Symbol) *Type {
     // `const x` merged with a types-only `namespace x` is the variable.
     if (s.flags & F.variable != 0) {
-        for (s.decls) |n| if (n.data == .var_decl) return typeOfVarDecl(c, n);
+        for (s.decls) |n| switch (n.data) {
+            .var_decl => return typeOfVarDecl(c, n),
+            .param => return typeOfParam(c, n),
+            .binding_elem => return bindingElemType(c, n),
+            else => {},
+        };
     }
     if (s.flags & (F.function | F.method | F.class | F.value_module) != 0) {
         const v = valueObject(c, s);
@@ -1690,6 +1829,15 @@ fn accessorType(c: *Checker, s: *Symbol) *Type {
     return if (param) |p| typeOfParam(c, p) else c.t_any;
 }
 
+/// What one of a symbol's declarations says, whatever the symbol as a whole came to.
+pub fn typeOfDeclaration(c: *Checker, d: *Node) *Type {
+    return switch (d.data) {
+        .var_decl => typeOfVarDecl(c, d),
+        .binding_elem => bindingElemType(c, d),
+        else => c.t_err,
+    };
+}
+
 fn typeOfVarDecl(c: *Checker, d: *Node) *Type {
     const v = d.data.var_decl;
     if (v.type) |n| return typeFromNode(c, n);
@@ -1711,7 +1859,7 @@ fn typeOfVarDecl(c: *Checker, d: *Node) *Type {
 }
 
 fn isNullish(n: *Node) bool {
-    const x = binder.stripParens(n);
+    const x = binder.skipParens(n);
     return x.data == .null_lit or (x.data == .identifier and std.mem.eql(u8, x.data.identifier, "undefined"));
 }
 
@@ -1752,7 +1900,10 @@ fn padPattern(c: *Checker, t: *Type, init: *Node, pat: *Node) *Type {
             added = nm;
             break :blk nm;
         };
+        // The default may read a sibling of the pattern, which is waiting for this very type.
+        c.pushResolution(null);
         const ty = expr.widenInit(c, i, expr.checkInit(c, i), false);
+        _ = c.popResolution();
         m.props.put(c.a, name, c.create(Prop, .{ .name = name, .ty = ty, .optional = true })) catch oom();
     }
     return if (added) |m| c.newObj(.{ .kind = .anon, .members = m }) else t;
@@ -1967,45 +2118,40 @@ pub fn unionOfReturns(c: *Checker, sigs: []*Sig) *Sig {
 
 pub fn returnOf(c: *Checker, s: *Sig) *Type {
     if (s.ret) |t| return t;
-    if (s.composite.len > 0) {
-        if (s.ret_resolving) return c.t_err;
-        s.ret_resolving = true;
-        defer s.ret_resolving = false;
-        var rets = c.newList(*Type);
-        for (s.composite) |x| rets.append(c.a, returnOf(c, x)) catch oom();
-        const t = expr.reduceSubtypes(c, rets.items);
-        s.ret = t;
-        return t;
+    if (s.ret_resolving) {
+        c.closeCycle(s);
+        return c.t_err;
     }
-    if (s.target) |x| {
-        if (s.ret_resolving) return c.t_err;
-        s.ret_resolving = true;
-        defer s.ret_resolving = false;
-        const t = instantiate(c, returnOf(c, x), s.mapper);
-        s.ret = t;
-        return t;
-    }
-    const d = s.decl orelse return c.t_any;
-    if (d.data != .func) return c.t_any;
-    const f = d.data.func;
-    if (s.ret_resolving) return c.t_err;
     s.ret_resolving = true;
-    defer s.ret_resolving = false;
-    var t: *Type = undefined;
-    if (f.kind == .ctor) {
-        const owner = d.parent orelse return c.t_err;
-        t = if (owner.symbol) |o| declaredType(c, o) else c.t_err;
-    } else if (f.ret) |r| {
-        t = typeFromNode(c, r);
-    } else if (setterAnnotation(c, d)) |a| {
-        t = a;
-    } else if (f.body != null) {
-        t = expr.returnTypeFromBody(c, d);
-    } else {
-        t = if (f.kind == .setter or f.kind == .setter_sig) c.t_void else c.t_any;
+    c.pushResolution(s);
+    var t = returnOfWorker(c, s);
+    s.ret_resolving = false;
+    if (c.popResolution()) {
+        circularReturn(c, s);
+        t = c.t_any;
     }
     s.ret = t;
     return t;
+}
+
+fn returnOfWorker(c: *Checker, s: *Sig) *Type {
+    if (s.composite.len > 0) {
+        var rets = c.newList(*Type);
+        for (s.composite) |x| rets.append(c.a, returnOf(c, x)) catch oom();
+        return expr.reduceSubtypes(c, rets.items);
+    }
+    if (s.target) |x| return instantiate(c, returnOf(c, x), s.mapper);
+    const d = s.decl orelse return c.t_any;
+    if (d.data != .func) return c.t_any;
+    const f = d.data.func;
+    if (f.kind == .ctor) {
+        const owner = d.parent orelse return c.t_err;
+        return if (owner.symbol) |o| declaredType(c, o) else c.t_err;
+    }
+    if (f.ret) |r| return typeFromNode(c, r);
+    if (setterAnnotation(c, d)) |a| return a;
+    if (f.body != null) return expr.returnTypeFromBody(c, d);
+    return if (f.kind == .setter or f.kind == .setter_sig) c.t_void else c.t_any;
 }
 
 pub fn predOf(c: *Checker, s: *Sig) ?*T.Pred {

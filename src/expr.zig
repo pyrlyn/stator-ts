@@ -23,6 +23,9 @@ const InferCtx = T.InferCtx;
 const oom = T.oom;
 
 pub fn show(c: *Checker, t: *Type) []const u8 {
+    // Spelling out a type reads what is inside it, and no message can make a declaration circular.
+    c.pushResolution(null);
+    defer _ = c.popResolution();
     return print.typeToString(c, t);
 }
 
@@ -41,7 +44,41 @@ pub fn checkExpression(c: *Checker, n: *Node) *Type {
 }
 
 pub fn checkInit(c: *Checker, n: *Node) *Type {
-    return checkExpr(c, n);
+    return quickType(c, n) orelse checkExpr(c, n);
+}
+
+/// What an initializer comes to without looking at its arguments, so a declaration they mention
+/// has its type already: `const f = run(() => f)` is not a cycle.
+fn quickType(c: *Checker, n: *Node) ?*Type {
+    const x = binder.skipParens(n);
+    return switch (x.data) {
+        .await_expr => |y| if (quickType(c, y.expr)) |t| awaitedOf(c, t) else null,
+        .as_expr => |y| if (isConstRef(y.type)) null else d.typeFromNode(c, y.type),
+        .type_assertion => |y| if (isConstRef(y.type)) null else d.typeFromNode(c, y.type),
+        .call => |y| blk: {
+            const special = y.callee.data == .import_kw or y.callee.data == .super_expr or namesSymbol(y.callee) or isRequireCall(x);
+            if (special or y.optional or flow.isOptionalChain(y.callee)) break :blk null;
+            const t = nonNull(c, checkSilent(c, y.callee));
+            if (t.data != .obj) break :blk null;
+            const m = d.membersOf(c, t);
+            if (m.calls.len != 1 or m.calls[0].tparams.len != 0 or m.ctors.len != 0 or m.indexes.len != 0 or m.props.count() != 0) break :blk null;
+            break :blk d.returnOf(c, m.calls[0]);
+        },
+        .new_expr => |y| blk: {
+            const t = nonNull(c, checkSilent(c, y.callee));
+            if (t.data != .obj or d.callSigs(c, t).len != 0) break :blk null;
+            const sigs = d.ctorSigs(c, t);
+            if (sigs.len != 1 or sigs[0].tparams.len != 0) break :blk null;
+            break :blk d.returnOf(c, sigs[0]);
+        },
+        else => null,
+    };
+}
+
+fn isRequireCall(n: *Node) bool {
+    const x = n.data.call;
+    if (x.callee.data != .identifier or !std.mem.eql(u8, x.callee.data.identifier, "require")) return false;
+    return x.args.len == 1 and (x.args[0].data == .string_lit or x.args[0].data == .no_subst_template);
 }
 
 /// Types an expression without reporting: narrowing reads operands the statement walker visits anyway.
@@ -1472,6 +1509,10 @@ fn rebuildLiteral(c: *Checker, t: *Type, comptime prop: fn (*Checker, *Type) *Ty
     // Most literals hold nothing `prop` changes, and those keep their table.
     var changed: ?*T.Members = null;
     for (props, 0..) |p, i| {
+        if (isAccessor(p)) {
+            if (changed) |m| m.props.put(c.a, p.name, p) catch oom();
+            continue;
+        }
         const before = d.propType(c, p);
         const after = prop(c, before);
         if (changed == null and after == before) continue;
@@ -1486,6 +1527,13 @@ fn rebuildLiteral(c: *Checker, t: *Type, comptime prop: fn (*Checker, *Type) *Ty
         m.props.put(c.a, p.name, q) catch oom();
     }
     return settledLiteral(c, t, changed orelse src);
+}
+
+/// An accessor widened what it returns by itself, and its body may well read the declaration that
+/// is being widened right now.
+fn isAccessor(p: *Prop) bool {
+    const n = p.decl orelse return false;
+    return n.data == .func and (n.data.func.kind == .getter or n.data.func.kind == .setter);
 }
 
 fn settledLiteral(c: *Checker, t: *Type, m: *T.Members) *Type {
@@ -1582,6 +1630,10 @@ fn widenLiteralAmong(c: *Checker, t: *Type, w: *Widening) *Type {
     const m = c.emptyMembers();
     const props = d.membersOf(c, t).props;
     for (props.values()) |p| {
+        if (isAccessor(p)) {
+            m.props.put(c.a, p.name, p) catch oom();
+            continue;
+        }
         const q = c.create(Prop, p.*);
         var inner = Widening{ .parent = w, .prop = p.name };
         q.ty = regularize(c, widenAmong(c, d.propType(c, p), &inner));
@@ -1777,6 +1829,8 @@ fn sameShape(c: *Checker, a: *Sig, b: *Sig) bool {
 }
 
 pub fn contextualSig(c: *Checker, fnode: *Node) ?*Sig {
+    // An accessor is no method: its property may be what the context got from this very literal.
+    if (fnode.data.func.kind == .getter or fnode.data.func.kind == .setter) return null;
     const t = signatureContext(c, fnode) orelse return null;
     return sigFromType(c, t, fnode);
 }
@@ -1913,9 +1967,24 @@ fn checkFunctionExpr(c: *Checker, n: *Node) *Type {
         defer c.skip_sensitive = save;
         c.skip_sensitive = false;
         const sigs = d.callSigs(c, t);
-        if (sigs.len == 1) _ = d.returnOf(c, sigs[0]);
+        // Coming back to a function whose return is being read is no new read: the literal around
+        // a method gets checked again for its `this`.
+        if (sigs.len == 1 and sigs[0].ret == null and !sigs[0].ret_resolving) {
+            // Only a context with a return of its own compares this one, so only then can a
+            // declaration that is waiting for it be at fault.
+            const compared = comparesReturn(c, n);
+            if (!compared) c.pushResolution(null);
+            _ = d.returnOf(c, sigs[0]);
+            if (!compared) _ = c.popResolution();
+        }
     }
     return t;
+}
+
+fn comparesReturn(c: *Checker, n: *Node) bool {
+    const sig = contextualSig(c, n) orelse return false;
+    const r = d.returnOf(c, sig);
+    return r.data != .void and !T.isAny(r);
 }
 
 fn hasAnnotatedOwner(s: *Symbol) bool {
@@ -2022,15 +2091,20 @@ pub fn returnTypeFromBody(c: *Checker, fnode: *Node) *Type {
     } else {
         ast.forEachChild(body.block, &r, collectReturns);
         var implicit = if (body.end_flow) |e| flow.isReachable(c, e) else false;
+        var self_call = false;
         for (r.list.items) |x| {
             if (x.data.return_stmt.expr) |e| {
                 if (!flow.isReachable(c, x.flow)) continue;
+                if (isCallToSelf(c, fnode, e)) {
+                    self_call = true;
+                    continue;
+                }
                 parts.append(c.a, checkExpr(c, e)) catch oom();
             } else {
                 if (flow.isReachable(c, x.flow)) implicit = true;
             }
         }
-        if (parts.items.len == 0 and !implicit and !f.asterisk) {
+        if (parts.items.len == 0 and !implicit and !f.asterisk and (self_call or mayReturnNever(fnode))) {
             return if (is_async) promiseOf(c, c.t_never) else c.t_never;
         }
         if (implicit and parts.items.len > 0) parts.append(c.a, c.t_undefined) catch oom();
@@ -2059,6 +2133,34 @@ pub fn returnTypeFromBody(c: *Checker, fnode: *Node) *Type {
         return d.generic(c, if (is_async) "AsyncGenerator" else "Generator", &.{ y, t, generatorContext(c, fnode, .next) orelse c.t_err });
     }
     return if (is_async) promiseOf(c, t) else t;
+}
+
+/// `return f()` inside `f` says nothing about what `f` returns.
+fn isCallToSelf(c: *Checker, fnode: *Node, e: *Node) bool {
+    var x = binder.stripParens(e);
+    if (fnode.mods.async and x.data == .await_expr) x = binder.stripParens(x.data.await_expr.expr);
+    if (x.data != .call or x.data.call.callee.data != .identifier) return false;
+    const callee = x.data.call.callee;
+    const t = checkSilent(c, callee);
+    if (t.data != .obj) return false;
+    const own = fnode.symbol;
+    if (t.data.obj.node != fnode and (own == null or t.data.obj.sym != own)) return false;
+    const kind = fnode.data.func.kind;
+    if (kind != .expr and kind != .arrow) return true;
+    // Only a name that cannot be pointed elsewhere is sure to still be this function.
+    const s = symbolOf(c, callee) orelse return false;
+    const decl = s.value_decl orelse return false;
+    return isStableBinding(c, s) or (decl.data == .func and decl.data.func.kind == .expr);
+}
+
+/// A declaration or a class method has a name to be called by, so a body that only throws is
+/// taken for an unfinished `void` and not for a promise never to return.
+fn mayReturnNever(fnode: *Node) bool {
+    return switch (fnode.data.func.kind) {
+        .expr, .arrow => true,
+        .method => fnode.parent != null and fnode.parent.?.data == .object_lit,
+        else => false,
+    };
 }
 
 /// A lone literal widens unless the context asks for it; several name a set on purpose.
@@ -2341,9 +2443,9 @@ pub fn destructuredType(c: *Checker, parent: *Type, pat: *Node, el: *Node) *Type
 
 fn restOf(c: *Checker, t: *Type, skip: []const []const u8) *Type {
     if (t.data == .union_) {
-        const out = c.a.alloc(*Type, t.data.union_.len) catch oom();
-        for (t.data.union_, 0..) |m, i| out[i] = restOf(c, m, skip);
-        return c.getUnion(out);
+        var out = c.newList(*Type);
+        for (t.data.union_) |m| if (m.data != .null and m.data != .undefined) out.append(c.a, restOf(c, m, skip)) catch oom();
+        return if (out.items.len > 0) c.getUnion(out.items) else restOf(c, t.data.union_[0], skip);
     }
     if (t.vars and t.data != .obj) return c.t_err;
     const ap = d.getApparent(c, t);
@@ -3745,6 +3847,7 @@ fn elaborate(c: *Checker, n0: *Node, s: *Type, t: *Type) bool {
                 const data: struct { name: *Node, value: ?*Node } = switch (p.data) {
                     .property_assign => |y| .{ .name = y.name, .value = y.value },
                     .shorthand_assign => |y| .{ .name = y.name, .value = null },
+                    .func => |y| .{ .name = y.name orelse continue, .value = null },
                     else => continue,
                 };
                 const name = propNameOf(c, data.name) orelse continue;
@@ -4430,15 +4533,17 @@ fn calleeSigs(c: *Checker, t: *Type) ?[]*Sig {
     return if (s.len > 0) s else null;
 }
 
-/// The declaration whose name `Symbol()` gives a type of its own: `const K = Symbol()`.
-fn symbolCallOwner(c: *Checker, n: *Node) ?*Symbol {
-    const callee = n.data.call.callee;
-    const named = switch (callee.data) {
+fn namesSymbol(callee: *Node) bool {
+    return switch (callee.data) {
         .identifier => |name| std.mem.eql(u8, name, "Symbol"),
-        .prop_access => |y| std.mem.eql(u8, y.name.data.identifier, "for") and y.expr.data == .identifier and std.mem.eql(u8, y.expr.data.identifier, "Symbol"),
+        .prop_access => |y| std.mem.eql(u8, ast.memberText(y.name), "for") and y.expr.data == .identifier and std.mem.eql(u8, y.expr.data.identifier, "Symbol"),
         else => false,
     };
-    if (!named) return null;
+}
+
+/// The declaration whose name `Symbol()` gives a type of its own: `const K = Symbol()`.
+fn symbolCallOwner(c: *Checker, n: *Node) ?*Symbol {
+    if (!namesSymbol(n.data.call.callee)) return null;
     var cur = n;
     while (cur.parent) |p| : (cur = p) {
         if (p.data != .paren) break;

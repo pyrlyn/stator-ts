@@ -38,6 +38,9 @@ pub fn isIdentical(c: *Checker, s: *Type, t: *Type) bool {
 fn fresh(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
     const outer = enterStacks(c);
     defer leaveStacks(c, outer);
+    // A cycle met while comparing says when the comparison ran, not that a declaration is at fault.
+    c.pushResolution(null);
+    defer _ = c.popResolution();
     return related(c, s, t, rel);
 }
 
@@ -812,7 +815,10 @@ fn propsRelated(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
             } else if (sp.protected) return false;
         }
         if (sp.optional and !tp.optional and rel != .comparable) return false;
-        if (!related(c, d.propType(c, sp), d.propType(c, tp), rel)) return false;
+        const want = d.propType(c, tp);
+        // Anything fits, so the source is not read: it may well be a getter still being worked out.
+        if (rel != .identity and (T.isAny(want) or want.data == .unknown)) continue;
+        if (!related(c, d.propType(c, sp), want, rel)) return false;
     }
     return true;
 }
@@ -1039,9 +1045,9 @@ fn sigRel(c: *Checker, s0: *Sig, t: *Sig, rel: Relation, mode: SigMode) bool {
         if (mode == .normal and !strict and related(c, x, y, rel)) continue;
         return false;
     }
-    const tr = d.returnOf(c, t);
+    const tr = if (t.ret_resolving) c.t_any else d.returnOf(c, t);
     if (tr.data == .void or T.isAny(tr)) return true;
-    const sr = d.returnOf(c, s);
+    const sr = if (s.ret_resolving) c.t_any else d.returnOf(c, s);
     if (d.predOf(c, t)) |tp| {
         const sp = d.predOf(c, s) orelse return false;
         if (sp.is_this != tp.is_this or sp.asserts != tp.asserts or (!tp.is_this and sp.param_index != tp.param_index)) return false;

@@ -39,6 +39,7 @@ pub const Options = struct {
     allowSyntheticDefaultImports: ?bool = null,
     resolveJsonModule: ?bool = null,
     skipLibCheck: ?bool = null,
+    skipDefaultLibCheck: ?bool = null,
     noEmit: ?bool = null,
     noLib: ?bool = null,
     verbatimModuleSyntax: ?bool = null,
@@ -1095,15 +1096,14 @@ pub const Program = struct {
             std.fmt.allocPrint(p.a, "Cannot redeclare block-scoped variable '{s}'.", .{s.name}) catch oom()
         else
             std.fmt.allocPrint(p.a, "Duplicate identifier '{s}'.", .{s.name}) catch oom();
-        for ([_]*Symbol{ t, s }) |x| {
-            if (x.file) |f| {
-                if (f.is_dts) continue;
-                for (x.decls) |d| {
-                    const n = binder.nameNode(d) orelse d;
-                    p.diags.append(p.a, .{ .file = f, .start = n.start, .len = n.end - n.start, .code = code, .msg = msg }) catch oom();
-                }
-            }
-        }
+        for ([_]*Symbol{ t, s }) |x| for (x.decls) |d| {
+            // What lib files merged lies in many files, whatever `x.file` says.
+            var root = d;
+            while (root.parent) |up| root = up;
+            const f = p.by_root.get(root) orelse continue;
+            const n = binder.nameNode(d) orelse d;
+            p.diags.append(p.a, .{ .file = f, .start = n.start, .len = n.end - n.start, .code = code, .msg = msg }) catch oom();
+        };
     }
 
     pub fn sourceOf(p: *const Program, f: ?*ast.File) ?*SourceFile {
