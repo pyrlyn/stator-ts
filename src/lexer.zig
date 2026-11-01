@@ -183,12 +183,12 @@ pub const Tok = enum(u8) {
 };
 
 const keywords = std.StaticStringMap(Tok).initComptime(blk: {
-    const fields = @typeInfo(Tok).@"enum".fields;
-    var pairs: [fields.len]struct { []const u8, Tok } = undefined;
+    const info = @typeInfo(Tok).@"enum";
+    var pairs: [info.field_names.len]struct { []const u8, Tok } = undefined;
     var n: usize = 0;
-    for (fields) |f| {
-        if (std.mem.startsWith(u8, f.name, "kw_")) {
-            pairs[n] = .{ f.name[3..], @enumFromInt(f.value) };
+    for (info.field_names, info.field_values) |name, value| {
+        if (std.mem.startsWith(u8, name, "kw_")) {
+            pairs[n] = .{ name[3..], @enumFromInt(value) };
             n += 1;
         }
     }
