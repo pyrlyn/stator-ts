@@ -46,6 +46,41 @@ After T15, alternating with tsrs under a load average of 8 to 14, so not a quiet
 
 What is left is spread evenly over `openat`, `relate.cached`, property lookup, the lexer and the arena. At `-j 16` the extra is checkers repeating each other, 156 G against 132 G, and file reads, which stop scaling at 4 threads and about 300 ms on this machine.
 
+### T17
+
+Alternating with the T15 build under a load average of 10 to 27, so not a quiet machine. Cycles and instructions are the working measure; the load moved wall by a second between rounds.
+
+| Build | Wall | Instructions | Cycles | Peak footprint | Peak RSS |
+| --- | --- | --- | --- | --- | --- |
+| T15 `-j 16` | 1.74-2.37 s | 154-156 G | 58-64 G | 2.35-2.48 GB | 2.34 GB |
+| T17 `-j 16` | 1.61-2.26 s | 152-154 G | 55-58 G | 1.19-1.25 GB | 1.39 GB |
+| T15 `-j 1` | 14.14 s | 131.7 G | 46.2 G | 1.88 GB | |
+| T17 `-j 1` | 12.05 s | 125 G | 40.9 G | 1.02 GB | |
+| T17 with PGO `-j 16` | 1.39-1.67 s | 115 G | 47-50 G | 1.20-1.24 GB | |
+| T17 with PGO `-j 1` | 10.50-11.22 s | 96-97 G | 35 G | 1.02 GB | |
+
+Peak footprint halved. Files of 16 KiB and up are mapped, so they count in RSS and not in footprint, which is why RSS fell by 41%. Before the last changes the peak read 1.33-1.50 GB in quieter rounds and 1.19 GB in busy ones: it depends on how many workers top out together. Busy rounds are all the last build was measured in.
+
+Without PGO, wall at `-j 16` fell by 7 to 10%. With PGO, ten interleaved rounds at a load average near 30 went from 1.74-2.06 s to 1.47-1.67 s, and eight at a load near 40 from 2.27-2.46 s to 1.83-2.02 s: 16 to 19%, not 30%. At `-j 1` the best round went from 14.12 s to 10.50 s, 26%. What holds it:
+
+- `open` costs 89-128 us here against 2.5 us for `stat`, and throughput stops growing at 6 threads: 11214 files take 270-310 ms however many threads open them, and reading adds nothing. Relative `openat` from a directory fd is worse. Directory listings go through the same gate. A C program sees the same floor, so it is this machine and outside the compiler.
+- Own time per visit in `check`: repeats are 14% and work for another file 5%, so no structural waste is left of a size that matters. Self time is flat: no function above 5%.
+- Runs trade time for memory directly: memory follows run size at about 45 bytes per source byte, and every extra run rebuilds lib types. 24 runs per worker cost 2% of cycles over 16, and the peak needs them.
+
+Tried without gain: fast hash contexts for the maps still on wyhash (same cycles, 0.7% more instructions), and keeping 6 or 8 chunks per worker instead of 4 (same wall, 100-200 MB more).
+
+PGO is `scripts/pgo.sh`, because Zig has none: clang 23 compiles the bitcode Zig 0.17 writes before optimizing, with a profile of one check. It takes 150 s here, of which the check is 60 s.
+
+| Build, VS Code `-j 16` | Instructions | Cycles |
+| --- | --- | --- |
+| `zig build` | 152 G | 55-57 G |
+| clang, no profile | 152 G | 55 G |
+| Profile of a small project (`apps/stator/packages/compiler`) | 120 G | 48 G |
+| Profile of VS Code | 115 G | 47-50 G |
+| Profile of VS Code, then context-sensitive | 115 G | 49 G |
+
+So clang alone changes nothing, the gain comes from the profile, and most of it carries over to code it was not trained on. The context-sensitive second pass adds nothing and is not in the script. Small project, 3.29 G to 2.69 G instructions either way, wall still 0.1 s. The same bytes come out as from `zig build` at `-j` 4 and 16 on VS Code and on the small project.
+
 ### tsrs
 
 Facts about tsrs's design come from https://github.com/oxc-project/tsrs at commit e18fb617ee516917342dcda27063ab67acc79e49, checked 2026-11-01; paths are from that tree. Numbers marked "here" were measured on this machine with the builds in the table above.
