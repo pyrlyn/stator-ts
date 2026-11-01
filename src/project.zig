@@ -495,12 +495,16 @@ const FsCache = struct {
         return shard.bare.get(key);
     }
 
-    /// Both strings stay in a file's arena, which outlives the whole run.
+    /// The strings come from a resolver's scratch arena, so the table keeps its own copies.
     fn remember(f: *FsCache, key: []const u8, path: ?[]const u8) void {
+        const a = std.heap.smp_allocator;
         const shard = f.shardOf(key);
         shard.mutex.lockUncancelable(f.io);
         defer shard.mutex.unlock(f.io);
-        shard.bare.put(std.heap.smp_allocator, key, path) catch oom();
+        const gop = shard.bare.getOrPut(a, key) catch oom();
+        if (gop.found_existing) return;
+        gop.key_ptr.* = a.dupe(u8, key) catch oom();
+        gop.value_ptr.* = if (path) |p| a.dupe(u8, p) catch oom() else null;
     }
 };
 
@@ -823,14 +827,17 @@ fn loadOne(l: *const Loading, _: usize, i: usize) void {
     binder.bindFile(a, f);
     sf.file = f;
     sf.pending = a.alloc(?[]const u8, f.module_specs.len) catch oom();
-    const r = Resolver{ .io = l.io, .a = a, .fs = l.fs, .cfg = l.cfg };
-    for (f.module_specs, 0..) |s, n| sf.pending[n] = r.resolve(path, s.data.string_lit);
+    // Every path tried and package.json read goes here: resolving keeps only what it found.
+    var scratch = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer scratch.deinit();
+    const r = Resolver{ .io = l.io, .a = scratch.allocator(), .fs = l.fs, .cfg = l.cfg };
+    for (f.module_specs, 0..) |s, n| sf.pending[n] = if (r.resolve(path, s.data.string_lit)) |p| a.dupe(u8, p) catch oom() else null;
     var extra: std.ArrayList([]const u8) = .empty;
     for (f.references) |ref| switch (ref.kind) {
         .path => extra.append(a, fspath.resolve(a, &.{ fspath.dirname(path) orelse ".", ref.value }) catch oom()) catch oom(),
         .lib => if (l.lib_dir) |d| extra.append(a, libFile(a, l.io, d, ref.value)) catch oom(),
         // Type roots of the project win over whatever a package nests next to itself.
-        .types => if (r.tryTypeRoot(l.cfg.root, ref.value) orelse r.tryNodeModules(fspath.dirname(path) orelse ".", ref.value)) |p| extra.append(a, p) catch oom(),
+        .types => if (r.tryTypeRoot(l.cfg.root, ref.value) orelse r.tryNodeModules(fspath.dirname(path) orelse ".", ref.value)) |p| extra.append(a, a.dupe(u8, p) catch oom()) catch oom(),
     };
     sf.extra = extra.items;
 }
