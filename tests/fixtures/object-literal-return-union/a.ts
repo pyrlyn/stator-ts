@@ -1,0 +1,11 @@
+declare function up<T>(f: (s: { n: number }) => T): T;
+declare function up0<T>(f: () => T): T;
+const a = up(s => { if (s.n > 2) { return { limit: 'x' }; } return { run: 'a' }; });
+const a1: string | undefined = a.limit;
+const a2: number = a.run;
+const b = up0(() => { if (1 > 2) { return {}; } return { run: 'a' }; });
+const b1: string | undefined = b.run;
+const c = up(s => s.n);
+const c1: string = c;
+const d = up(s => 1);
+const d1: string = d;

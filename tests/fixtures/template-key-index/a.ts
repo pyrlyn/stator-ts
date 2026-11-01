@@ -1,0 +1,14 @@
+declare const q: { [k: `a${string}`]: number; b: string };
+const a: number = q.ab;
+const b: number = q['ab'];
+const c: string = q.ab;
+const d: number = q.zz;
+declare const r: Record<`a${string}`, number>;
+const e: number = r.ab;
+const f: string = r.ab;
+declare const p: Partial<Record<`${string}/x`, string[]>>;
+const g: (string[] | undefined)[] = Object.values(p);
+const h: number[] = Object.values(p);
+declare const o: Partial<Record<string, number>>;
+const i: number | undefined = o.ab;
+const j: string = o.ab;

@@ -1,0 +1,14 @@
+declare const a3: number[];
+const r0: Pick<ReadonlyArray<number>, "length"> = a3;
+const r1: Pick<ReadonlyArray<number>, "entries"> = a3;
+const r2: Pick<ReadonlyArray<number>, "keys"|"values"> = a3;
+const r3: Pick<ReadonlyArray<number>, "includes"> = a3;
+const r4: Pick<ReadonlyArray<number>, "flat"> = a3;
+const r5: Pick<ReadonlyArray<number>, "flatMap"> = a3;
+const r6: Pick<ReadonlyArray<number>, "at"> = a3;
+const r7: Pick<ReadonlyArray<number>, "findIndex"> = a3;
+const r8: Pick<ReadonlyArray<number>, typeof Symbol.iterator> = a3;
+const r9: Pick<ReadonlyArray<number>, typeof Symbol.unscopables> = a3;
+const r10: Pick<ReadonlyArray<number>, "toLocaleString"|"toString"> = a3;
+const r11: { readonly [n: number]: number } = a3;
+const r12: Pick<ReadonlyArray<number>, "concat"> = a3;

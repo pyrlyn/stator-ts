@@ -1,0 +1,10 @@
+import * as path from 'node:path';
+import * as os from 'os';
+import { join } from 'path';
+import * as fs from 'node:fs';
+export const a = path.dirname('x');
+export const b = join('a', 'b');
+export const c = os.tmpdir();
+export const d = fs.readFileSync('x', 'utf8');
+export const e: string = process.env['X'] ?? '';
+export const v = process.platform;

@@ -1,0 +1,1 @@
+{"compilerOptions":{"strict":true,"target":"es2019","lib":["dom","es2019"],"noEmit":true,"types":[]},"files":["a.ts"]}

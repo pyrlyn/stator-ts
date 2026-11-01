@@ -1,0 +1,1338 @@
+const std = @import("std");
+const builtin = @import("builtin");
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+const fspath = std.fs.path;
+const json = std.json;
+const ast = @import("ast.zig");
+const binder = @import("binder.zig");
+const parser = @import("parser.zig");
+const pool = @import("pool.zig");
+const emit = @import("emit.zig");
+const Symbol = binder.Symbol;
+const SymbolTable = binder.SymbolTable;
+const F = binder.F;
+
+fn oom() noreturn {
+    @panic("out of memory");
+}
+
+/// Field names are the tsconfig keys: options load through reflection.
+pub const Options = struct {
+    strict: ?bool = null,
+    noImplicitAny: ?bool = null,
+    strictNullChecks: ?bool = null,
+    strictFunctionTypes: ?bool = null,
+    strictBindCallApply: ?bool = null,
+    strictPropertyInitialization: ?bool = null,
+    noImplicitThis: ?bool = null,
+    useUnknownInCatchVariables: ?bool = null,
+    noImplicitReturns: ?bool = null,
+    noFallthroughCasesInSwitch: ?bool = null,
+    noUncheckedIndexedAccess: ?bool = null,
+    exactOptionalPropertyTypes: ?bool = null,
+    noPropertyAccessFromIndexSignature: ?bool = null,
+    noImplicitOverride: ?bool = null,
+    noUnusedLocals: ?bool = null,
+    noUnusedParameters: ?bool = null,
+    esModuleInterop: ?bool = null,
+    allowSyntheticDefaultImports: ?bool = null,
+    resolveJsonModule: ?bool = null,
+    skipLibCheck: ?bool = null,
+    noEmit: ?bool = null,
+    noLib: ?bool = null,
+    verbatimModuleSyntax: ?bool = null,
+    allowImportingTsExtensions: ?bool = null,
+    rewriteRelativeImportExtensions: ?bool = null,
+    allowJs: ?bool = null,
+    target: ?[]const u8 = null,
+    module: ?[]const u8 = null,
+    moduleResolution: ?[]const u8 = null,
+    jsx: ?[]const u8 = null,
+    jsxFactory: ?[]const u8 = null,
+    jsxFragmentFactory: ?[]const u8 = null,
+    jsxImportSource: ?[]const u8 = null,
+    outDir: ?[]const u8 = null,
+    rootDir: ?[]const u8 = null,
+    baseUrl: ?[]const u8 = null,
+    lib: ?[]const []const u8 = null,
+    types: ?[]const []const u8 = null,
+    typeRoots: ?[]const []const u8 = null,
+
+    pub fn flag(o: Options, comptime name: []const u8) bool {
+        return @field(o, name) orelse o.strict orelse false;
+    }
+
+    pub fn jsxMode(o: Options) emit.Jsx {
+        const v = o.jsx orelse return .preserve;
+        if (std.ascii.eqlIgnoreCase(v, "react")) return .react;
+        if (std.ascii.eqlIgnoreCase(v, "react-jsx")) return .react_jsx;
+        if (std.ascii.eqlIgnoreCase(v, "react-jsxdev")) return .react_jsxdev;
+        return .preserve;
+    }
+};
+
+pub const PathMapping = struct { pattern: []const u8, targets: []const []const u8 };
+
+pub const Config = struct {
+    /// Directory of the tsconfig, or the scanned directory.
+    root: []const u8,
+    path: ?[]const u8 = null,
+    options: Options = .{},
+    files: ?[]const []const u8 = null,
+    include: ?[]const []const u8 = null,
+    exclude: ?[]const []const u8 = null,
+    paths: []const PathMapping = &.{},
+    paths_base: []const u8 = "",
+};
+
+pub const Ctx = struct {
+    a: Allocator,
+    io: Io,
+};
+
+fn exists(io: Io, path: []const u8) bool {
+    Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
+}
+
+fn isFile(io: Io, path: []const u8) bool {
+    const st = Io.Dir.cwd().statFile(io, path, .{}) catch return false;
+    return st.kind == .file;
+}
+
+fn isDir(io: Io, path: []const u8) bool {
+    const st = Io.Dir.cwd().statFile(io, path, .{}) catch return false;
+    return st.kind == .directory;
+}
+
+pub fn readFile(a: Allocator, io: Io, path: []const u8) ![]u8 {
+    return Io.Dir.cwd().readFileAlloc(io, path, a, .unlimited);
+}
+
+/// tsconfig is JSON with comments and trailing commas; std.json takes neither.
+pub fn stripJsonc(a: Allocator, src: []const u8) []const u8 {
+    var out = a.alloc(u8, src.len) catch oom();
+    var n: usize = 0;
+    var i: usize = 0;
+    var in_str = false;
+    while (i < src.len) {
+        const c = src[i];
+        if (in_str) {
+            out[n] = c;
+            n += 1;
+            i += 1;
+            if (c == '\\' and i < src.len) {
+                out[n] = src[i];
+                n += 1;
+                i += 1;
+            } else if (c == '"') in_str = false;
+            continue;
+        }
+        if (c == '"') {
+            in_str = true;
+        } else if (c == '/' and i + 1 < src.len and src[i + 1] == '/') {
+            while (i < src.len and src[i] != '\n') i += 1;
+            continue;
+        } else if (c == '/' and i + 1 < src.len and src[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < src.len and !(src[i] == '*' and src[i + 1] == '/')) i += 1;
+            i += 2;
+            continue;
+        } else if (c == ',') {
+            var j = i + 1;
+            while (j < src.len) {
+                if (std.ascii.isWhitespace(src[j])) {
+                    j += 1;
+                } else if (src[j] == '/' and j + 1 < src.len and src[j + 1] == '/') {
+                    while (j < src.len and src[j] != '\n') j += 1;
+                } else if (src[j] == '/' and j + 1 < src.len and src[j + 1] == '*') {
+                    j += 2;
+                    while (j + 1 < src.len and !(src[j] == '*' and src[j + 1] == '/')) j += 1;
+                    j += 2;
+                } else break;
+            }
+            if (j < src.len and (src[j] == '}' or src[j] == ']')) {
+                i += 1;
+                continue;
+            }
+        }
+        out[n] = c;
+        n += 1;
+        i += 1;
+    }
+    return out[0..n];
+}
+
+fn stringList(a: Allocator, v: json.Value) ?[]const []const u8 {
+    if (v != .array) return null;
+    var out: std.ArrayList([]const u8) = .empty;
+    for (v.array.items) |x| if (x == .string) out.append(a, x.string) catch oom();
+    return out.items;
+}
+
+fn applyOptions(a: Allocator, cfg: *Config, base: []const u8, co: json.ObjectMap) void {
+    inline for (std.meta.fields(Options)) |f| {
+        if (co.get(f.name)) |v| {
+            if (f.type == ?bool) {
+                if (v == .bool) @field(cfg.options, f.name) = v.bool;
+            } else if (f.type == ?[]const u8) {
+                if (v == .string) {
+                    const is_path = comptime (std.mem.eql(u8, f.name, "outDir") or std.mem.eql(u8, f.name, "rootDir") or std.mem.eql(u8, f.name, "baseUrl"));
+                    @field(cfg.options, f.name) = if (is_path) fspath.resolve(a, &.{ base, v.string }) catch oom() else v.string;
+                }
+            } else {
+                if (stringList(a, v)) |l| @field(cfg.options, f.name) = l;
+            }
+        }
+    }
+    if (co.get("paths")) |p| if (p == .object) {
+        var list: std.ArrayList(PathMapping) = .empty;
+        var it = p.object.iterator();
+        while (it.next()) |e| {
+            list.append(a, .{ .pattern = e.key_ptr.*, .targets = stringList(a, e.value_ptr.*) orelse &.{} }) catch oom();
+        }
+        cfg.paths = list.items;
+        cfg.paths_base = cfg.options.baseUrl orelse base;
+    };
+}
+
+fn resolveExtends(c: Ctx, base: []const u8, name: []const u8) ?[]const u8 {
+    if (std.mem.startsWith(u8, name, ".") or fspath.isAbsolute(name)) {
+        const p = fspath.resolve(c.a, &.{ base, name }) catch oom();
+        if (isFile(c.io, p)) return p;
+        const q = std.mem.concat(c.a, u8, &.{ p, ".json" }) catch oom();
+        return if (isFile(c.io, q)) q else null;
+    }
+    var dir: ?[]const u8 = base;
+    while (dir) |d| : (dir = fspath.dirname(d)) {
+        const p = fspath.join(c.a, &.{ d, "node_modules", name }) catch oom();
+        if (isFile(c.io, p)) return p;
+        const q = std.mem.concat(c.a, u8, &.{ p, ".json" }) catch oom();
+        if (isFile(c.io, q)) return q;
+        const r = fspath.join(c.a, &.{ p, "tsconfig.json" }) catch oom();
+        if (isFile(c.io, r)) return r;
+    }
+    return null;
+}
+
+fn loadInto(c: Ctx, cfg: *Config, path: []const u8, depth: u32) anyerror!void {
+    if (depth > 16) return error.ExtendsCycle;
+    const base = fspath.dirname(path) orelse ".";
+    const text = try readFile(c.a, c.io, path);
+    const value = try json.parseFromSliceLeaky(json.Value, c.a, stripJsonc(c.a, text), .{});
+    if (value != .object) return error.InvalidConfig;
+    const obj = value.object;
+    if (obj.get("extends")) |e| {
+        if (e == .string) {
+            if (resolveExtends(c, base, e.string)) |p| try loadInto(c, cfg, p, depth + 1);
+        } else if (stringList(c.a, e)) |list| {
+            for (list) |x| if (resolveExtends(c, base, x)) |p| try loadInto(c, cfg, p, depth + 1);
+        }
+    }
+    if (obj.get("compilerOptions")) |co| if (co == .object) applyOptions(c.a, cfg, base, co.object);
+    if (obj.get("files")) |v| cfg.files = absList(c.a, base, stringList(c.a, v) orelse &.{});
+    if (obj.get("include")) |v| cfg.include = absList(c.a, base, stringList(c.a, v) orelse &.{});
+    if (obj.get("exclude")) |v| cfg.exclude = absList(c.a, base, stringList(c.a, v) orelse &.{});
+}
+
+fn absList(a: Allocator, base: []const u8, list: []const []const u8) []const []const u8 {
+    const out = a.alloc([]const u8, list.len) catch oom();
+    for (list, 0..) |x, i| out[i] = fspath.resolve(a, &.{ base, x }) catch oom();
+    return out;
+}
+
+pub fn loadConfig(c: Ctx, path: []const u8) !Config {
+    var cfg = Config{ .root = fspath.dirname(path) orelse ".", .path = path };
+    try loadInto(c, &cfg, path, 0);
+    return cfg;
+}
+
+/// `*`, `?` and `**/`, as in tsconfig include patterns. Patterns are absolute.
+pub fn globMatch(pat: []const u8, s: []const u8) bool {
+    if (pat.len == 0) return s.len == 0;
+    if (std.mem.startsWith(u8, pat, "**/")) {
+        const rest = pat[3..];
+        if (globMatch(rest, s)) return true;
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, s, i, '/')) |p| : (i = p + 1) {
+            if (globMatch(rest, s[p + 1 ..])) return true;
+        }
+        return false;
+    }
+    switch (pat[0]) {
+        '*' => {
+            var i: usize = 0;
+            while (true) : (i += 1) {
+                if (globMatch(pat[1..], s[i..])) return true;
+                if (i >= s.len or s[i] == '/') return false;
+            }
+        },
+        '?' => return s.len > 0 and s[0] != '/' and globMatch(pat[1..], s[1..]),
+        else => return s.len > 0 and s[0] == pat[0] and globMatch(pat[1..], s[1..]),
+    }
+}
+
+fn hasWildcard(s: []const u8) bool {
+    return std.mem.indexOfAny(u8, s, "*?") != null;
+}
+
+/// `src` in include means everything under it; the same rule makes exclude cover subtrees.
+fn expandInclude(a: Allocator, p: []const u8) []const u8 {
+    const base = fspath.basename(p);
+    if (hasWildcard(base) or std.mem.indexOfScalar(u8, base, '.') != null) return p;
+    return std.mem.concat(a, u8, &.{ p, "/**/*" }) catch oom();
+}
+
+fn walkRoot(pat: []const u8) []const u8 {
+    const w = std.mem.indexOfAny(u8, pat, "*?") orelse return pat;
+    const slash = std.mem.lastIndexOfScalar(u8, pat[0..w], '/') orelse return "/";
+    return if (slash == 0) "/" else pat[0..slash];
+}
+
+pub fn isSourceFile(name: []const u8) bool {
+    for ([_][]const u8{ ".ts", ".tsx", ".mts", ".cts" }) |e| if (std.mem.endsWith(u8, name, e)) return true;
+    return false;
+}
+
+const WalkItem = struct { dirs: std.ArrayList([]const u8) = .empty, files: std.ArrayList([]const u8) = .empty, arena: std.heap.ArenaAllocator };
+
+const Walk = struct {
+    io: Io,
+    level: []const []const u8,
+    out: []WalkItem,
+};
+
+fn walkOne(w: *const Walk, worker: usize, i: usize) void {
+    const item = &w.out[worker];
+    const a = item.arena.allocator();
+    const path = w.level[i];
+    var dir = Io.Dir.cwd().openDir(w.io, path, .{ .iterate = true }) catch return;
+    defer dir.close(w.io);
+    var it = dir.iterate();
+    while (it.next(w.io) catch null) |e| {
+        // A symlink target may be a directory; tsc follows them, and pnpm stores rely on that.
+        var kind = e.kind;
+        const full = fspath.join(a, &.{ path, e.name }) catch oom();
+        if (kind == .sym_link) {
+            kind = (Io.Dir.cwd().statFile(w.io, full, .{}) catch continue).kind;
+        }
+        if (kind == .directory) {
+            if (std.mem.eql(u8, e.name, "node_modules") or std.mem.eql(u8, e.name, ".git") or std.mem.eql(u8, e.name, "bower_components") or std.mem.eql(u8, e.name, "jspm_packages")) continue;
+            item.dirs.append(a, full) catch oom();
+        } else if (kind == .file and isSourceFile(e.name)) {
+            item.files.append(a, full) catch oom();
+        }
+    }
+}
+
+/// Breadth-first, one parallel pass per directory level; no queue or lock needed.
+pub fn walkDirs(a: Allocator, io: Io, tp: *pool.ThreadPool, roots: []const []const u8) []const []const u8 {
+    var files: std.ArrayList([]const u8) = .empty;
+    var level: std.ArrayList([]const u8) = .empty;
+    level.appendSlice(a, roots) catch oom();
+    while (level.items.len > 0) {
+        const items = a.alloc(WalkItem, tp.width()) catch oom();
+        for (items) |*x| x.* = .{ .arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator) };
+        const w = Walk{ .io = io, .level = level.items, .out = items };
+        pool.parallelFor(tp, level.items.len, &w, walkOne);
+        var next: std.ArrayList([]const u8) = .empty;
+        for (items) |*x| {
+            for (x.files.items) |f| files.append(a, a.dupe(u8, f) catch oom()) catch oom();
+            for (x.dirs.items) |d| next.append(a, a.dupe(u8, d) catch oom()) catch oom();
+            x.arena.deinit();
+        }
+        level = next;
+    }
+    std.mem.sort([]const u8, files.items, {}, struct {
+        fn f(_: void, l: []const u8, r: []const u8) bool {
+            return std.mem.lessThan(u8, l, r);
+        }
+    }.f);
+    return files.items;
+}
+
+/// Path containment on whole components: `src2` is a sibling of `src`, not inside it.
+fn isWithin(path: []const u8, dir: []const u8) bool {
+    if (!std.mem.startsWith(u8, path, dir)) return false;
+    return path.len == dir.len or path[dir.len] == '/' or (dir.len > 0 and dir[dir.len - 1] == '/');
+}
+
+test "isWithin needs a component boundary" {
+    try std.testing.expect(isWithin("/p/src", "/p/src"));
+    try std.testing.expect(isWithin("/p/src/a", "/p/src"));
+    try std.testing.expect(!isWithin("/p/src2", "/p/src"));
+    try std.testing.expect(isWithin("/p/src2", "/p/"));
+}
+
+pub fn projectFiles(a: Allocator, io: Io, tp: *pool.ThreadPool, cfg: *const Config) []const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    if (cfg.files) |fs| out.appendSlice(a, fs) catch oom();
+    if (cfg.files != null and cfg.include == null) return out.items;
+
+    const include = cfg.include orelse absList(a, cfg.root, &.{"**/*"});
+    var patterns: std.ArrayList([]const u8) = .empty;
+    var roots: std.ArrayList([]const u8) = .empty;
+    for (include) |p| {
+        const pat = expandInclude(a, p);
+        patterns.append(a, pat) catch oom();
+        const r = walkRoot(pat);
+        var nested = false;
+        for (roots.items) |x| if (isWithin(r, x)) {
+            nested = true;
+        };
+        if (!nested and exists(io, r)) {
+            if (isFile(io, r)) {
+                out.append(a, r) catch oom();
+            } else roots.append(a, r) catch oom();
+        }
+    }
+    var excludes: std.ArrayList([]const u8) = .empty;
+    if (cfg.exclude) |ex| {
+        for (ex) |e| excludes.append(a, expandInclude(a, e)) catch oom();
+    } else if (cfg.options.outDir) |d| excludes.append(a, expandInclude(a, d)) catch oom();
+
+    next: for (walkDirs(a, io, tp, roots.items)) |f| {
+        var hit = false;
+        for (patterns.items) |p| {
+            if (globMatch(p, f)) {
+                hit = true;
+                break;
+            }
+        }
+        if (!hit) continue;
+        for (excludes.items) |e| if (globMatch(e, f)) continue :next;
+        out.append(a, f) catch oom();
+    }
+    return out.items;
+}
+
+/// Every import probes up to a dozen names, nearly all missing, and each failed stat takes a
+/// kernel lock the other workers want. Listing a directory once answers all of them from memory.
+/// Entries live as long as the process, so they come straight from the thread-safe allocator.
+const FsCache = struct {
+    io: Io,
+    shards: [64]Shard = @splat(.{}),
+
+    const Listing = union(enum) {
+        missing,
+        /// Listing was refused, which says nothing about the entries: those still get a stat.
+        unreadable,
+        names: std.StringHashMapUnmanaged(Io.File.Kind),
+    };
+
+    const Shard = struct {
+        mutex: Io.Mutex = .init,
+        dirs: std.StringHashMapUnmanaged(*Listing) = .empty,
+        bare: std.StringHashMapUnmanaged(?[]const u8) = .empty,
+    };
+
+    fn shardOf(f: *FsCache, key: []const u8) *Shard {
+        return &f.shards[std.hash.Wyhash.hash(0, key) % f.shards.len];
+    }
+
+    fn list(f: *FsCache, path: []const u8) *Listing {
+        const a = std.heap.smp_allocator;
+        const out = a.create(Listing) catch oom();
+        var dir = Io.Dir.cwd().openDir(f.io, path, .{ .iterate = true }) catch |e| {
+            out.* = if (e == error.FileNotFound or e == error.NotDir) .missing else .unreadable;
+            return out;
+        };
+        defer dir.close(f.io);
+        var names: std.StringHashMapUnmanaged(Io.File.Kind) = .empty;
+        var it = dir.iterate();
+        while (it.next(f.io) catch null) |e| {
+            var kind = e.kind;
+            if (kind == .sym_link) kind = (dir.statFile(f.io, e.name, .{}) catch continue).kind;
+            names.put(a, a.dupe(u8, e.name) catch oom(), kind) catch oom();
+        }
+        out.* = .{ .names = names };
+        return out;
+    }
+
+    fn listing(f: *FsCache, path: []const u8) *Listing {
+        const shard = f.shardOf(path);
+        shard.mutex.lockUncancelable(f.io);
+        const known = shard.dirs.get(path);
+        shard.mutex.unlock(f.io);
+        if (known) |l| return l;
+        // Two workers may list one directory at once; the second result just replaces the first.
+        const fresh = f.list(path);
+        const key = std.heap.smp_allocator.dupe(u8, path) catch oom();
+        shard.mutex.lockUncancelable(f.io);
+        defer shard.mutex.unlock(f.io);
+        shard.dirs.put(std.heap.smp_allocator, key, fresh) catch oom();
+        return fresh;
+    }
+
+    fn kindOf(f: *FsCache, path: []const u8) ?Io.File.Kind {
+        const parent = fspath.dirname(path) orelse {
+            const st = Io.Dir.cwd().statFile(f.io, path, .{}) catch return null;
+            return st.kind;
+        };
+        switch (f.listing(parent).*) {
+            .missing => return null,
+            .unreadable => {
+                const st = Io.Dir.cwd().statFile(f.io, path, .{}) catch return null;
+                return st.kind;
+            },
+            .names => |names| return names.get(fspath.basename(path)),
+        }
+    }
+
+    fn isFile(f: *FsCache, path: []const u8) bool {
+        return f.kindOf(path) == .file;
+    }
+
+    fn isDir(f: *FsCache, path: []const u8) bool {
+        return f.kindOf(path) == .directory;
+    }
+
+    fn resolved(f: *FsCache, key: []const u8) ??[]const u8 {
+        const shard = f.shardOf(key);
+        shard.mutex.lockUncancelable(f.io);
+        defer shard.mutex.unlock(f.io);
+        return shard.bare.get(key);
+    }
+
+    /// Both strings stay in a file's arena, which outlives the whole run.
+    fn remember(f: *FsCache, key: []const u8, path: ?[]const u8) void {
+        const shard = f.shardOf(key);
+        shard.mutex.lockUncancelable(f.io);
+        defer shard.mutex.unlock(f.io);
+        shard.bare.put(std.heap.smp_allocator, key, path) catch oom();
+    }
+};
+
+const Resolver = struct {
+    io: Io,
+    a: Allocator,
+    fs: *FsCache,
+    cfg: *const Config,
+
+    fn jsonModules(r: Resolver) bool {
+        const bundler = if (r.cfg.options.moduleResolution) |m| std.ascii.eqlIgnoreCase(m, "bundler") else false;
+        return r.cfg.options.resolveJsonModule orelse bundler;
+    }
+
+    fn tryFile(r: Resolver, base: []const u8) ?[]const u8 {
+        const suffixes = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".d.mts", ".d.cts" };
+        if (isSourceFile(base) and r.fs.isFile(base)) return base;
+        if (r.jsonModules() and std.mem.endsWith(u8, base, ".json") and r.fs.isFile(base)) return base;
+        for (suffixes) |s| {
+            const p = std.mem.concat(r.a, u8, &.{ base, s }) catch oom();
+            if (r.fs.isFile(p)) return p;
+        }
+        // Source written for ESM imports `./a.js` while `./a.ts` is on disk.
+        const maps = [_]struct { []const u8, []const []const u8 }{
+            .{ ".js", &.{ ".ts", ".tsx", ".d.ts" } },
+            .{ ".jsx", &.{ ".tsx", ".d.ts" } },
+            .{ ".mjs", &.{ ".mts", ".d.mts" } },
+            .{ ".cjs", &.{ ".cts", ".d.cts" } },
+        };
+        for (maps) |m| if (std.mem.endsWith(u8, base, m[0])) {
+            const stem = base[0 .. base.len - m[0].len];
+            for (m[1]) |x| {
+                const p = std.mem.concat(r.a, u8, &.{ stem, x }) catch oom();
+                if (r.fs.isFile(p)) return p;
+            }
+        };
+        return null;
+    }
+
+    fn tryIndex(r: Resolver, dir: []const u8) ?[]const u8 {
+        for ([_][]const u8{ "index.ts", "index.tsx", "index.d.ts" }) |x| {
+            const p = fspath.join(r.a, &.{ dir, x }) catch oom();
+            if (r.fs.isFile(p)) return p;
+        }
+        return null;
+    }
+
+    fn tryPath(r: Resolver, base: []const u8) ?[]const u8 {
+        if (r.tryFile(base)) |p| return p;
+        if (r.fs.isDir(base)) {
+            if (r.tryPackageDir(base, "")) |p| return p;
+            return r.tryIndex(base);
+        }
+        return null;
+    }
+
+    /// `types: ["node"]` names a package under `typeRoots`, or else under `@types` looked up from
+    /// the project outwards.
+    fn tryTypeRoot(r: Resolver, from: []const u8, name: []const u8) ?[]const u8 {
+        if (r.cfg.options.typeRoots) |roots| for (roots) |root| {
+            const pkg = fspath.resolve(r.a, &.{ r.cfg.root, root, name }) catch oom();
+            if (r.tryPackageDir(pkg, "")) |p| return p;
+        };
+        var dir: ?[]const u8 = from;
+        while (dir) |x| : (dir = fspath.dirname(x)) {
+            const pkg = fspath.join(r.a, &.{ x, "node_modules", "@types", name }) catch oom();
+            if (r.tryPackageDir(pkg, "")) |p| return p;
+        }
+        return null;
+    }
+
+    /// Conditions are tried in the map's own order. A target whose file is missing falls
+    /// through to the next condition, which `"types": "./*.d.ts", "import": "./*"` relies on.
+    fn tryTarget(r: Resolver, dir: []const u8, v: json.Value, stem: ?[]const u8) ?[]const u8 {
+        switch (v) {
+            .string => |s| {
+                const t = if (stem) |x| std.mem.replaceOwned(u8, r.a, s, "*", x) catch oom() else s;
+                return r.tryExportFile(dir, t);
+            },
+            .object => |o| {
+                var it = o.iterator();
+                while (it.next()) |e| {
+                    for ([_][]const u8{ "types", "import", "node", "default" }) |k| {
+                        if (!std.mem.eql(u8, e.key_ptr.*, k)) continue;
+                        if (r.tryTarget(dir, e.value_ptr.*, stem)) |p| return p;
+                    }
+                }
+                if (o.get("require")) |x| return r.tryTarget(dir, x, stem);
+                return null;
+            },
+            .array => |l| {
+                for (l.items) |x| if (r.tryTarget(dir, x, stem)) |p| return p;
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    fn tryExports(r: Resolver, dir: []const u8, exp: json.Value, sub: []const u8) ?[]const u8 {
+        const key = std.mem.concat(r.a, u8, &.{ ".", sub }) catch oom();
+        if (exp == .string or exp == .array) return if (sub.len == 0) r.tryTarget(dir, exp, null) else null;
+        if (exp != .object) return null;
+        var has_sub = false;
+        var it0 = exp.object.iterator();
+        while (it0.next()) |e| if (std.mem.startsWith(u8, e.key_ptr.*, ".")) {
+            has_sub = true;
+        };
+        if (!has_sub) return if (sub.len == 0) r.tryTarget(dir, exp, null) else null;
+        if (exp.object.get(key)) |v| return r.tryTarget(dir, v, null);
+        var best: ?json.Value = null;
+        var best_pre: usize = 0;
+        var stem: []const u8 = "";
+        var it = exp.object.iterator();
+        while (it.next()) |e| {
+            const star = std.mem.indexOfScalar(u8, e.key_ptr.*, '*') orelse continue;
+            const pre = e.key_ptr.*[0..star];
+            const post = e.key_ptr.*[star + 1 ..];
+            if (key.len < pre.len + post.len or !std.mem.startsWith(u8, key, pre) or !std.mem.endsWith(u8, key, post)) continue;
+            if (best != null and pre.len <= best_pre) continue;
+            best = e.value_ptr.*;
+            best_pre = pre.len;
+            stem = key[pre.len .. key.len - post.len];
+        }
+        return if (best) |v| r.tryTarget(dir, v, stem) else null;
+    }
+
+    fn tryExportFile(r: Resolver, dir: []const u8, rel: []const u8) ?[]const u8 {
+        const p = fspath.resolve(r.a, &.{ dir, rel }) catch oom();
+        return r.tryFile(p);
+    }
+
+    fn tryPackageDir(r: Resolver, dir: []const u8, sub: []const u8) ?[]const u8 {
+        const pkg = fspath.join(r.a, &.{ dir, "package.json" }) catch oom();
+        if (r.fs.isFile(pkg)) blk: {
+            const text = readFile(r.a, r.io, pkg) catch break :blk;
+            const v = json.parseFromSliceLeaky(json.Value, r.a, text, .{}) catch break :blk;
+            if (v != .object) break :blk;
+            if (v.object.get("exports")) |e| {
+                if (r.tryExports(dir, e, sub)) |p| return p;
+                // A package with an exports map hides every other path.
+                if (e == .object or e == .string) break :blk;
+            }
+            if (sub.len == 0) for ([_][]const u8{ "types", "typings", "main" }) |k| {
+                if (v.object.get(k)) |x| if (x == .string) {
+                    const p = fspath.resolve(r.a, &.{ dir, x.string }) catch oom();
+                    if (r.tryFile(p)) |q| return q;
+                    if (r.fs.isDir(p)) if (r.tryIndex(p)) |q| return q;
+                };
+            };
+        }
+        if (sub.len == 0) return r.tryIndex(dir);
+        const p = std.mem.concat(r.a, u8, &.{ dir, sub }) catch oom();
+        return r.tryPath(p);
+    }
+
+    fn packageName(spec: []const u8) struct { []const u8, []const u8 } {
+        var end = std.mem.indexOfScalar(u8, spec, '/') orelse spec.len;
+        if (spec[0] == '@' and end < spec.len) {
+            end = std.mem.indexOfScalarPos(u8, spec, end + 1, '/') orelse spec.len;
+        }
+        return .{ spec[0..end], spec[end..] };
+    }
+
+    fn atTypesName(r: Resolver, name: []const u8) []const u8 {
+        if (name[0] == '@') {
+            const m = std.mem.replaceOwned(u8, r.a, name[1..], "/", "__") catch oom();
+            return std.mem.concat(r.a, u8, &.{ "@types/", m }) catch oom();
+        }
+        return std.mem.concat(r.a, u8, &.{ "@types/", name }) catch oom();
+    }
+
+    /// A package can import itself by name, and only through its own exports map.
+    fn trySelfName(r: Resolver, from: []const u8, spec: []const u8) ?[]const u8 {
+        var dir: ?[]const u8 = from;
+        const scope = while (dir) |d| : (dir = fspath.dirname(d)) {
+            const pkg = fspath.join(r.a, &.{ d, "package.json" }) catch oom();
+            if (r.fs.isFile(pkg)) break pkg;
+        } else return null;
+        const text = readFile(r.a, r.io, scope) catch return null;
+        const v = json.parseFromSliceLeaky(json.Value, r.a, text, .{}) catch return null;
+        if (v != .object) return null;
+        const exports = v.object.get("exports") orelse return null;
+        const name = v.object.get("name") orelse return null;
+        if (name != .string or !std.mem.startsWith(u8, spec, name.string)) return null;
+        const sub = spec[name.string.len..];
+        if (sub.len > 0 and sub[0] != '/') return null;
+        return r.tryExports(dir.?, exports, sub);
+    }
+
+    fn tryNodeModules(r: Resolver, from: []const u8, spec: []const u8) ?[]const u8 {
+        const parts = packageName(spec);
+        var dir: ?[]const u8 = from;
+        while (dir) |d| : (dir = fspath.dirname(d)) {
+            if (std.mem.eql(u8, fspath.basename(d), "node_modules")) continue;
+            const nm = fspath.join(r.a, &.{ d, "node_modules" }) catch oom();
+            if (!r.fs.isDir(nm)) continue;
+            const pkg = fspath.join(r.a, &.{ nm, parts[0] }) catch oom();
+            if (r.fs.isDir(pkg)) {
+                if (r.tryPackageDir(pkg, parts[1])) |p| return p;
+            } else if (r.tryPath(fspath.join(r.a, &.{ nm, spec }) catch oom())) |p| return p;
+            const ty = fspath.join(r.a, &.{ nm, r.atTypesName(parts[0]) }) catch oom();
+            if (r.fs.isDir(ty)) if (r.tryPackageDir(ty, parts[1])) |p| return p;
+        }
+        return null;
+    }
+
+    fn tryPaths(r: Resolver, spec: []const u8) ?[]const u8 {
+        for (r.cfg.paths) |m| {
+            const star = std.mem.indexOfScalar(u8, m.pattern, '*');
+            var stem: []const u8 = "";
+            if (star) |s| {
+                const pre = m.pattern[0..s];
+                const post = m.pattern[s + 1 ..];
+                if (spec.len < pre.len + post.len or !std.mem.startsWith(u8, spec, pre) or !std.mem.endsWith(u8, spec, post)) continue;
+                stem = spec[pre.len .. spec.len - post.len];
+            } else if (!std.mem.eql(u8, m.pattern, spec)) continue;
+            for (m.targets) |t| {
+                const filled = std.mem.replaceOwned(u8, r.a, t, "*", stem) catch oom();
+                const base = fspath.resolve(r.a, &.{ r.cfg.paths_base, filled }) catch oom();
+                if (r.tryPath(base)) |p| return p;
+            }
+        }
+        return null;
+    }
+
+    pub fn resolve(r: Resolver, from_file: []const u8, spec: []const u8) ?[]const u8 {
+        if (spec.len == 0) return null;
+        const dir = fspath.dirname(from_file) orelse ".";
+        if (spec[0] == '.' or spec[0] == '/') {
+            return r.tryPath(fspath.resolve(r.a, &.{ dir, spec }) catch oom());
+        }
+        // A package is imported from thousands of files, and each probe rereads its package.json.
+        const key = std.mem.concat(r.a, u8, &.{ dir, "\x00", spec }) catch oom();
+        if (r.fs.resolved(key)) |known| return known;
+        const found = r.resolveBare(dir, spec);
+        r.fs.remember(key, found);
+        return found;
+    }
+
+    fn resolveBare(r: Resolver, dir: []const u8, spec: []const u8) ?[]const u8 {
+        if (std.mem.startsWith(u8, spec, "node:")) return r.tryNodeModules(dir, spec[5..]) orelse r.tryNodeModules(dir, spec);
+        if (r.tryPaths(spec)) |p| return p;
+        if (r.cfg.options.baseUrl) |b| {
+            if (r.tryPath(fspath.resolve(r.a, &.{ b, spec }) catch oom())) |p| return p;
+        }
+        return r.trySelfName(dir, spec) orelse r.tryNodeModules(dir, spec);
+    }
+};
+
+pub const SourceFile = struct {
+    file: *ast.File,
+    arena: *std.heap.ArenaAllocator,
+    /// Parallel to `file.module_specs`.
+    resolved: []?*SourceFile = &.{},
+    /// Paths found this round, before the owning file exists.
+    pending: []?[]const u8 = &.{},
+    is_lib: bool = false,
+    is_root: bool = false,
+    /// `/// <reference>` targets and lib names, resolved to paths.
+    extra: []const []const u8 = &.{},
+    extra_files: []*SourceFile = &.{},
+    read_failed: bool = false,
+};
+
+const Loading = struct {
+    io: Io,
+    fs: *FsCache,
+    cfg: *const Config,
+    list: []*SourceFile,
+    lib_dir: ?[]const u8,
+};
+
+fn libFile(a: Allocator, io: Io, dir: []const u8, name: []const u8) []const u8 {
+    const lower = std.ascii.allocLowerString(a, name) catch oom();
+    const mapped = if (std.mem.eql(u8, lower, "es6")) "es2015" else if (std.mem.eql(u8, lower, "es7")) "es2016" else lower;
+    const file = std.fmt.allocPrint(a, "lib.{s}.d.ts", .{mapped}) catch oom();
+    const path = fspath.join(a, &.{ dir, file }) catch oom();
+    // A feature that ships in a yearly lib leaves `esnext.x` as a name for `es20xx.x`.
+    if (std.mem.startsWith(u8, mapped, "esnext.") and !isFile(io, path)) {
+        for ([_][]const u8{ "es2025", "es2024", "es2023", "es2022", "es2021", "es2020", "es2019", "es2018" }) |y| {
+            const f = std.fmt.allocPrint(a, "lib.{s}{s}.d.ts", .{ y, mapped["esnext".len..] }) catch oom();
+            const q = fspath.join(a, &.{ dir, f }) catch oom();
+            if (isFile(io, q)) return q;
+        }
+    }
+    return path;
+}
+
+/// tsc's `libs` table: merge order inside the default library follows it, not the references.
+const lib_order = [_][]const u8{
+    "es5",            "es6",                     "es2015",               "es7",             "es2016",                  "es2017",             "es2018",                  "es2019",              "es2020",         "es2021",              "es2022",             "es2023",                  "es2024",               "es2025",            "esnext",
+    "dom",            "dom.iterable",            "dom.asynciterable",    "webworker",       "webworker.importscripts", "webworker.iterable", "webworker.asynciterable", "scripthost",          "es2015.core",    "es2015.collection",   "es2015.generator",   "es2015.iterable",         "es2015.promise",       "es2015.proxy",      "es2015.reflect",
+    "es2015.symbol",  "es2015.symbol.wellknown", "es2016.array.include", "es2016.intl",     "es2017.arraybuffer",      "es2017.date",        "es2017.object",           "es2017.sharedmemory", "es2017.string",  "es2017.intl",         "es2017.typedarrays", "es2018.asyncgenerator",   "es2018.asynciterable", "es2018.intl",       "es2018.promise",
+    "es2018.regexp",  "es2019.array",            "es2019.object",        "es2019.string",   "es2019.symbol",           "es2019.intl",        "es2020.bigint",           "es2020.date",         "es2020.promise", "es2020.sharedmemory", "es2020.string",      "es2020.symbol.wellknown", "es2020.intl",          "es2020.number",     "es2021.promise",
+    "es2021.string",  "es2021.weakref",          "es2021.intl",          "es2022.array",    "es2022.error",            "es2022.intl",        "es2022.object",           "es2022.string",       "es2022.regexp",  "es2023.array",        "es2023.collection",  "es2023.intl",             "es2024.arraybuffer",   "es2024.collection", "es2024.object",
+    "es2024.promise", "es2024.regexp",           "es2024.sharedmemory",  "es2024.string",   "es2025.collection",       "es2025.float16",     "es2025.intl",             "es2025.iterator",     "es2025.promise", "es2025.regexp",       "esnext.array",       "esnext.collection",       "esnext.date",          "esnext.decorators", "esnext.disposable",
+    "esnext.error",   "esnext.intl",             "esnext.sharedmemory",  "esnext.temporal", "esnext.typedarrays",      "decorators",         "decorators.legacy",
+};
+
+fn libRank(path: []const u8) usize {
+    const base = fspath.basename(path);
+    if (std.mem.eql(u8, base, "lib.d.ts") or std.mem.eql(u8, base, "lib.es6.d.ts")) return 0;
+    if (!std.mem.startsWith(u8, base, "lib.") or !std.mem.endsWith(u8, base, ".d.ts")) return lib_order.len + 2;
+    const name = base[4 .. base.len - 5];
+    for (lib_order, 1..) |x, i| if (std.mem.eql(u8, x, name)) return i;
+    return lib_order.len + 2;
+}
+
+fn loadOne(l: *const Loading, _: usize, i: usize) void {
+    const sf = l.list[i];
+    const a = sf.arena.allocator();
+    const path = sf.file.path;
+    var src = readFile(a, l.io, path) catch {
+        sf.read_failed = true;
+        return;
+    };
+    // tsc types a JSON module as `export =` of its one value.
+    if (std.mem.endsWith(u8, path, ".json")) src = std.mem.concat(a, u8, &.{ "export = ", src, ";" }) catch oom();
+    const f = parser.parse(a, path, src);
+    binder.bindFile(a, f);
+    sf.file = f;
+    sf.pending = a.alloc(?[]const u8, f.module_specs.len) catch oom();
+    const r = Resolver{ .io = l.io, .a = a, .fs = l.fs, .cfg = l.cfg };
+    for (f.module_specs, 0..) |s, n| sf.pending[n] = r.resolve(path, s.data.string_lit);
+    var extra: std.ArrayList([]const u8) = .empty;
+    for (f.references) |ref| switch (ref.kind) {
+        .path => extra.append(a, fspath.resolve(a, &.{ fspath.dirname(path) orelse ".", ref.value }) catch oom()) catch oom(),
+        .lib => if (l.lib_dir) |d| extra.append(a, libFile(a, l.io, d, ref.value)) catch oom(),
+        // Type roots of the project win over whatever a package nests next to itself.
+        .types => if (r.tryTypeRoot(l.cfg.root, ref.value) orelse r.tryNodeModules(fspath.dirname(path) orelse ".", ref.value)) |p| extra.append(a, p) catch oom(),
+    };
+    sf.extra = extra.items;
+}
+
+pub const Program = struct {
+    a: Allocator,
+    io: Io,
+    cfg: *const Config,
+    tp: *pool.ThreadPool,
+    files: std.ArrayList(*SourceFile) = .empty,
+    fs: FsCache,
+    by_path: std.StringHashMapUnmanaged(*SourceFile) = .empty,
+    /// Paths as imports spelled them; one file is reached through many imports.
+    by_import: std.StringHashMapUnmanaged(*SourceFile) = .empty,
+    by_package: std.StringHashMapUnmanaged(*SourceFile) = .empty,
+    package_ids: std.StringHashMapUnmanaged([]const u8) = .empty,
+    by_file: std.AutoHashMapUnmanaged(*ast.File, *SourceFile) = .empty,
+    by_root: std.AutoHashMapUnmanaged(*ast.Node, *ast.File) = .empty,
+    globals: *SymbolTable,
+    ambient: std.StringHashMapUnmanaged(*Symbol) = .empty,
+    lib_dir: ?[]const u8 = null,
+    /// `lib_dir` with symlinks resolved, as file paths are; constant for the run.
+    lib_dir_real: ?[]const u8 = null,
+    diags: std.ArrayList(ProgramDiag) = .empty,
+    /// Roots that could not be read: tsc's TS6053, which has no position and is reported by the caller.
+    missing_roots: std.ArrayList([]const u8) = .empty,
+
+    pub const ProgramDiag = struct { file: *ast.File, start: u32, len: u32, code: u32, msg: []const u8 };
+
+    fn isLibPath(p: *Program, path: []const u8) bool {
+        const d = p.lib_dir_real orelse return false;
+        const base = fspath.basename(path);
+        if (!std.mem.startsWith(u8, base, "lib.") or !std.mem.endsWith(u8, base, ".d.ts")) return false;
+        return std.mem.eql(u8, fspath.dirname(path) orelse "", d);
+    }
+
+    /// `name@version/rel` for a file inside a package, like tsc's package id.
+    fn packageKey(p: *Program, path: []const u8) ?[]const u8 {
+        const nm = "/node_modules/";
+        const at = std.mem.lastIndexOf(u8, path, nm) orelse return null;
+        const start = at + nm.len;
+        var end = std.mem.indexOfScalarPos(u8, path, start, '/') orelse return null;
+        if (path[start] == '@') end = std.mem.indexOfScalarPos(u8, path, end + 1, '/') orelse return null;
+        const dir = path[0..end];
+        const id = p.package_ids.get(dir) orelse blk: {
+            const v = p.readPackageId(dir);
+            p.package_ids.put(p.a, dir, v) catch oom();
+            break :blk v;
+        };
+        if (id.len == 0) return null;
+        return std.mem.concat(p.a, u8, &.{ id, path[end..] }) catch oom();
+    }
+
+    fn readPackageId(p: *Program, dir: []const u8) []const u8 {
+        const file = fspath.join(p.a, &.{ dir, "package.json" }) catch oom();
+        const text = readFile(p.a, p.io, file) catch return "";
+        const v = json.parseFromSliceLeaky(json.Value, p.a, text, .{}) catch return "";
+        if (v != .object) return "";
+        const name = v.object.get("name") orelse return "";
+        const version = v.object.get("version") orelse return "";
+        if (name != .string or version != .string) return "";
+        return std.mem.concat(p.a, u8, &.{ name.string, "@", version.string }) catch oom();
+    }
+
+    fn add(p: *Program, path: []const u8, next: *std.ArrayList(*SourceFile), is_lib: bool, is_root: bool) *SourceFile {
+        const known = p.by_import.getOrPut(p.a, path) catch oom();
+        if (known.found_existing) return known.value_ptr.*;
+        known.value_ptr.* = p.addNew(path, next, is_lib, is_root);
+        return known.value_ptr.*;
+    }
+
+    fn addNew(p: *Program, path: []const u8, next: *std.ArrayList(*SourceFile), is_lib: bool, is_root: bool) *SourceFile {
+        // Like tsc, only package paths are made real: that is where symlinks are the norm.
+        const in_package = std.mem.indexOf(u8, path, "/node_modules/") != null;
+        const real = if (in_package) Io.Dir.cwd().realPathFileAlloc(p.io, path, p.a) catch null else null;
+        const key: []const u8 = if (real) |r| r else path;
+        if (p.by_path.get(key)) |sf| return sf;
+        // tsc redirects another copy of one package version to the first, so that nested
+        // `@types/node` does not declare every global a second time.
+        const pkg = p.packageKey(key);
+        if (pkg) |k| if (p.by_package.get(k)) |sf| {
+            p.by_path.put(p.a, key, sf) catch oom();
+            return sf;
+        };
+        const arena = std.heap.smp_allocator.create(std.heap.ArenaAllocator) catch oom();
+        arena.* = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+        const sf = p.a.create(SourceFile) catch oom();
+        // Replaced once the file is parsed; until then only the path is meaningful.
+        sf.* = .{ .file = parser.parse(p.a, key, ""), .arena = arena, .is_lib = is_lib or p.isLibPath(key), .is_root = is_root };
+        p.by_path.put(p.a, key, sf) catch oom();
+        if (pkg) |k| p.by_package.put(p.a, k, sf) catch oom();
+        next.append(p.a, sf) catch oom();
+        return sf;
+    }
+
+    /// Loads level by level so each round parses and binds in parallel; new files only join between rounds.
+    fn load(p: *Program, roots: []const []const u8, libs: []const []const u8) void {
+        var level: std.ArrayList(*SourceFile) = .empty;
+        for (libs) |l| _ = p.add(l, &level, true, false);
+        for (roots) |r| _ = p.add(r, &level, false, true);
+        p.addTypeRoots(&level);
+        while (level.items.len > 0) {
+            const l = Loading{ .io = p.io, .fs = &p.fs, .cfg = p.cfg, .list = level.items, .lib_dir = p.lib_dir };
+            pool.parallelFor(p.tp, level.items.len, &l, loadOne);
+            var next: std.ArrayList(*SourceFile) = .empty;
+            for (level.items) |sf| {
+                if (sf.read_failed) {
+                    if (sf.is_root) p.missing_roots.append(p.a, sf.file.path) catch oom();
+                    continue;
+                }
+                p.files.append(p.a, sf) catch oom();
+                p.by_file.put(p.a, sf.file, sf) catch oom();
+                p.by_root.put(p.a, sf.file.root, sf.file) catch oom();
+                sf.resolved = p.a.alloc(?*SourceFile, sf.pending.len) catch oom();
+                for (sf.pending, 0..) |rp, i| {
+                    sf.resolved[i] = if (rp) |path| p.add(path, &next, sf.is_lib, false) else null;
+                }
+                sf.extra_files = p.a.alloc(*SourceFile, sf.extra.len) catch oom();
+                for (sf.extra, 0..) |x, i| sf.extra_files[i] = p.add(x, &next, sf.is_lib, false);
+            }
+            level = next;
+        }
+        p.orderFiles();
+    }
+
+    /// Merge order decides overload order, but rounds load files breadth first. tsc walks
+    /// references and imports depth first, puts a file after what it pulls in, and libs first.
+    fn orderFiles(p: *Program) void {
+        var seen: std.AutoHashMapUnmanaged(*SourceFile, void) = .empty;
+        var libs: std.ArrayList(*SourceFile) = .empty;
+        var rest: std.ArrayList(*SourceFile) = .empty;
+        const Post = struct {
+            fn visit(pr: *Program, sf: *SourceFile, s: *std.AutoHashMapUnmanaged(*SourceFile, void), l: *std.ArrayList(*SourceFile), o: *std.ArrayList(*SourceFile)) void {
+                if (sf.read_failed) return;
+                if ((s.getOrPut(pr.a, sf) catch oom()).found_existing) return;
+                for (sf.extra_files) |x| visit(pr, x, s, l, o);
+                for (sf.resolved) |x| if (x) |y| visit(pr, y, s, l, o);
+                (if (sf.is_lib) l else o).append(pr.a, sf) catch oom();
+            }
+        };
+        for (p.files.items) |sf| Post.visit(p, sf, &seen, &libs, &rest);
+        std.mem.sort(*SourceFile, libs.items, {}, struct {
+            fn less(_: void, x: *SourceFile, y: *SourceFile) bool {
+                return libRank(x.file.path) < libRank(y.file.path);
+            }
+        }.less);
+        libs.appendSlice(p.a, rest.items) catch oom();
+        p.files = libs;
+    }
+
+    /// Since TS 6 `@types` packages are opt-in: a project gets what `types` names, and `"*"` asks
+    /// for every package it can see.
+    fn addTypeRoots(p: *Program, level: *std.ArrayList(*SourceFile)) void {
+        const names = p.cfg.options.types orelse return;
+        const r = Resolver{ .io = p.io, .a = p.a, .fs = &p.fs, .cfg = p.cfg };
+        for (names) |n| {
+            if (std.mem.eql(u8, n, "*")) {
+                p.addEveryTypePackage(r, level);
+                continue;
+            }
+            if (r.tryTypeRoot(p.cfg.root, n)) |path| {
+                _ = p.add(path, level, false, false);
+                continue;
+            }
+            const from = fspath.join(p.a, &.{ p.cfg.root, "_" }) catch oom();
+            if (r.resolve(from, n)) |path| _ = p.add(path, level, false, false);
+        }
+    }
+
+    fn addEveryTypePackage(p: *Program, r: Resolver, level: *std.ArrayList(*SourceFile)) void {
+        if (p.cfg.options.typeRoots) |roots| {
+            for (roots) |root| p.addPackagesIn(r, fspath.resolve(p.a, &.{ p.cfg.root, root }) catch oom(), level);
+            return;
+        }
+        var dir: ?[]const u8 = p.cfg.root;
+        while (dir) |d| : (dir = fspath.dirname(d)) {
+            p.addPackagesIn(r, fspath.join(p.a, &.{ d, "node_modules", "@types" }) catch oom(), level);
+        }
+    }
+
+    fn addPackagesIn(p: *Program, r: Resolver, root: []const u8, level: *std.ArrayList(*SourceFile)) void {
+        var h = Io.Dir.cwd().openDir(p.io, root, .{ .iterate = true }) catch return;
+        defer h.close(p.io);
+        var it = h.iterate();
+        while (it.next(p.io) catch null) |e| {
+            if (e.name[0] == '.') continue;
+            const pkg = fspath.join(p.a, &.{ root, e.name }) catch oom();
+            if (r.tryPackageDir(pkg, "")) |path| _ = p.add(path, level, false, false);
+        }
+    }
+
+    fn table(p: *Program) *SymbolTable {
+        const t = p.a.create(SymbolTable) catch oom();
+        t.* = .{};
+        return t;
+    }
+
+    fn compatible(t: *Symbol, s: *Symbol) bool {
+        const excl: u32 = if (t.flags & F.block_var != 0) F.block_var_ex else if (t.flags & F.func_var != 0) F.func_var_ex else if (t.flags & F.function != 0) F.function_ex else if (t.flags & F.class != 0) F.class_ex else if (t.flags & F.interface != 0) F.interface_ex else if (t.flags & F.regular_enum != 0) F.regular_enum_ex else if (t.flags & F.const_enum != 0) F.const_enum_ex else if (t.flags & F.value_module != 0) F.value_module_ex else if (t.flags & F.type_alias != 0) F.type_alias_ex else if (t.flags & F.alias != 0) F.alias_ex else 0;
+        return s.flags & excl == 0;
+    }
+
+    fn mergeTable(p: *Program, dst: *SymbolTable, src: *SymbolTable) void {
+        var it = src.map.iterator();
+        while (it.next()) |e| p.mergeInto(dst, e.key_ptr.*, e.value_ptr.*);
+    }
+
+    fn mergeInto(p: *Program, dst: *SymbolTable, name: []const u8, sym: *Symbol) void {
+        const gop = dst.map.getOrPut(p.a, name) catch oom();
+        if (!gop.found_existing) {
+            gop.value_ptr.* = sym;
+            return;
+        }
+        const t = gop.value_ptr.*.resolve();
+        const s = sym.resolve();
+        if (t == s) return;
+        p.mergeSymbol(t, s);
+    }
+
+    pub fn mergeSymbol(p: *Program, t: *Symbol, s: *Symbol) void {
+        if (!compatible(t, s)) {
+            p.reportConflict(t, s);
+            return;
+        }
+        t.flags |= s.flags;
+        t.decls = std.mem.concat(p.a, *ast.Node, &.{ t.decls, s.decls }) catch oom();
+        t.stars = std.mem.concat(p.a, *ast.Node, &.{ t.stars, s.stars }) catch oom();
+        t.late_members = std.mem.concat(p.a, *Symbol, &.{ t.late_members, s.late_members }) catch oom();
+        t.late_statics = std.mem.concat(p.a, *Symbol, &.{ t.late_statics, s.late_statics }) catch oom();
+        if (t.value_decl == null) t.value_decl = s.value_decl;
+        if (s.members) |m| {
+            if (t.members == null) t.members = p.table();
+            p.mergeTable(t.members.?, m);
+        }
+        if (s.exports) |m| {
+            if (t.exports == null) t.exports = p.table();
+            p.mergeTable(t.exports.?, m);
+        }
+        s.merged = t;
+    }
+
+    fn reportConflict(p: *Program, t: *Symbol, s: *Symbol) void {
+        const block = (t.flags | s.flags) & F.block_var != 0;
+        const code: u32 = if (block) 2451 else 2300;
+        const msg = if (block)
+            std.fmt.allocPrint(p.a, "Cannot redeclare block-scoped variable '{s}'.", .{s.name}) catch oom()
+        else
+            std.fmt.allocPrint(p.a, "Duplicate identifier '{s}'.", .{s.name}) catch oom();
+        for ([_]*Symbol{ t, s }) |x| {
+            if (x.file) |f| {
+                if (f.is_dts) continue;
+                for (x.decls) |d| {
+                    const n = binder.nameNode(d) orelse d;
+                    p.diags.append(p.a, .{ .file = f, .start = n.start, .len = n.end - n.start, .code = code, .msg = msg }) catch oom();
+                }
+            }
+        }
+    }
+
+    pub fn sourceOf(p: *const Program, f: ?*ast.File) ?*SourceFile {
+        return p.by_file.get(f orelse return null);
+    }
+
+    /// What an import or export alias finally names; null when it leads nowhere.
+    pub fn resolveAlias(p: *const Program, s: *Symbol, depth: u32) ?*Symbol {
+        if (s.flags & F.alias == 0) return s;
+        if (depth > 32 or s.decls.len == 0) return null;
+        const d = s.decls[0];
+        const sf = p.sourceOf(s.file) orelse return null;
+        const next: ?*Symbol = switch (d.data) {
+            .import_clause => blk: {
+                const m = p.moduleOfDecl(sf, d) orelse break :blk null;
+                break :blk p.exportOf(m, "default") orelse p.exportOf(m, "export=") orelse m;
+            },
+            .namespace_import, .namespace_export => blk: {
+                const m = p.moduleOfDecl(sf, d) orelse break :blk null;
+                break :blk p.exportOf(m, "export=") orelse m;
+            },
+            .import_spec => |x| blk: {
+                const m = p.moduleOfDecl(sf, d) orelse break :blk null;
+                break :blk p.exportOf(m, binder.specName(x.prop_name orelse x.name));
+            },
+            .export_spec => |x| blk: {
+                const name = binder.specName(x.prop_name orelse x.name);
+                if (p.moduleOfDecl(sf, d)) |m| break :blk p.exportOf(m, name);
+                if (d.parent.?.parent.?.data.export_decl.specifier != null) break :blk null;
+                break :blk binder.lookupLocal(d, name, F.value | F.type | F.namespace) orelse p.globals.get(name);
+            },
+            .import_equals => |x| blk: {
+                if (x.ref.data == .external_module_ref) {
+                    const e = x.ref.data.external_module_ref.expr;
+                    if (e.data != .string_lit) break :blk null;
+                    const m = p.resolveModuleName(sf, e.data.string_lit) orelse break :blk null;
+                    break :blk p.exportOf(m, "export=") orelse m;
+                }
+                break :blk p.resolveEntity(x.ref, depth);
+            },
+            .export_assign => |x| p.resolveEntity(binder.stripParens(x.expr), depth),
+            else => null,
+        };
+        const t = next orelse return null;
+        return p.resolveAlias(t.resolve(), depth + 1);
+    }
+
+    fn resolveEntity(p: *const Program, n: *ast.Node, depth: u32) ?*Symbol {
+        switch (n.data) {
+            .identifier => |name| return binder.lookupLocal(n, name, F.value | F.type | F.namespace) orelse p.globals.get(name),
+            .qualified_name => |x| return p.memberOf(p.resolveEntity(x.left, depth), x.right.data.identifier, depth),
+            .prop_access => |x| return p.memberOf(p.resolveEntity(x.expr, depth), x.name.data.identifier, depth),
+            else => return null,
+        }
+    }
+
+    fn memberOf(p: *const Program, base: ?*Symbol, name: []const u8, depth: u32) ?*Symbol {
+        const b = p.resolveAlias(base orelse return null, depth + 1) orelse return null;
+        return if (b.exports) |e| e.get(name) else null;
+    }
+
+    pub fn moduleOfDecl(p: *const Program, sf: *const SourceFile, d: *ast.Node) ?*Symbol {
+        var c: ?*ast.Node = d;
+        while (c) |n| : (c = n.parent) {
+            switch (n.data) {
+                .import_decl => |x| return p.resolveModuleName(sf, x.specifier.data.string_lit),
+                .export_decl => |x| return if (x.specifier) |sp| p.resolveModuleName(sf, sp.data.string_lit) else null,
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    /// Looks through `export *`, which tsc flattens lazily and so do we.
+    pub fn exportOf(p: *const Program, m: *Symbol, name: []const u8) ?*Symbol {
+        var seen: [64]*Symbol = undefined;
+        return p.exportOfRec(m.resolve(), name, &seen, 0);
+    }
+
+    fn exportOfRec(p: *const Program, m: *Symbol, name: []const u8, seen: *[64]*Symbol, depth: usize) ?*Symbol {
+        if (m.exports) |e| {
+            if (e.get(name)) |s| return s;
+            // Members of the namespace behind `export =` can be imported by name.
+            if (e.get("export=")) |eq| if (p.resolveAlias(eq.resolve(), 0)) |t| if (t != m) if (t.exports) |te| if (te.get(name)) |s| return s;
+        }
+        if (std.mem.eql(u8, name, "default") or depth >= seen.len) return null;
+        for (seen[0..depth]) |x| if (x == m) return null;
+        seen[depth] = m;
+        const sf = p.sourceOf(m.file) orelse return null;
+        for (m.stars) |star| {
+            const spec = star.data.export_decl.specifier orelse continue;
+            const t = p.resolveModuleName(sf, spec.data.string_lit) orelse continue;
+            if (p.exportOfRec(t.resolve(), name, seen, depth + 1)) |x| return x;
+        }
+        return null;
+    }
+
+    /// Everything global folds into one table here, single-threaded, before any checker runs.
+    fn mergeGlobals(p: *Program) void {
+        for (p.files.items) |sf| {
+            const f = sf.file;
+            if (f.is_module) continue;
+            if (f.root.locals) |l| p.mergeTable(p.globals, l);
+        }
+        for (p.files.items) |sf| {
+            for (sf.file.global_augs) |s| if (s.exports) |e| p.mergeTable(p.globals, e);
+            if (sf.file.umd_name) |n| if (sf.file.symbol) |s| {
+                if (!p.globals.map.contains(n)) p.globals.map.put(p.a, n, s) catch oom();
+            };
+        }
+        const global_this = p.a.create(Symbol) catch oom();
+        global_this.* = .{ .name = "globalThis", .flags = F.value_module, .exports = p.globals };
+        p.globals.map.put(p.a, "globalThis", global_this) catch oom();
+        for (p.files.items) |sf| for (sf.file.ambient_modules) |s| {
+            const gop = p.ambient.getOrPut(p.a, s.name) catch oom();
+            if (gop.found_existing) p.mergeSymbol(gop.value_ptr.*.resolve(), s) else gop.value_ptr.* = s;
+        };
+        for (p.files.items) |sf| for (sf.file.augmentations) |s| {
+            const target = p.resolveModuleName(sf, s.name) orelse continue;
+            const e = s.exports orelse continue;
+            if (target.exports == null) target.exports = p.table();
+            if (target.stars.len == 0) {
+                p.mergeTable(target.exports.?, e);
+                continue;
+            }
+            // An interface re-exported through `export *` is extended where it lives; a copy
+            // here would shadow it with only the augmented members.
+            var it = e.map.iterator();
+            while (it.next()) |kv| {
+                const own = target.exports.?.get(kv.key_ptr.*) != null;
+                if (!own) if (p.exportOf(target, kv.key_ptr.*)) |x| {
+                    p.mergeSymbol(x.resolve(), kv.value_ptr.*);
+                    continue;
+                };
+                p.mergeInto(target.exports.?, kv.key_ptr.*, kv.value_ptr.*);
+            }
+        };
+    }
+
+    /// The module symbol for a specifier written in `sf`; ambient declarations win, as in tsc.
+    pub fn resolveModuleName(p: *const Program, sf: *const SourceFile, spec: []const u8) ?*Symbol {
+        if (p.ambient.get(spec)) |s| return s.resolve();
+        for (sf.file.module_specs, 0..) |n, i| {
+            if (std.mem.eql(u8, n.data.string_lit, spec)) {
+                const t = sf.resolved[i] orelse return null;
+                return t.file.symbol;
+            }
+        }
+        return null;
+    }
+};
+
+pub const LoadOptions = struct { lib_dir_flag: ?[]const u8 = null, lib_dir_env: ?[]const u8 = null, want_libs: bool = true };
+
+fn findLibDir(a: Allocator, io: Io, root: []const u8, o: LoadOptions) ?[]const u8 {
+    if (o.lib_dir_flag) |d| return d;
+    if (o.lib_dir_env) |d| return d;
+    var dir: ?[]const u8 = root;
+    while (dir) |d| : (dir = fspath.dirname(d)) {
+        const js = fspath.join(a, &.{ d, "node_modules", "typescript", "lib" }) catch oom();
+        // TypeScript 7 keeps the libs beside its binary, in a package per platform. `..` is taken
+        // after the symlink, so pnpm's layout finds it next to `typescript` too.
+        const native = fspath.join(a, &.{ d, "node_modules", "typescript", "..", "@typescript", "typescript-" ++ node_platform, "lib" }) catch oom();
+        for ([_][]const u8{ js, native }) |p| {
+            const probe = fspath.join(a, &.{ p, "lib.d.ts" }) catch oom();
+            if (isFile(io, probe)) return p;
+        }
+    }
+    return null;
+}
+
+/// This machine as Node's `process.platform` and `process.arch` spell it.
+const node_platform = switch (builtin.os.tag) {
+    .macos => "darwin",
+    .windows => "win32",
+    else => @tagName(builtin.os.tag),
+} ++ "-" ++ switch (builtin.cpu.arch) {
+    .aarch64 => "arm64",
+    .x86_64 => "x64",
+    else => @tagName(builtin.cpu.arch),
+};
+
+fn defaultLib(target: []const u8) []const u8 {
+    var buf: [32]u8 = undefined;
+    const t = std.ascii.lowerString(&buf, target[0..@min(target.len, 32)]);
+    if (std.mem.eql(u8, t, "es3") or std.mem.eql(u8, t, "es5")) return "lib.d.ts";
+    if (std.mem.eql(u8, t, "es6") or std.mem.eql(u8, t, "es2015")) return "lib.es6.d.ts";
+    if (std.mem.eql(u8, t, "esnext")) return "esnext.full";
+    if (std.mem.startsWith(u8, t, "es20")) {
+        return std.fmt.allocPrint(std.heap.smp_allocator, "{s}.full", .{t}) catch oom();
+    }
+    return "esnext.full";
+}
+
+pub fn loadProgram(a: Allocator, io: Io, tp: *pool.ThreadPool, cfg: *const Config, roots: []const []const u8, o: LoadOptions) *Program {
+    const p = a.create(Program) catch oom();
+    const g = a.create(SymbolTable) catch oom();
+    g.* = .{};
+    p.* = .{ .a = a, .io = io, .fs = .{ .io = io }, .cfg = cfg, .tp = tp, .globals = g };
+    p.lib_dir = findLibDir(a, io, cfg.root, o);
+    if (p.lib_dir) |d| p.lib_dir_real = Io.Dir.cwd().realPathFileAlloc(io, d, a) catch d;
+    var libs: std.ArrayList([]const u8) = .empty;
+    if (p.lib_dir != null and o.want_libs and !(cfg.options.noLib orelse false)) {
+        if (cfg.options.lib) |names| {
+            for (names) |n| libs.append(a, libFile(a, io, p.lib_dir.?, n)) catch oom();
+        } else {
+            const name = defaultLib(cfg.options.target orelse "es2023");
+            // `lib.d.ts` and `lib.es6.d.ts` include the DOM, unlike the `lib` option's `es5` and `es6`.
+            const full = if (std.mem.endsWith(u8, name, ".d.ts"))
+                fspath.join(a, &.{ p.lib_dir.?, name }) catch oom()
+            else
+                libFile(a, io, p.lib_dir.?, name);
+            libs.append(a, full) catch oom();
+        }
+    }
+    p.load(roots, libs.items);
+    p.mergeGlobals();
+    return p;
+}
+
+test "a root that cannot be read is reported, not dropped" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const tp = try pool.ThreadPool.init(a, std.testing.io, 1);
+    defer tp.deinit();
+    const cfg = Config{ .root = "/nonexistent-stator-ts-test" };
+    const p = loadProgram(a, std.testing.io, tp, &cfg, &.{"/nonexistent-stator-ts-test/missing.ts"}, .{ .want_libs = false });
+    try std.testing.expectEqual(@as(usize, 1), p.missing_roots.items.len);
+    try std.testing.expectEqualStrings("/nonexistent-stator-ts-test/missing.ts", p.missing_roots.items[0]);
+    try std.testing.expectEqual(@as(usize, 0), p.files.items.len);
+}
+
+test "stripJsonc removes comments and trailing commas" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const out = stripJsonc(arena.allocator(), "{ // c\n \"a\": [1, 2,], /* x */ \"b\": \"//no\", }");
+    const v = try json.parseFromSliceLeaky(json.Value, arena.allocator(), out, .{});
+    try std.testing.expectEqualStrings("//no", v.object.get("b").?.string);
+}
+
+test "globMatch" {
+    try std.testing.expect(globMatch("/a/**/*", "/a/b/c.ts"));
+    try std.testing.expect(globMatch("/a/**/*", "/a/c.ts"));
+    try std.testing.expect(globMatch("/a/*.ts", "/a/c.ts"));
+    try std.testing.expect(!globMatch("/a/*.ts", "/a/b/c.ts"));
+    try std.testing.expect(globMatch("/a/**/x?.ts", "/a/b/xy.ts"));
+}

@@ -1,0 +1,11 @@
+declare const xs: string[];
+const a: Iterable<readonly [string, number]> = xs.map((x, i) => [x, i]);
+const b: (readonly [string, number])[] = xs.map((x, i) => [x, i]);
+const c: Iterable<readonly [string, number]> | null = xs.map((x, i) => [x, i]);
+declare function mk<K, V>(it: Iterable<readonly [K, V]>): Map<K, V>;
+const d = mk(xs.map((x, i) => [x, i]));
+declare function mk2<K, V>(it: (readonly [K, V])[]): Map<K, V>;
+const e = mk2(xs.map((x, i) => [x, i]));
+type Kd = 'a' | 'b';
+const f: { k: Kd }[] = xs.map((x) => ({ k: 'a' }));
+const g: Array<{ k: Kd }> = xs.map(function (x) { return { k: 'a' }; });

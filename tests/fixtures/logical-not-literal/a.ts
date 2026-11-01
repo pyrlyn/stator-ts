@@ -1,0 +1,15 @@
+declare const zero: 0;
+declare const text: "abc";
+declare const nothing: null;
+declare const shape: { a: number };
+const always: true = !zero;
+const never_: false = !text;
+const nul: true = !nothing;
+const obj: false = !shape;
+let widened = !zero;
+widened = false;
+declare const b: boolean;
+const open: true = !b;
+declare const s: string;
+const str: false = !s;
+export {};
