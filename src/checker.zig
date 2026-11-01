@@ -558,10 +558,10 @@ fn checkClass(c: *Checker, n: *Node) void {
         }
     }
     checkMembers(c, n, x.members);
-    const this_t = if (t.data.obj.this_type) |tt| d.withThis(c, t, tt) else t;
+    const this_t = if (t.data.obj.thisType()) |tt| d.withThis(c, t, tt) else t;
     checkOverrides(c, n, t, this_t);
     for (d.basesOf(c, t)) |b0| {
-        const base = d.withThis(c, b0, t.data.obj.this_type orelse t);
+        const base = d.withThis(c, b0, t.data.obj.thisType() orelse t);
         if (base.data != .obj) continue;
         for (d.propsOf(c, base)) |bp| {
             if (bp.private) continue;
@@ -579,7 +579,7 @@ fn checkClass(c: *Checker, n: *Node) void {
         for (h.data.heritage_clause.types) |e| {
             const it = d.typeFromNode(c, e);
             if (T.isAny(it) or it.data != .obj) continue;
-            if (!relate.isAssignable(c, this_t, d.withThis(c, it, t.data.obj.this_type orelse t))) {
+            if (!relate.isAssignable(c, this_t, d.withThis(c, it, t.data.obj.thisType() orelse t))) {
                 err(c, e, 2420, c.fmt("Class '{s}' incorrectly implements interface '{s}'.", .{ s.name, expr.show(c, it) }));
             }
         }
@@ -606,7 +606,7 @@ fn checkOverrides(c: *Checker, n: *Node, t: *Type, this_t: *Type) void {
     if (extendsNode(x)) |e| {
         const bases = d.basesOf(c, t);
         if (bases.len > 0) {
-            o.base = d.withThis(c, bases[0], t.data.obj.this_type orelse t);
+            o.base = d.withThis(c, bases[0], t.data.obj.thisType() orelse t);
         } else {
             const b = d.classBase(c, e);
             // A class with an `any` base still has one. A missing base means none, while a base
@@ -805,10 +805,10 @@ fn checkInterface(c: *Checker, n: *Node) void {
     const t = d.declaredType(c, s);
     if (t.data != .obj) return;
     for (d.basesOf(c, t)) |b0| {
-        const tt = t.data.obj.this_type orelse t;
+        const tt = t.data.obj.thisType() orelse t;
         const base = d.withThis(c, b0, tt);
         if (base.data != .obj) continue;
-        const this_t = if (t.data.obj.this_type) |x| d.withThis(c, t, x) else t;
+        const this_t = if (t.data.obj.thisType()) |x| d.withThis(c, t, x) else t;
         for (d.propsOf(c, base)) |bp| {
             const p = d.membersOf(c, this_t).props.get(bp.name) orelse continue;
             if (p == bp or p.decl == bp.decl) continue;

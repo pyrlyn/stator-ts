@@ -573,13 +573,13 @@ fn variancesOf(c: *Checker, g: *Type) ?[]Variance {
     c.variance_busy.put(c.a, g, {}) catch oom();
     defer _ = c.variance_busy.remove(g);
     const o = g.data.obj;
-    const out = c.a.alloc(Variance, o.tparams.len) catch oom();
+    const out = c.a.alloc(Variance, o.tparams().len) catch oom();
     const sup = varianceMarker(c, "$super", null);
     const sub = varianceMarker(c, "$sub", sup);
     const other = varianceMarker(c, "$other", null);
     const outer = enterStacks(c);
     defer leaveStacks(c, outer);
-    for (o.tparams, 0..) |tp, i| {
+    for (o.tparams(), 0..) |tp, i| {
         if (declaredVariance(tp)) |v| {
             out[i] = v;
             continue;
@@ -635,7 +635,7 @@ fn aliasVariances(c: *Checker, s: *binder.Symbol) ?[]Variance {
 }
 
 fn markerRef(c: *Checker, g: *Type, i: usize, marker: *Type) *Type {
-    const args = c.dupe(*Type, g.data.obj.tparams);
+    const args = c.dupe(*Type, g.data.obj.tparams());
     args[i] = marker;
     const t = c.internRef(g, args, null);
     c.variance_markers.put(c.a, t, {}) catch oom();
@@ -650,7 +650,7 @@ fn declaredVariance(tp: *Type) ?Variance {
 
 /// Written variance is taken at its word, so looking at the members could only contradict it.
 fn isAnnotated(g: *Type) bool {
-    for (g.data.obj.tparams) |tp| if (declaredVariance(tp) == null) return false;
+    for (g.data.obj.tparams()) |tp| if (declaredVariance(tp) == null) return false;
     return true;
 }
 
@@ -690,7 +690,7 @@ fn relateObjects(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
             if (T.isTupleType(s)) {
                 if (so.readonly and c.isMutableArray(t)) return false;
                 const e = to.args.?[0];
-                for (so.elems, so.eflags) |x, f| {
+                for (so.tuple.elems, so.tuple.eflags) |x, f| {
                     const v = if (f == .optional) d.addOptional(c, x) else x;
                     if (f == .variadic) continue;
                     if (!related(c, v, e, rel)) return false;
@@ -757,37 +757,37 @@ fn tuplesRelated(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
     if (open_t == null and open_s != null) return false;
     // Required elements may follow a rest (`[...string[], number]`), so they are counted, not positioned.
     var min_t: usize = 0;
-    for (to.eflags) |f| if (f == .required) {
+    for (to.tuple.eflags) |f| if (f == .required) {
         min_t += 1;
     };
     var min_s: usize = 0;
-    for (so.eflags) |f| if (f == .required) {
+    for (so.tuple.eflags) |f| if (f == .required) {
         min_s += 1;
     };
-    if (open_s == null and so.elems.len < min_t) return false;
-    if (open_t == null and (to.elems.len < min_s or so.elems.len > to.elems.len)) return false;
+    if (open_s == null and so.tuple.elems.len < min_t) return false;
+    if (open_t == null and (to.tuple.elems.len < min_s or so.tuple.elems.len > to.tuple.elems.len)) return false;
     // As in tsc, elements before the target's rest align from the front and those after it from
     // the end; a source position in between meets the rest element itself.
-    const start_t = open_t orelse to.elems.len;
-    const end_t = if (open_t) |k| to.elems.len - 1 - k else 0;
+    const start_t = open_t orelse to.tuple.elems.len;
+    const end_t = if (open_t) |k| to.tuple.elems.len - 1 - k else 0;
     // A variadic element has no length yet, so nothing from there on can be aligned.
-    const unaligned = std.mem.indexOfScalar(T.ElemFlag, to.eflags, .variadic) != null;
-    for (so.elems, so.eflags, 0..) |x, f, i| {
+    const unaligned = std.mem.indexOfScalar(T.ElemFlag, to.tuple.eflags, .variadic) != null;
+    for (so.tuple.elems, so.tuple.eflags, 0..) |x, f, i| {
         if (f == .variadic or (unaligned and i >= start_t)) return true;
-        const from_end = so.elems.len - 1 - i;
-        const j = if (open_t != null and i >= start_t) to.elems.len - 1 - @min(from_end, end_t) else i;
-        const tf = to.eflags[j];
+        const from_end = so.tuple.elems.len - 1 - i;
+        const j = if (open_t != null and i >= start_t) to.tuple.elems.len - 1 - @min(from_end, end_t) else i;
+        const tf = to.tuple.eflags[j];
         if (tf == .variadic) return true;
         if (tf == .required and f != .required) return false;
         const sv = if (f == .optional) d.addOptional(c, x) else x;
-        const tv = if (tf == .optional) d.addOptional(c, to.elems[j]) else to.elems[j];
+        const tv = if (tf == .optional) d.addOptional(c, to.tuple.elems[j]) else to.tuple.elems[j];
         if (!related(c, sv, tv, rel)) return false;
     }
     return true;
 }
 
 fn openAt(o: *T.Obj) ?usize {
-    for (o.eflags, 0..) |f, i| if (f == .rest or f == .variadic) return i;
+    for (o.tuple.eflags, 0..) |f, i| if (f == .rest or f == .variadic) return i;
     return null;
 }
 
@@ -938,7 +938,7 @@ fn declaredArity(c: *Checker, s: *Sig) Arity {
             const o = r.data.obj;
             var min = s.min_args;
             var max: ?u32 = @intCast(s.params.len - 1);
-            for (o.eflags) |f| {
+            for (o.tuple.eflags) |f| {
                 switch (f) {
                     .required => {
                         max = if (max) |m| m + 1 else null;
@@ -966,11 +966,11 @@ pub fn typeAt(c: *Checker, s: *Sig, i: usize) ?*Type {
         const j = i - fixed;
         if (openAt(o)) |k| if (j >= k) {
             // From the rest on, a position may hold the rest element or any element written after it.
-            for (o.eflags[k..]) |f| if (f == .variadic) return c.t_err;
-            return if (o.elems.len - k == 1) o.elems[k] else c.getUnion(o.elems[k..]);
+            for (o.tuple.eflags[k..]) |f| if (f == .variadic) return c.t_err;
+            return if (o.tuple.elems.len - k == 1) o.tuple.elems[k] else c.getUnion(o.tuple.elems[k..]);
         };
-        if (j < o.elems.len) {
-            return if (o.eflags[j] == .optional) d.addOptional(c, o.elems[j]) else o.elems[j];
+        if (j < o.tuple.elems.len) {
+            return if (o.tuple.eflags[j] == .optional) d.addOptional(c, o.tuple.elems[j]) else o.tuple.elems[j];
         }
         return null;
     }
@@ -1949,7 +1949,7 @@ const Infer = struct {
             }
             if (to.kind == .tuple) return st.toTuple(s, t);
             if (so.kind == .tuple and c.isArrayType(t)) {
-                st.go(c.getUnion(so.elems), to.args.?[0]);
+                st.go(c.getUnion(so.tuple.elems), to.args.?[0]);
                 return;
             }
         }
@@ -1989,31 +1989,31 @@ const Infer = struct {
         if (s.data != .obj) return;
         if (c.isArrayType(s)) {
             const e = s.data.obj.args.?[0];
-            for (to.elems, to.eflags) |y, f| {
+            for (to.tuple.elems, to.tuple.eflags) |y, f| {
                 if (f == .variadic) st.go(s, y) else st.go(e, y);
             }
             return;
         }
         if (!T.isTupleType(s)) return;
         const so = s.data.obj;
-        const n = to.elems.len;
+        const n = to.tuple.elems.len;
         const var_at = openAt(to);
         if (var_at == null) {
-            for (so.elems, 0..) |x, i| if (i < n) st.go(x, to.elems[i]);
+            for (so.tuple.elems, 0..) |x, i| if (i < n) st.go(x, to.tuple.elems[i]);
             return;
         }
         const k = var_at.?;
         const tail = n - k - 1;
-        if (so.elems.len < k + tail) return;
-        for (0..k) |i| st.go(so.elems[i], to.elems[i]);
-        const mid_end = so.elems.len - tail;
-        const mid = so.elems[k..mid_end];
-        if (to.eflags[k] == .variadic) {
-            st.go(c.makeTuple(mid, so.eflags[k..mid_end], false, &.{}), to.elems[k]);
+        if (so.tuple.elems.len < k + tail) return;
+        for (0..k) |i| st.go(so.tuple.elems[i], to.tuple.elems[i]);
+        const mid_end = so.tuple.elems.len - tail;
+        const mid = so.tuple.elems[k..mid_end];
+        if (to.tuple.eflags[k] == .variadic) {
+            st.go(c.makeTuple(mid, so.tuple.eflags[k..mid_end], false, &.{}), to.tuple.elems[k]);
         } else if (mid.len > 0) {
-            st.go(c.getUnion(mid), to.elems[k]);
+            st.go(c.getUnion(mid), to.tuple.elems[k]);
         }
-        for (0..tail) |i| st.go(so.elems[mid_end + i], to.elems[k + 1 + i]);
+        for (0..tail) |i| st.go(so.tuple.elems[mid_end + i], to.tuple.elems[k + 1 + i]);
     }
 
     /// False leaves `t` to be inferred to member by member: `Readonly<Record<string, T>>` has its
@@ -2072,9 +2072,9 @@ const Infer = struct {
         if (c.isArrayType(s)) return d.arrayOf(c, st.reverseValue(s.data.obj.args.?[0], template, access));
         if (T.isTupleType(s)) {
             const o = s.data.obj;
-            const elems = c.a.alloc(*Type, o.elems.len) catch oom();
-            for (o.elems, elems) |e, *out| out.* = st.reverseValue(e, template, access);
-            return c.makeTuple(elems, o.eflags, o.readonly, &.{});
+            const elems = c.a.alloc(*Type, o.tuple.elems.len) catch oom();
+            for (o.tuple.elems, elems) |e, *out| out.* = st.reverseValue(e, template, access);
+            return c.makeTuple(elems, o.tuple.eflags, o.readonly, &.{});
         }
         const out = c.emptyMembers();
         for (d.propsOf(c, s)) |p| {

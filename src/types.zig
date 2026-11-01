@@ -95,24 +95,36 @@ pub const ObjKind = enum { iface, ref, anon, tuple, mapped };
 
 pub const ElemFlag = enum { required, optional, rest, variadic };
 
+/// What a declared class or interface adds. Objects run to the millions and declarations to the
+/// thousands, so this stays out of `Obj`.
+pub const Iface = struct {
+    tparams: []*Type = &.{},
+    local_tparams: []*Type = &.{},
+    this_type: ?*Type = null,
+    bases: ?[]*Type = null,
+};
+
+pub const Tuple = struct {
+    elems: []*Type = &.{},
+    eflags: []ElemFlag = &.{},
+    names: []const ?[]const u8 = &.{},
+};
+
+const no_tuple: Tuple = .{};
+
 pub const Obj = struct {
     kind: ObjKind,
     sym: ?*Symbol = null,
     node: ?*Node = null,
     is_class: bool = false,
-    tparams: []*Type = &.{},
-    local_tparams: []*Type = &.{},
-    this_type: ?*Type = null,
-    bases: ?[]*Type = null,
+    iface: ?*Iface = null,
     bases_resolving: bool = false,
     any_base: bool = false,
     target: ?*Type = null,
     args: ?[]*Type = null,
     this_arg: ?*Type = null,
     mapper: ?*Mapper = null,
-    elems: []*Type = &.{},
-    eflags: []ElemFlag = &.{},
-    names: []const ?[]const u8 = &.{},
+    tuple: *const Tuple = &no_tuple,
     readonly: bool = false,
     members: ?*Members = null,
     resolving: bool = false,
@@ -129,9 +141,18 @@ pub const Obj = struct {
     spread: bool = false,
     /// Reversed from a declared type, which has no implicit index signature to pass on.
     closed: bool = false,
-    mapped_constraint: ?*Type = null,
-    mapped_template: ?*Type = null,
-    mapped_param: ?*Type = null,
+
+    pub fn tparams(o: *const Obj) []*Type {
+        return if (o.iface) |i| i.tparams else &.{};
+    }
+
+    pub fn localTparams(o: *const Obj) []*Type {
+        return if (o.iface) |i| i.local_tparams else &.{};
+    }
+
+    pub fn thisType(o: *const Obj) ?*Type {
+        return if (o.iface) |i| i.this_type else null;
+    }
 };
 
 pub const PendingConstraint = struct { nodes: []*Node, params: []*Type, args: []*Type };
@@ -986,10 +1007,10 @@ pub const Checker = struct {
             if (fl == .variadic) {
                 if (isTupleType(e)) {
                     const o = e.data.obj;
-                    for (o.elems, o.eflags, 0..) |x, f, j| {
+                    for (o.tuple.elems, o.tuple.eflags, 0..) |x, f, j| {
                         elems.append(c.a, x) catch oom();
                         flags.append(c.a, f) catch oom();
-                        names.append(c.a, if (j < o.names.len) o.names[j] else null) catch oom();
+                        names.append(c.a, if (j < o.tuple.names.len) o.tuple.names[j] else null) catch oom();
                     }
                     continue;
                 }
@@ -1030,7 +1051,7 @@ pub const Checker = struct {
         }
         const gop = c.slot(key);
         if (gop.found_existing) return gop.value_ptr.*;
-        const t = c.newObj(.{ .kind = .tuple, .elems = elems.items, .eflags = flags.items, .names = names.items, .readonly = readonly });
+        const t = c.newObj(.{ .kind = .tuple, .tuple = c.create(Tuple, .{ .elems = elems.items, .eflags = flags.items, .names = names.items }), .readonly = readonly });
         for (elems.items) |x| if (x.vars) {
             t.vars = true;
         };
@@ -1040,7 +1061,7 @@ pub const Checker = struct {
 
     /// `Foo<T>` over the declared `Foo`, keeping the declared type itself for identical arguments.
     pub fn internRefOrSelf(c: *Checker, g: *Type, args: []*Type) *Type {
-        if (std.mem.eql(*Type, args, g.data.obj.tparams)) return g;
+        if (std.mem.eql(*Type, args, g.data.obj.tparams())) return g;
         return c.internRef(g, args, null);
     }
 

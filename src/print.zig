@@ -82,7 +82,7 @@ const P = struct {
         const c = p.c;
         const o = t.data.obj;
         switch (o.kind) {
-            .iface => return p.name(o.sym, o.tparams),
+            .iface => return p.name(o.sym, o.tparams()),
             .ref => {
                 if (c.isArrayType(t)) {
                     const e = o.args.?[0];
@@ -100,12 +100,12 @@ const P = struct {
             .tuple => {
                 if (o.readonly) p.w("readonly ");
                 p.w("[");
-                for (o.elems, 0..) |e, i| {
+                for (o.tuple.elems, 0..) |e, i| {
                     if (i > 0) p.w(", ");
-                    if (o.eflags[i] == .rest or o.eflags[i] == .variadic) p.w("...");
+                    if (o.tuple.eflags[i] == .rest or o.tuple.eflags[i] == .variadic) p.w("...");
                     p.ty(e);
-                    if (o.eflags[i] == .rest) p.w("[]");
-                    if (o.eflags[i] == .optional) p.w("?");
+                    if (o.tuple.eflags[i] == .rest) p.w("[]");
+                    if (o.tuple.eflags[i] == .optional) p.w("?");
                 }
                 p.w("]");
                 return;

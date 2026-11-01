@@ -124,7 +124,7 @@ pub fn generic(c: *Checker, name: []const u8, args: []const *Type) *Type {
 }
 
 fn refTo(c: *Checker, g: *Type, args: []const *Type) *Type {
-    if (g.data != .obj or g.data.obj.tparams.len != args.len) return c.t_err;
+    if (g.data != .obj or g.data.obj.tparams().len != args.len) return c.t_err;
     return c.internRef(g, c.dupe(*Type, args), null);
 }
 
@@ -298,7 +298,7 @@ pub fn outerTParams(c: *Checker, n: *Node) []*Type {
             .class, .interface => {
                 if (x.symbol) |s| {
                     const d = declaredType(c, s);
-                    if (d.data == .obj) if (d.data.obj.this_type) |tt| out.append(c.a, tt) catch oom();
+                    if (d.data == .obj) if (d.data.obj.thisType()) |tt| out.append(c.a, tt) catch oom();
                 }
             },
             // Its own key parameter is bound inside it, never by whoever instantiates it.
@@ -415,17 +415,18 @@ fn declareIface(c: *Checker, s: *Symbol) *Type {
         if (local.items.len == 0) for (tparamsFrom(c, list)) |t| local.append(c.a, t) catch oom();
     }
     const is_class = s.flags & F.class != 0;
-    const t = c.newObj(.{ .kind = .iface, .sym = s, .is_class = is_class });
+    const iface = c.create(T.Iface, .{});
+    const t = c.newObj(.{ .kind = .iface, .sym = s, .is_class = is_class, .iface = iface });
     c.declared.put(c.a, s, t) catch oom();
     const this_t = c.mk(.{ .param = c.create(T.TParam, .{ .name = "this", .is_this = true, .constraint = t, .constraint_done = true }) });
     this_t.vars = true;
-    t.data.obj.this_type = this_t;
+    iface.this_type = this_t;
     if (first) |d| if (d.parent) |par| {
         for (outerTParams(c, par)) |p| if (!p.data.param.is_this) outer.append(c.a, p) catch oom();
     };
     for (local.items) |p| outer.append(c.a, p) catch oom();
-    t.data.obj.tparams = outer.items;
-    t.data.obj.local_tparams = local.items;
+    iface.tparams = outer.items;
+    iface.local_tparams = local.items;
     return t;
 }
 
@@ -655,7 +656,8 @@ fn declareEnum(c: *Checker, s: *Symbol) *Type {
 
 pub fn basesOf(c: *Checker, t: *Type) []*Type {
     const o = t.data.obj;
-    if (o.bases) |b| return b;
+    const iface = o.iface orelse return &.{};
+    if (iface.bases) |b| return b;
     if (o.bases_resolving) return &.{};
     o.bases_resolving = true;
     defer o.bases_resolving = false;
@@ -696,7 +698,7 @@ pub fn basesOf(c: *Checker, t: *Type) []*Type {
             }
         }
     }
-    o.bases = out.items;
+    iface.bases = out.items;
     return out.items;
 }
 
@@ -931,7 +933,7 @@ fn thisTypeAt(c: *Checker, n: *Node) *Type {
             .class, .interface => {
                 const s = x.symbol orelse return c.t_err;
                 const d = declaredType(c, s);
-                if (d.data == .obj) if (d.data.obj.this_type) |t| return t;
+                if (d.data == .obj) if (d.data.obj.thisType()) |t| return t;
                 return c.t_err;
             },
             .func => |f| {
@@ -1054,20 +1056,20 @@ pub fn typeRefFromSymbol(c: *Checker, n: *Node, s: *Symbol, targs: []*Node) *Typ
         const g = declaredType(c, s);
         if (g.data != .obj or g.data.obj.kind != .iface) return g;
         const o = g.data.obj;
-        const outer_len = o.tparams.len - o.local_tparams.len;
-        const min = minArgs(c, o.local_tparams);
-        if (o.local_tparams.len == 0) {
+        const outer_len = o.tparams().len - o.localTparams().len;
+        const min = minArgs(c, o.localTparams());
+        if (o.localTparams().len == 0) {
             if (targs.len > 0) report(c, refNameNode(n), 2315, c.fmt("Type '{s}' is not generic.", .{s.name}));
             return g;
         }
-        if (targs.len < min or targs.len > o.local_tparams.len) {
-            if (!isInHeritageOfJsLike(n)) reportArity(c, n, s, o.local_tparams, min);
+        if (targs.len < min or targs.len > o.localTparams().len) {
+            if (!isInHeritageOfJsLike(n)) reportArity(c, n, s, o.localTparams(), min);
             return c.t_err;
         }
-        const args = c.a.alloc(*Type, o.tparams.len) catch oom();
-        for (o.tparams[0..outer_len], 0..) |p, i| args[i] = p;
-        fillArgs(c, args[outer_len..], o.local_tparams, targs);
-        checkConstraints(c, targs, o.local_tparams, args[outer_len..]);
+        const args = c.a.alloc(*Type, o.tparams().len) catch oom();
+        for (o.tparams()[0..outer_len], 0..) |p, i| args[i] = p;
+        fillArgs(c, args[outer_len..], o.localTparams(), targs);
+        checkConstraints(c, targs, o.localTparams(), args[outer_len..]);
         return c.internRef(g, args, null);
     }
     if (s.flags & F.type_alias != 0) {
@@ -1282,15 +1284,15 @@ pub fn instantiate(c: *Checker, t: *Type, mo: ?*Mapper) *Type {
         .cond => return keepAlias(c, t, instCond(c, t, m), m),
         .obj => |o| switch (o.kind) {
             .iface => {
-                if (o.tparams.len == 0 and o.this_type == null) return t;
-                return c.internRefOrSelf(t, mapInto(c, m, o.tparams, &small));
+                if (o.tparams().len == 0 and o.thisType() == null) return t;
+                return c.internRefOrSelf(t, mapInto(c, m, o.tparams(), &small));
             },
             .ref => {
                 const args = mapInto(c, m, o.args.?, &small);
                 const this_arg = if (o.this_arg) |x| instantiate(c, x, m) else null;
                 return c.internRef(o.target.?, args, this_arg);
             },
-            .tuple => return c.makeTuple(mapAll(c, m, o.elems), o.eflags, o.readonly, o.names),
+            .tuple => return c.makeTuple(mapAll(c, m, o.tuple.elems), o.tuple.eflags, o.readonly, o.tuple.names),
             .anon, .mapped => return instantiateAnon(c, t, m),
         },
         else => return t,
@@ -1435,14 +1437,14 @@ fn instantiateHomomorphicMember(c: *Checker, root: *Type, arg: *Type, outer: []*
     }
     if (T.isTupleType(arg)) {
         const o = arg.data.obj;
-        const out = c.a.alloc(*Type, o.elems.len) catch oom();
-        const flags = c.dupe(T.ElemFlag, o.eflags);
-        for (0..o.elems.len) |i| {
+        const out = c.a.alloc(*Type, o.tuple.elems.len) catch oom();
+        const flags = c.dupe(T.ElemFlag, o.tuple.eflags);
+        for (0..o.tuple.elems.len) |i| {
             out[i] = elem(c, key_param, template, m, c.strLit(c.fmt("{d}", .{i})));
             if (flags[i] == .optional and d.question_mod == .minus) flags[i] = .required;
             if (flags[i] == .required and (d.question_mod == .question or d.question_mod == .plus)) flags[i] = .optional;
         }
-        return c.makeTuple(out, flags, (o.readonly and d.readonly_mod != .minus) or d.readonly_mod == .kw_readonly or d.readonly_mod == .plus, o.names);
+        return c.makeTuple(out, flags, (o.readonly and d.readonly_mod != .minus) or d.readonly_mod == .kw_readonly or d.readonly_mod == .plus, o.tuple.names);
     }
     return anonInstance(c, root, outer, mapped, root.data.obj);
 }
@@ -2020,7 +2022,7 @@ pub fn membersOf(c: *Checker, t: *Type) *Members {
     o.resolving = true;
     defer o.resolving = false;
     const m = switch (o.kind) {
-        .iface => resolveIface(c, t, t, o.tparams, t),
+        .iface => resolveIface(c, t, t, o.tparams(), t),
         .ref => resolveIface(c, t, o.target.?, o.args.?, o.this_arg orelse t),
         .tuple => resolveTuple(c, t),
         .mapped => resolveMapped(c, t),
@@ -2106,11 +2108,11 @@ fn resolveIface(c: *Checker, self: *Type, g: *Type, args: []*Type, this_arg: *Ty
     const m = c.emptyMembers();
     var from = c.newList(*Type);
     var to = c.newList(*Type);
-    for (o.tparams, 0..) |p, i| if (i < args.len) {
+    for (o.tparams(), 0..) |p, i| if (i < args.len) {
         from.append(c.a, p) catch oom();
         to.append(c.a, args[i]) catch oom();
     };
-    if (o.this_type) |tt| {
+    if (o.thisType()) |tt| {
         from.append(c.a, tt) catch oom();
         to.append(c.a, this_arg) catch oom();
     }
@@ -2254,7 +2256,7 @@ fn addIndexes(c: *Checker, s: *Symbol, mapper: ?*Mapper, out: *std.ArrayList(T.I
 pub fn withThis(c: *Checker, t: *Type, this_arg: *Type) *Type {
     switch (t.data) {
         .obj => |o| switch (o.kind) {
-            .iface => return c.internRef(t, o.tparams, this_arg),
+            .iface => return c.internRef(t, o.tparams(), this_arg),
             .ref => return c.internRef(o.target.?, o.args.?, this_arg),
             else => return t,
         },
@@ -2273,7 +2275,7 @@ fn resolveTuple(c: *Checker, t: *Type) *Members {
     var parts = c.newList(*Type);
     var open = false;
     var min: usize = 0;
-    for (o.elems, o.eflags, 0..) |e, f, i| {
+    for (o.tuple.elems, o.tuple.eflags, 0..) |e, f, i| {
         parts.append(c.a, if (f == .optional) addOptional(c, e) else e) catch oom();
         if (f == .required) min = i + 1;
         if (f == .rest or f == .variadic) open = true;
@@ -2293,7 +2295,7 @@ fn resolveTuple(c: *Checker, t: *Type) *Members {
     var len: *Type = c.t_number;
     if (!open) {
         var lens = c.newList(*Type);
-        for (min..o.elems.len + 1) |i| lens.append(c.a, c.numLit(@floatFromInt(i))) catch oom();
+        for (min..o.tuple.elems.len + 1) |i| lens.append(c.a, c.numLit(@floatFromInt(i))) catch oom();
         len = c.getUnion(lens.items);
     }
     m.props.put(c.a, "length", c.create(Prop, .{ .name = "length", .ty = len, .readonly = o.readonly })) catch oom();
@@ -2412,8 +2414,8 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
 }
 
 fn eraseArgs(c: *Checker, t: *Type) *Type {
-    if (t.data != .obj or t.data.obj.tparams.len == 0) return t;
-    const args = c.a.alloc(*Type, t.data.obj.tparams.len) catch oom();
+    if (t.data != .obj or t.data.obj.tparams().len == 0) return t;
+    const args = c.a.alloc(*Type, t.data.obj.tparams().len) catch oom();
     @memset(args, c.t_any);
     return c.internRef(t, args, null);
 }
@@ -2448,8 +2450,8 @@ fn classCtors(c: *Checker, s: *Symbol) []*Sig {
     if (declared.len > 0) {
         for (declared) |x| {
             const q = c.create(Sig, x.*);
-            q.tparams = o.local_tparams;
-            q.ret = if (o.tparams.len > 0) c.internRef(cls, o.tparams, null) else cls;
+            q.tparams = o.localTparams();
+            q.ret = if (o.tparams().len > 0) c.internRef(cls, o.tparams(), null) else cls;
             q.abstract = is_abstract;
             q.params = c.dupe(T.SigParam, x.params);
             // The clone is a different signature from the one parameters were resolved through.
@@ -2464,8 +2466,8 @@ fn classCtors(c: *Checker, s: *Symbol) []*Sig {
         if (bases.len > 0 and basesOf(c, cls).len > 0) {
             for (bases) |b| {
                 const q = c.create(Sig, b.*);
-                q.ret = if (o.tparams.len > 0) c.internRef(cls, o.tparams, null) else cls;
-                q.tparams = o.local_tparams;
+                q.ret = if (o.tparams().len > 0) c.internRef(cls, o.tparams(), null) else cls;
+                q.tparams = o.localTparams();
                 if (b.tparams.len > 0 and basesOf(c, cls).len > 0) {
                     // Base type arguments are fixed by the extends clause; map them in.
                     const base0 = basesOf(c, cls)[0];
@@ -2473,7 +2475,7 @@ fn classCtors(c: *Checker, s: *Symbol) []*Sig {
                         const inst = applySig(c, b, arrayMapper(c, b.tparams, base0.data.obj.args.?));
                         const q2 = c.create(Sig, inst.*);
                         q2.ret = q.ret;
-                        q2.tparams = o.local_tparams;
+                        q2.tparams = o.localTparams();
                         q2.abstract = is_abstract;
                         out.append(c.a, q2) catch oom();
                         continue;
@@ -2485,7 +2487,7 @@ fn classCtors(c: *Checker, s: *Symbol) []*Sig {
             return out.items;
         }
     }
-    const q = c.create(Sig, .{ .is_ctor = true, .tparams = o.local_tparams, .ret = if (o.tparams.len > 0) c.internRef(cls, o.tparams, null) else cls, .abstract = is_abstract });
+    const q = c.create(Sig, .{ .is_ctor = true, .tparams = o.localTparams(), .ret = if (o.tparams().len > 0) c.internRef(cls, o.tparams(), null) else cls, .abstract = is_abstract });
     out.append(c.a, q) catch oom();
     return out.items;
 }
@@ -2749,17 +2751,17 @@ fn tupleProp(c: *Checker, t: *Type, name: []const u8) ?*Prop {
     if (!T.isTupleType(t) or name.len == 0 or !std.ascii.isDigit(name[0])) return null;
     const i = std.fmt.parseInt(usize, name, 10) catch return null;
     const o = t.data.obj;
-    if (i >= o.elems.len) return null;
-    for (o.eflags[0 .. i + 1]) |f| if (f == .rest or f == .variadic) return null;
-    const optional = o.eflags[i] == .optional;
-    return c.create(Prop, .{ .name = name, .ty = if (optional) addOptional(c, o.elems[i]) else o.elems[i], .optional = optional, .readonly = o.readonly });
+    if (i >= o.tuple.elems.len) return null;
+    for (o.tuple.eflags[0 .. i + 1]) |f| if (f == .rest or f == .variadic) return null;
+    const optional = o.tuple.eflags[i] == .optional;
+    return c.create(Prop, .{ .name = name, .ty = if (optional) addOptional(c, o.tuple.elems[i]) else o.tuple.elems[i], .optional = optional, .readonly = o.readonly });
 }
 
 /// Whether a tuple has no element at `i` and no open tail to hold one.
 pub fn endsBefore(t: *Type, i: usize) bool {
     if (!T.isTupleType(t)) return false;
-    for (t.data.obj.eflags) |f| if (f == .rest or f == .variadic) return false;
-    return i >= t.data.obj.elems.len;
+    for (t.data.obj.tuple.eflags) |f| if (f == .rest or f == .variadic) return false;
+    return i >= t.data.obj.tuple.elems.len;
 }
 
 fn missingUnionMember(c: *Checker, ap: *Type, name: []const u8) ?*Type {
@@ -2922,7 +2924,7 @@ fn arrayMemberSigs(c: *Checker, x: []*Type) ?[]*Sig {
         if (name != null and !std.mem.eql(u8, name.?, s.name)) return null;
         name = s.name;
         readonly = readonly or g == readonly_array;
-        elems.append(c.a, instantiate(c, g.data.obj.tparams[0], t.data.obj.mapper)) catch oom();
+        elems.append(c.a, instantiate(c, g.data.obj.tparams()[0], t.data.obj.mapper)) catch oom();
     }
     const e = c.getUnion(elems.items);
     const p = getProp(c, if (readonly) readonlyArrayOf(c, e) else arrayOf(c, e), name orelse return null) orelse return null;
@@ -3314,15 +3316,15 @@ fn concreteAccess(c: *Checker, obj: *Type, idx: *Type) *Type {
         if (getProp(c, ap, name)) |p| return propType(c, p);
         if (T.isTupleType(ap) and idx.data == .num_lit) return tupleElemAt(c, ap, idx.data.num_lit);
     }
-    if (T.isTupleType(ap) and idx.data == .number) return c.getUnion(ap.data.obj.elems);
+    if (T.isTupleType(ap) and idx.data == .number) return c.getUnion(ap.data.obj.tuple.elems);
     if (indexValue(c, ap, idx)) |v| return v;
     return c.t_err;
 }
 
 pub fn tupleElemAt(c: *Checker, t: *Type, i: f64) *Type {
     const o = t.data.obj;
-    for (o.elems, o.eflags, 0..) |e, f, n| {
-        if (f == .rest or f == .variadic) return c.getUnion(o.elems[n..]);
+    for (o.tuple.elems, o.tuple.eflags, 0..) |e, f, n| {
+        if (f == .rest or f == .variadic) return c.getUnion(o.tuple.elems[n..]);
         if (@as(f64, @floatFromInt(n)) == i) return e;
     }
     return c.t_undefined;
@@ -3425,7 +3427,7 @@ fn someAssignable(c: *Checker, t: *Type, target: *Type) bool {
 
 fn hasGenericTuple(c: *Checker, t: *Type) bool {
     if (!T.isTupleType(t)) return false;
-    for (t.data.obj.elems, t.data.obj.eflags) |e, f| if (f == .variadic and isGeneric(c, e)) return true;
+    for (t.data.obj.tuple.elems, t.data.obj.tuple.eflags) |e, f| if (f == .variadic and isGeneric(c, e)) return true;
     return false;
 }
 

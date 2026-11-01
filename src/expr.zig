@@ -671,7 +671,7 @@ fn thisOfClass(c: *Checker, cls: *Node, is_static: bool) *Type {
     const s = cls.symbol orelse return c.t_err;
     if (is_static) return d.typeOfSymbol(c, s);
     const t = d.declaredType(c, s);
-    if (t.data == .obj) if (t.data.obj.this_type) |x| return x;
+    if (t.data == .obj) if (t.data.obj.thisType()) |x| return x;
     return c.t_err;
 }
 
@@ -745,7 +745,7 @@ fn superBase(c: *Checker, n: *Node) ?struct { base: *Type, is_static: bool } {
             const bases = d.basesOf(c, t);
             if (bases.len == 0) return null;
             // A base method that returns `this` answers to the class calling it.
-            const own = t.data.obj.this_type orelse return .{ .base = bases[0], .is_static = is_static };
+            const own = t.data.obj.thisType() orelse return .{ .base = bases[0], .is_static = is_static };
             return .{ .base = if (is_static) bases[0] else d.withThis(c, bases[0], own), .is_static = is_static };
         }
     }
@@ -907,8 +907,8 @@ fn elemOfCtx(c: *Checker, n: *Node, t: *Type, i: usize) ?*Type {
     }
     if (T.isTupleType(t)) {
         const o = t.data.obj;
-        if (i < o.elems.len and o.eflags[i] != .rest and o.eflags[i] != .variadic) return o.elems[i];
-        for (o.eflags, 0..) |f, k| if (f == .rest) return o.elems[k];
+        if (i < o.tuple.elems.len and o.tuple.eflags[i] != .rest and o.tuple.eflags[i] != .variadic) return o.tuple.elems[i];
+        for (o.tuple.eflags, 0..) |f, k| if (f == .rest) return o.tuple.elems[k];
         return null;
     }
     if (c.isArrayType(t)) return t.data.obj.args.?[0];
@@ -1866,7 +1866,7 @@ fn restFrom(c: *Checker, sig: *Sig, i: usize) *Type {
         const skip = if (i > fixed) i - fixed else 0;
         if (T.isTupleType(r)) {
             const o = r.data.obj;
-            for (o.elems, o.eflags, 0..) |e, f, n| {
+            for (o.tuple.elems, o.tuple.eflags, 0..) |e, f, n| {
                 if (n < skip and f != .rest and f != .variadic) continue;
                 elems.append(c.a, e) catch oom();
                 flags.append(c.a, f) catch oom();
@@ -2198,8 +2198,8 @@ pub fn iteratedOf(c: *Checker, n: *Node, t: *Type, is_await: bool) *Type {
     if (c.isArrayType(t)) return if (is_await) awaitedOf(c, t.data.obj.args.?[0]) else t.data.obj.args.?[0];
     if (T.isTupleType(t)) {
         const o = t.data.obj;
-        if (o.elems.len == 0) return c.t_never;
-        return if (is_await) awaitedOf(c, c.getUnion(o.elems)) else c.getUnion(o.elems);
+        if (o.tuple.elems.len == 0) return c.t_never;
+        return if (is_await) awaitedOf(c, c.getUnion(o.tuple.elems)) else c.getUnion(o.tuple.elems);
     }
     const keys: []const []const u8 = if (is_await) &.{ "__@asyncIterator", "__@iterator" } else &.{"__@iterator"};
     for (keys) |key| {
@@ -2296,7 +2296,7 @@ pub fn destructuredType(c: *Checker, parent: *Type, pat: *Node, el: *Node) *Type
         } else true;
         if (all) {
             const reached = for (base.data.union_) |m| {
-                if (T.isTupleType(m) and i < m.data.obj.elems.len) break true;
+                if (T.isTupleType(m) and i < m.data.obj.tuple.elems.len) break true;
             } else false;
             const out = c.a.alloc(*Type, base.data.union_.len) catch oom();
             for (base.data.union_, 0..) |m, k| {
@@ -2308,16 +2308,16 @@ pub fn destructuredType(c: *Checker, parent: *Type, pat: *Node, el: *Node) *Type
     if (T.isTupleType(base)) {
         const o = base.data.obj;
         if (e.dotdotdot) {
-            if (i >= o.elems.len) return c.makeTuple(&.{}, &.{}, false, &.{});
-            return c.makeTuple(o.elems[i..], o.eflags[i..], false, &.{});
+            if (i >= o.tuple.elems.len) return c.makeTuple(&.{}, &.{}, false, &.{});
+            return c.makeTuple(o.tuple.elems[i..], o.tuple.eflags[i..], false, &.{});
         }
-        if (i < o.elems.len) {
-            return if (o.eflags[i] == .optional) d.addOptional(c, o.elems[i]) else o.elems[i];
+        if (i < o.tuple.elems.len) {
+            return if (o.tuple.eflags[i] == .optional) d.addOptional(c, o.tuple.elems[i]) else o.tuple.elems[i];
         }
-        for (o.eflags, 0..) |f, k| if (f == .rest) return o.elems[k];
+        for (o.tuple.eflags, 0..) |f, k| if (f == .rest) return o.tuple.elems[k];
         // A default covers what the tuple does not have.
         if (e.init != null) return c.t_undefined;
-        if (el.parent != null) err(c, el, 2493, c.fmt("Tuple type '{s}' of length '{d}' has no element at index '{d}'.", .{ show(c, base), o.elems.len, i }));
+        if (el.parent != null) err(c, el, 2493, c.fmt("Tuple type '{s}' of length '{d}' has no element at index '{d}'.", .{ show(c, base), o.tuple.elems.len, i }));
         return c.t_err;
     }
     const v = iteratedOf(c, el, base, false);
@@ -2835,12 +2835,12 @@ fn elemType(c: *Checker, n: *Node, left: *Type, idx: *Type, index_node: *Node) *
     if (T.isTupleType(ap) and idx.data == .num_lit) {
         const o = ap.data.obj;
         const i = idx.data.num_lit;
-        const open = for (o.eflags) |f| {
+        const open = for (o.tuple.eflags) |f| {
             if (f == .rest or f == .variadic) break true;
         } else false;
-        if (!open and i >= @as(f64, @floatFromInt(o.elems.len)) and i >= 0) {
+        if (!open and i >= @as(f64, @floatFromInt(o.tuple.elems.len)) and i >= 0) {
             // The literal may exceed i64, so it is printed as the float it is.
-            err(c, index_node, 2493, c.fmt("Tuple type '{s}' of length '{d}' has no element at index '{d}'.", .{ show(c, ap), o.elems.len, i }));
+            err(c, index_node, 2493, c.fmt("Tuple type '{s}' of length '{d}' has no element at index '{d}'.", .{ show(c, ap), o.tuple.elems.len, i }));
             return c.t_undefined;
         }
         // Past the fixed elements only the open tail can be there, not the whole tuple.
@@ -2860,7 +2860,7 @@ fn elemType(c: *Checker, n: *Node, left: *Type, idx: *Type, index_node: *Node) *
         err(c, index_node, 2538, c.fmt("Type '{s}' cannot be used as an index type.", .{show(c, idx)}));
         return v;
     };
-    if (T.isTupleType(ap) and idx.data == .number) return c.getUnion(ap.data.obj.elems);
+    if (T.isTupleType(ap) and idx.data == .number) return c.getUnion(ap.data.obj.tuple.elems);
     if (isOpen(c, left)) return c.t_err;
     if (!isValidIndex(c, idx)) {
         err(c, index_node, 2538, c.fmt("Type '{s}' cannot be used as an index type.", .{show(c, idx)}));
@@ -2913,7 +2913,7 @@ fn checkArrayLit(c: *Checker, n: *Node) *Type {
                 const t = checkExpr(c, x.expr);
                 if (T.isTupleType(t)) {
                     const o = t.data.obj;
-                    for (o.elems, o.eflags) |y, f| {
+                    for (o.tuple.elems, o.tuple.eflags) |y, f| {
                         elems.append(c.a, y) catch oom();
                         flags.append(c.a, f) catch oom();
                     }
@@ -3798,7 +3798,7 @@ fn paramsFit(c: *Checker, s: *Sig, t: *Sig) bool {
 }
 
 fn elemAt(c: *Checker, s: *Type, i: usize) ?*Type {
-    if (T.isTupleType(s)) return if (i < s.data.obj.elems.len) s.data.obj.elems[i] else null;
+    if (T.isTupleType(s)) return if (i < s.data.obj.tuple.elems.len) s.data.obj.tuple.elems[i] else null;
     if (c.isArrayType(s)) return s.data.obj.args.?[0];
     return null;
 }
@@ -3942,7 +3942,7 @@ fn effectiveArgs(c: *Checker, nodes: []*Node) []Arg {
             const t = checkExpr(c, a.data.spread_elem.expr);
             if (T.isTupleType(t)) {
                 const o = t.data.obj;
-                for (o.elems, o.eflags) |e, f| out.append(c.a, switch (f) {
+                for (o.tuple.elems, o.tuple.eflags) |e, f| out.append(c.a, switch (f) {
                     .required => .{ .node = a, .ty = e },
                     .optional => .{ .node = a, .ty = d.addOptional(c, e) },
                     .rest => .{ .node = a, .ty = d.arrayOf(c, e), .spread = true },
