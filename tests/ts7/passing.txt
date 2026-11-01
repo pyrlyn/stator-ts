@@ -261,6 +261,7 @@ compiler/augmentedTypesExternalModule1
 compiler/augmentedTypesInterface
 compiler/augmentedTypesModules3b
 compiler/augmentedTypesModules4
+compiler/augmentedTypesVar
 compiler/autoAsiForStaticsInClassDeclaration
 compiler/autoLift2
 compiler/autolift3
@@ -373,6 +374,7 @@ compiler/capturedLetConstInLoop11
 compiler/capturedLetConstInLoop11_ES6
 compiler/capturedLetConstInLoop12
 compiler/capturedLetConstInLoop13
+compiler/capturedLetConstInLoop14(target=es2015)
 compiler/capturedLetConstInLoop1_ES6
 compiler/capturedLetConstInLoop2
 compiler/capturedLetConstInLoop2_ES6
@@ -439,6 +441,7 @@ compiler/circularInstantiationExpression
 compiler/circularMappedTypeConstraint
 compiler/circularObjectLiteralAccessors(target=es2015)
 compiler/circularReferenceInImport
+compiler/circularReferenceInReturnType2
 compiler/circularTypeofWithFunctionModule
 compiler/circularlySimplifyingConditionalTypesNoCrash
 compiler/classAccessorInitializationInferenceWithElementAccess1
@@ -1528,6 +1531,7 @@ compiler/duplicateErrorAssignability
 compiler/duplicateErrorClassExpression
 compiler/duplicateErrorNameNotFound
 compiler/duplicateFunctionImplementationInJsFile
+compiler/duplicateIdentifierInCatchBlock
 compiler/duplicateIdentifierRelatedSpans3
 compiler/duplicateIdentifierRelatedSpans4
 compiler/duplicateIdentifierRelatedSpans5
@@ -1537,6 +1541,10 @@ compiler/duplicateIdentifierRelatedSpans_moduleAugmentation
 compiler/duplicateIdentifierShouldNotShortCircuitBaseTypeBinding
 compiler/duplicateLabel3
 compiler/duplicateLabel4
+compiler/duplicateLocalVariable1
+compiler/duplicateLocalVariable2
+compiler/duplicateLocalVariable3
+compiler/duplicateLocalVariable4
 compiler/duplicateObjectLiteralProperty_computedNameNegative1
 compiler/duplicateOverloadInTypeAugmentation1
 compiler/duplicatePackage
@@ -1549,6 +1557,8 @@ compiler/duplicatePackage_subModule
 compiler/duplicateVarAndImport
 compiler/duplicateVariableDeclaration1
 compiler/duplicateVariablesByScope
+compiler/duplicateVariablesWithAny
+compiler/duplicateVarsAcrossFileBoundaries
 compiler/dynamicDeclarationDefault
 compiler/dynamicImportEvaluateSpecifier
 compiler/dynamicImportInDefaultExportExpression
@@ -1673,6 +1683,8 @@ compiler/errorMessagesIntersectionTypes02
 compiler/errorMessagesIntersectionTypes03
 compiler/errorMessagesIntersectionTypes04
 compiler/errorOnContextuallyTypedReturnType
+compiler/errorOnUnionVsObjectShouldDeeplyDisambiguate
+compiler/errorOnUnionVsObjectShouldDeeplyDisambiguate2
 compiler/errorSupression1
 compiler/errorTypesAsTypeArguments
 compiler/errorWithSameNameType
@@ -1722,6 +1734,7 @@ compiler/es5ExportDefaultFunctionDeclaration3(target=es2015)
 compiler/es5ExportDefaultFunctionDeclaration4(target=es2015)
 compiler/es5ExportDefaultIdentifier(target=es2015)
 compiler/es5ExportEqualsDts(target=es2015)
+compiler/es5ModuleInternalNamedImports(target=es2015)
 compiler/es5ModuleWithModuleGenCommonjs(target=es2015)
 compiler/es5ModuleWithoutModuleGenTarget(target=es2015)
 compiler/es5SetterparameterDestructuringNotElided(target=es2015)
@@ -1786,6 +1799,8 @@ compiler/es6ModuleConstEnumDeclaration2
 compiler/es6ModuleEnumDeclaration
 compiler/es6ModuleFunctionDeclaration
 compiler/es6ModuleInternalImport
+compiler/es6ModuleInternalNamedImports
+compiler/es6ModuleInternalNamedImports2
 compiler/es6ModuleLet
 compiler/es6ModuleModuleDeclaration
 compiler/es6ModuleVariableStatement
@@ -1837,6 +1852,7 @@ compiler/explicitAnyAfterSpreadNoImplicitAnyError
 compiler/explicitMembersBeforeInherited
 compiler/exportArrayBindingPattern
 compiler/exportAsNamespace.d
+compiler/exportAsNamespace_augment
 compiler/exportAssignClassAndModule
 compiler/exportAssignNamedImport
 compiler/exportAssignValueAndType
@@ -1857,6 +1873,7 @@ compiler/exportClassExtendingIntersection
 compiler/exportDeclarationForModuleOrEnumWithMemberOfSameName(module=commonjs)
 compiler/exportDeclarationWithModuleSpecifierNameOnNextLine1
 compiler/exportDeclarationsInAmbientNamespaces
+compiler/exportDeclarationsInAmbientNamespaces2
 compiler/exportDefaultAbstractClass
 compiler/exportDefaultAsyncFunction
 compiler/exportDefaultInterface
@@ -1977,6 +1994,7 @@ compiler/firstMatchRegExpMatchArray
 compiler/fixCrashAliasLookupForDefauledImport
 compiler/fixTypeParameterInSignatureWithRestParameters
 compiler/fixingTypeParametersRepeatedly1
+compiler/fixingTypeParametersRepeatedly2
 compiler/fixingTypeParametersRepeatedly3
 compiler/flowAfterFinally1
 compiler/flowControlTypeGuardThenSwitch
@@ -2007,6 +2025,7 @@ compiler/fromAsIdentifier1
 compiler/fromAsIdentifier2
 compiler/funcdecl
 compiler/functionAndPropertyNameConflict
+compiler/functionArgShadowing
 compiler/functionAssignabilityWithArrayLike01(strict=false)
 compiler/functionAssignabilityWithArrayLike01(strict=true)
 compiler/functionAssignment
@@ -2038,6 +2057,7 @@ compiler/functionExpressionWithResolutionOfTypeNamedArguments01
 compiler/functionExpressionWithResolutionOfTypeOfSameName01
 compiler/functionExpressionWithResolutionOfTypeOfSameName02
 compiler/functionInIfStatementInModule
+compiler/functionLikeInParameterInitializer(target=es2015)
 compiler/functionMergedWithModule
 compiler/functionOnlyHasThrow
 compiler/functionOverloadAmbiguity1
@@ -2090,6 +2110,7 @@ compiler/functionTypeArgumentArrayAssignment
 compiler/functionTypeArgumentAssignmentCompat
 compiler/functionTypeParameterNameFromTupleLabel
 compiler/functionTypesLackingReturnTypes
+compiler/functionVariableInReturnTypeAnnotation
 compiler/functionWithAnyReturnTypeAndNoReturnExpression
 compiler/functionWithDefaultParameterWithNoStatements1
 compiler/functionWithDefaultParameterWithNoStatements10
@@ -2237,6 +2258,7 @@ compiler/genericRestArgs
 compiler/genericReturnTypeFromGetter1
 compiler/genericReversingTypeParameters
 compiler/genericReversingTypeParameters2
+compiler/genericSignatureIdentity
 compiler/genericSignatureInheritance
 compiler/genericSignatureInheritance2
 compiler/genericSpecializationToTypeLiteral1
@@ -2308,8 +2330,10 @@ compiler/i3
 compiler/icomparable
 compiler/idInProp
 compiler/identicalGenericConditionalsWithInferRelated
+compiler/identicalSignaturesWithTypePredicates
 compiler/identicalTypesNoDifferByCheckOrder
 compiler/identityAndDivergentNormalizedTypes
+compiler/identityForSignaturesWithTypeParametersAndAny
 compiler/identityOfInstantiatedMappedIntersection
 compiler/identityRelationNeverTypes
 compiler/ifElseWithStatements1
@@ -2324,6 +2348,7 @@ compiler/implicitAnyDeclareFunctionWithoutFormalType
 compiler/implicitAnyDeclareFunctionWithoutFormalType2
 compiler/implicitAnyDeclareMemberWithoutType2
 compiler/implicitAnyDeclareVariablesWithoutTypeAndInit
+compiler/implicitAnyFromCircularInference(target=es2015)
 compiler/implicitAnyFunctionReturnNullOrUndefined
 compiler/implicitAnyGenericTypeInference
 compiler/implicitAnyGenerics
@@ -2348,6 +2373,7 @@ compiler/importAttributesWithValueComments
 compiler/importDecl
 compiler/importDeclFromTypeNodeInJsSource
 compiler/importDeclWithExportModifierInAmbientContext
+compiler/importDeclarationInModuleDeclaration1
 compiler/importDeclarationUsedAsTypeQuery
 compiler/importElisionEnum
 compiler/importElisionTypeofImportTypeQualifier
@@ -2371,6 +2397,7 @@ compiler/importHelpersWithLocalCollisions(module=commonjs)
 compiler/importHelpersWithLocalCollisions(module=es2015)
 compiler/importHelpersWithOriginalSourceFileCollision
 compiler/importInTypePosition
+compiler/importInsideModule
 compiler/importNonExportedMember1
 compiler/importNonExportedMember2
 compiler/importNonExportedMember3
@@ -2728,6 +2755,7 @@ compiler/jsFileCompilationBindDeepExportsAssignment
 compiler/jsFileCompilationBindDuplicateIdentifier
 compiler/jsFileCompilationConstModifier
 compiler/jsFileCompilationDuplicateVariable
+compiler/jsFileCompilationDuplicateVariableErrorReported
 compiler/jsFileCompilationEmitBlockedCorrectly
 compiler/jsFileCompilationEmitDeclarations
 compiler/jsFileCompilationEmitTrippleSlashReference
@@ -2846,11 +2874,13 @@ compiler/lazyInheritedMemberLookup
 compiler/legacyDecoratorClassWithoutModifiers
 compiler/legacyDecoratorsEnumAccessSameNameAsClass
 compiler/legacyDecoratorsSingleAccessor
+compiler/letAndVarRedeclaration
 compiler/letConstMatchingParameterNames(target=es2015)
 compiler/letDeclarations
 compiler/letDeclarations-access
 compiler/letDeclarations-es5(target=es2015)
 compiler/letDeclarations-es5-1(target=es2015)
+compiler/letDeclarations-scopes-duplicates
 compiler/letDeclarations-scopes-duplicates2
 compiler/letDeclarations-scopes-duplicates3
 compiler/letDeclarations-scopes-duplicates4
@@ -3047,6 +3077,8 @@ compiler/moduleCodeGenTest5
 compiler/moduleCodegenTest4
 compiler/moduleCrashBug1
 compiler/moduleDeclarationExportStarShadowingGlobalIsNameable
+compiler/moduleElementsInWrongContext2
+compiler/moduleElementsInWrongContext3
 compiler/moduleExportNonStructured
 compiler/moduleExports1
 compiler/moduleExportsUnaryExpression
@@ -3449,8 +3481,11 @@ compiler/optionalConstructorArgInSuper
 compiler/optionalFunctionArgAssignability
 compiler/optionalParamInOverride
 compiler/optionalParamReferencingOtherParams1
+compiler/optionalParamReferencingOtherParams2(target=es2015)
 compiler/optionalParamTypeComparison
 compiler/optionalParameterRetainsNull
+compiler/optionalParamterAndVariableDeclaration
+compiler/optionalParamterAndVariableDeclaration2
 compiler/optionalPropertiesTest
 compiler/optionalTupleElementsAndUndefined
 compiler/optionsCompositeWithIncrementalFalse
@@ -3508,6 +3543,7 @@ compiler/overloadsWithConstraints
 compiler/overrideBaseIntersectionMethod
 compiler/packageDeduplicationDuplicateGlobals
 compiler/parameterDestructuringObjectLiteral
+compiler/parameterNamesInTypeParameterList
 compiler/parameterPropertyInConstructor4
 compiler/parameterPropertyInConstructorWithPrologues
 compiler/parameterPropertyInitializerInInitializers
@@ -3533,6 +3569,7 @@ compiler/parseJsxExtends1
 compiler/parseObjectLiteralsWithoutTypes
 compiler/parseReplacementCharacter
 compiler/parseShortform
+compiler/parseTypes
 compiler/parserIsClassMemberStart
 compiler/parsingClassRecoversWhenHittingUnexpectedSemicolon
 compiler/partialDeepIntersectionCommonSupertype
@@ -3613,6 +3650,8 @@ compiler/promiseChaining1
 compiler/promiseChaining2
 compiler/promiseDefinitionTest(target=es2015)
 compiler/promiseEmptyTupleNoException
+compiler/promiseIdentityWithAny
+compiler/promiseIdentityWithAny2
 compiler/promisePermutations2
 compiler/promiseTest
 compiler/promiseTry
@@ -3640,6 +3679,7 @@ compiler/propertyAccessExpressionInnerComments
 compiler/propertyAccessOnObjectLiteral
 compiler/propertyAccessibility1
 compiler/propertyAccessibility2
+compiler/propertyIdentityWithPrivacyMismatch
 compiler/propertyNamesWithStringLiteral
 compiler/propertyOrdering2
 compiler/propertyOverridingPrototype
@@ -3718,7 +3758,9 @@ compiler/recursiveInheritance2
 compiler/recursiveInheritanceGeneric
 compiler/recursiveMods
 compiler/recursiveNamedLambdaCall
+compiler/recursiveObjectLiteral
 compiler/recursiveProperties(target=es2015)
+compiler/recursiveResolveTypeMembers
 compiler/recursiveReturns
 compiler/recursiveReverseMappedType
 compiler/recursiveSpecializationOfExtendedTypeWithError
@@ -3895,6 +3937,7 @@ compiler/signatureLengthMismatchWithOptionalParameters
 compiler/signatureOverloadsWithComments
 compiler/silentNeverPropagation
 compiler/simpleArrowFunctionParameterReferencedInObjectLiteral1
+compiler/simpleRecursionWithBaseCase1
 compiler/simpleRecursionWithBaseCase2
 compiler/simpleRecursionWithBaseCase3
 compiler/simpleRecursionWithBaseCase4
@@ -4253,6 +4296,7 @@ compiler/tsxUnionMemberChecksFilterDataProps
 compiler/tsxUnionSpread
 compiler/tupleTypeInference
 compiler/tupleTypeInference2
+compiler/tupleTypes
 compiler/twiceNestedKeyofIndexInference
 compiler/typeAliasDeclarationEmit(target=es2015)
 compiler/typeAliasDeclarationEmit2(target=es2015)
@@ -4318,6 +4362,7 @@ compiler/typeOfPrototype
 compiler/typeOfSuperCall
 compiler/typeOfThisInStatics
 compiler/typeOfYieldWithUnionInContextualReturnType
+compiler/typeOnlyExportAsIfBody
 compiler/typeOnlyExportImportAliasElidesNamespaceImport
 compiler/typeOnlyStarDefaultCollision
 compiler/typeParamExtendsOtherTypeParam
@@ -4350,6 +4395,7 @@ compiler/typeParameterInConstraint1
 compiler/typeParameterLeak
 compiler/typeParameterListWithTrailingComma1
 compiler/typeParameterOrderReversal
+compiler/typeParametersAndParametersInComputedNames
 compiler/typeParametersShouldNotBeEqual
 compiler/typeParametersShouldNotBeEqual2
 compiler/typeParametersShouldNotBeEqual3
@@ -4636,7 +4682,11 @@ conformance/ES5For-ofTypeCheck6(target=es2015)
 conformance/ES5For-ofTypeCheck7(target=es2015)
 conformance/ES5For-ofTypeCheck9(target=es2015)
 conformance/ES5SymbolProperty2(target=es2015)
+conformance/ES5SymbolProperty3(target=es2015)
+conformance/ES5SymbolProperty4(target=es2015)
+conformance/ES5SymbolProperty5(target=es2015)
 conformance/ES5SymbolProperty6(target=es2015)
+conformance/ES5SymbolProperty7(target=es2015)
 conformance/ES5SymbolType1(target=es2015)
 conformance/ES5for-of32(target=es2015)
 conformance/EnumAndModuleWithSameNameAndCommonRoot
@@ -4876,6 +4926,9 @@ conformance/asyncArrowFunction4_es6
 conformance/asyncArrowFunction8_es2017
 conformance/asyncArrowFunction8_es5(target=es2015)
 conformance/asyncArrowFunction8_es6
+conformance/asyncArrowFunction9_es2017
+conformance/asyncArrowFunction9_es5(target=es2015)
+conformance/asyncArrowFunction9_es6
 conformance/asyncArrowFunctionCapturesThis_es2017
 conformance/asyncArrowFunctionCapturesThis_es5(target=es2015)
 conformance/asyncArrowFunctionCapturesThis_es6
@@ -5403,6 +5456,8 @@ conformance/controlFlowInOperator
 conformance/controlFlowInstanceOfGuardPrimitives
 conformance/controlFlowInstanceofExtendsFunction
 conformance/controlFlowIteration
+conformance/controlFlowIterationErrors
+conformance/controlFlowIterationErrorsAsync
 conformance/controlFlowNoIntermediateErrors
 conformance/controlFlowOptionalChain2
 conformance/controlFlowOptionalChain3
@@ -5653,6 +5708,7 @@ conformance/emptyVariableDeclarationBindingPatterns01_ES5(target=es2015)
 conformance/emptyVariableDeclarationBindingPatterns01_ES5iterable(target=es2015)
 conformance/emptyVariableDeclarationBindingPatterns01_ES6
 conformance/enumAssignability
+conformance/enumAssignabilityInInheritance
 conformance/enumBasics
 conformance/enumClassification
 conformance/enumConstantMemberWithString
@@ -5907,6 +5963,7 @@ conformance/float16Array
 conformance/fluentClasses
 conformance/fluentInterfaces
 conformance/for-inStatementsArray
+conformance/for-inStatementsArrayErrors
 conformance/for-inStatementsAsyncIdentifier
 conformance/for-of1
 conformance/for-of13
@@ -5922,6 +5979,10 @@ conformance/for-of26
 conformance/for-of28
 conformance/for-of29
 conformance/for-of31
+conformance/for-of32
+conformance/for-of33
+conformance/for-of34
+conformance/for-of35
 conformance/for-of36
 conformance/for-of37
 conformance/for-of38
@@ -5947,6 +6008,7 @@ conformance/forContinueStatements
 conformance/forInBreakStatements
 conformance/forInContinueStatements
 conformance/forStatements
+conformance/forStatementsMultipleInvalidDecl
 conformance/forStatementsMultipleValidDecl
 conformance/forgottenNew
 conformance/functionConstraintSatisfaction
@@ -6150,6 +6212,7 @@ conformance/incrementOperatorWithAnyOtherType
 conformance/incrementOperatorWithUnsupportedBooleanType
 conformance/incrementOperatorWithUnsupportedStringType
 conformance/independentPropertyVariance
+conformance/indexSignatureTypeInference
 conformance/indexersInClassType
 conformance/inferFromBindingPattern
 conformance/inferThis
@@ -6222,6 +6285,7 @@ conformance/intlNumberFormatES2023
 conformance/intlNumberFormatES5UseGrouping(target=es2015)
 conformance/intlPluralRulesSelectRangeES2023
 conformance/invalidEnumAssignments
+conformance/invalidMultipleVariableDeclarations
 conformance/invalidReturnStatements
 conformance/invalidSwitchBreakStatement
 conformance/invalidThrowStatement
@@ -6264,7 +6328,9 @@ conformance/iteratorSpreadInCall6
 conformance/iteratorSpreadInCall7
 conformance/iteratorSpreadInCall8
 conformance/iteratorSpreadInCall9
+conformance/jsContainerMergeTsDeclaration
 conformance/jsContainerMergeTsDeclaration2
+conformance/jsContainerMergeTsDeclaration3
 conformance/jsDeclarationsClassLeadingOptional(target=es2015)
 conformance/jsDeclarationsClassStaticMethodAugmentation(target=es2015)
 conformance/jsDeclarationsConstsAsNamespacesWithReferences
@@ -6337,6 +6403,7 @@ conformance/library-reference-15
 conformance/library-reference-2
 conformance/library-reference-3
 conformance/library-reference-4
+conformance/library-reference-5
 conformance/library-reference-7
 conformance/library-reference-8
 conformance/library-reference-scoped-packages
@@ -6349,6 +6416,7 @@ conformance/literalTypesWidenInParameterPosition
 conformance/localTypes1(target=es2015)
 conformance/localTypes2
 conformance/localTypes3
+conformance/localTypes4
 conformance/localTypes5
 conformance/localesObjectArgument
 conformance/logicalAndOperatorWithTypeParameters
@@ -6438,6 +6506,7 @@ conformance/narrowFromAnyWithInstanceof
 conformance/narrowFromAnyWithTypePredicate
 conformance/narrowingConstrainedTypeVariable
 conformance/narrowingGenericTypeFromInstanceof01
+conformance/negateOperatorInvalidOperations
 conformance/nestedModules
 conformance/nestedNamespace
 conformance/nestedPackageJsonRedirect(moduleresolution=bundler)
@@ -6572,6 +6641,7 @@ conformance/numericLiteralTypes3
 conformance/objectBindingPatternKeywordIdentifiers03
 conformance/objectBindingPatternKeywordIdentifiers05
 conformance/objectBindingPatternKeywordIdentifiers06
+conformance/objectLiteralContextualTyping
 conformance/objectLiteralGettersAndSetters
 conformance/objectLiteralShorthandProperties(target=es2015)
 conformance/objectLiteralShorthandPropertiesAssignment
@@ -6966,6 +7036,9 @@ conformance/parserMethodSignature9
 conformance/parserMissingLambdaOpenBrace1
 conformance/parserMissingToken2
 conformance/parserModifierOnPropertySignature2
+conformance/parserModifierOnStatementInBlock1
+conformance/parserModifierOnStatementInBlock3
+conformance/parserModifierOnStatementInBlock4
 conformance/parserModule1
 conformance/parserModuleDeclaration11
 conformance/parserModuleDeclaration12
@@ -7210,12 +7283,15 @@ conformance/privateStaticMemberAccessibility
 conformance/privateStaticNameShadowing
 conformance/privateStaticNotAccessibleInClodule
 conformance/privateStaticNotAccessibleInClodule2
+conformance/propertyAccess
 conformance/propertyAccessChain
 conformance/propertyAccessChain.2
 conformance/propertyAccessNumericLiterals.es6
 conformance/propertyAccessOnTypeParameterWithConstraints
 conformance/propertyAccessOnTypeParameterWithConstraints2
 conformance/propertyAccessOnTypeParameterWithConstraints3
+conformance/propertyAccessOnTypeParameterWithConstraints4
+conformance/propertyAccessOnTypeParameterWithConstraints5
 conformance/propertyAccessStringIndexSignature(noimplicitany=false)
 conformance/propertyAccessStringIndexSignature(noimplicitany=true)
 conformance/propertyAndAccessorWithSameName
@@ -7242,6 +7318,7 @@ conformance/recursiveInitializer
 conformance/recursiveIntersectionTypes
 conformance/recursiveTypeInGenericConstraint
 conformance/recursiveTypesUsedAsFunctionParameters
+conformance/recursiveTypesWithTypeof
 conformance/reexportClassDefinition
 conformance/regExpEscape
 conformance/relativePathMustResolve
@@ -7291,6 +7368,7 @@ conformance/spreadNonObject1
 conformance/spreadNonPrimitive
 conformance/spreadTypeVariable
 conformance/spreadUnion
+conformance/spreadUnion2
 conformance/spreadUnion3
 conformance/spreadUnion4
 conformance/staticAndNonStaticPropertiesSameName
@@ -7305,6 +7383,7 @@ conformance/staticPropertyAndFunctionWithSameName
 conformance/staticPropertyNameConflictsInAmbientContext
 conformance/strictBindCallApply2
 conformance/strictNullChecksNoWidening
+conformance/strictTupleLength
 conformance/stringEnumInElementAccess01
 conformance/stringEnumLiteralTypes1
 conformance/stringEnumLiteralTypes2
@@ -7740,11 +7819,14 @@ conformance/twoMergedInterfacesWithDifferingOverloads2
 conformance/typeAliases
 conformance/typeAliasesForObjectTypes
 conformance/typeAndNamespaceExportMerge
+conformance/typeArgumentInference
+conformance/typeArgumentInferenceConstructSignatures
 conformance/typeArgumentInferenceErrors
 conformance/typeArgumentInferenceTransitiveConstraints
 conformance/typeArgumentInferenceWithClassExpression1
 conformance/typeArgumentInferenceWithClassExpression2
 conformance/typeArgumentInferenceWithClassExpression3
+conformance/typeArgumentInferenceWithConstraints
 conformance/typeArgumentInferenceWithObjectLiteral
 conformance/typeArgumentsWithStringLiteralTypes01
 conformance/typeAssertions
@@ -7819,6 +7901,7 @@ conformance/typeGuardsOnClassProperty
 conformance/typeGuardsTypeParameters
 conformance/typeGuardsWithAny
 conformance/typeInferenceWithTupleType
+conformance/typeOfThisGeneral
 conformance/typeOfThisInAccessor
 conformance/typeOfThisInConstructorParamList
 conformance/typeOfThisInInstanceMember
@@ -7955,8 +8038,11 @@ conformance/unicodeExtendedEscapesInTemplates20(target=es6)
 conformance/unionAndIntersectionInference3
 conformance/unionTypeCallSignatures2
 conformance/unionTypeCallSignatures7
+conformance/unionTypeEquivalence
+conformance/unionTypeIdentity
 conformance/unionTypeIndexSignature
 conformance/unionTypeInference
+conformance/unionTypeLiterals
 conformance/unionTypeMembers
 conformance/unionTypeReadonly
 conformance/unionTypeReduction

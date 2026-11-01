@@ -1366,6 +1366,9 @@ pub fn flowType(c: *Checker, ref: *Node, declared: *Type, initial: *Type, contai
     }
     c.flow_depth += 1;
     defer c.flow_depth -= 1;
+    // The walk reads conditions that have nothing to do with `ref`, which tsc never looks at.
+    c.pushResolution(null);
+    defer _ = c.popResolution();
     const r = walk(c, ref, declared, initial, container, flow);
     // Dead code has no assignments to read, and reporting them would only follow up on its own error.
     if (r == c.t_unreachable) return if (declared == c.t_auto) c.t_any else declared;

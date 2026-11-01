@@ -259,7 +259,8 @@ pub const Binder = struct {
     fn reportDuplicate(b: *Binder, s: *Symbol, flags: u32, name: []const u8, at: *Node) void {
         // Declarations whose name failed to parse all share the empty name.
         if (name.len == 0) return;
-        const block = (s.flags | flags) & F.block_var != 0;
+        // The wording goes by what was there first: `let x` over a parameter is a plain duplicate.
+        const block = s.flags & F.block_var != 0;
         const enums = (s.flags | flags) & F.enum_any != 0;
         const code: u32 = if (enums) 2567 else if (block) 2451 else 2300;
         const msg = if (enums)
@@ -904,6 +905,14 @@ pub const Binder = struct {
         if (n.data == .string_lit and b.frozen == null) b.file.module_specs = append(b.a, b.file.module_specs, n);
     }
 
+    /// `import` and `export` name a module of the file only at its top level or directly in an
+    /// ambient module. Anywhere else they are an error, and tsc does not load what they name.
+    fn statementSpec(b: *Binder, stmt: *Node, n: *Node) void {
+        const p = stmt.parent orelse return b.moduleSpec(n);
+        const ambient = p.data == .module_block and p.parent != null and p.parent.?.data == .module_decl and p.parent.?.data.module_decl.name.data == .string_lit;
+        if (p.data == .source_file or ambient) b.moduleSpec(n);
+    }
+
     fn continuesChain(n: *Node) bool {
         const p = n.parent orelse return false;
         return switch (p.data) {
@@ -1038,11 +1047,11 @@ pub const Binder = struct {
             .enum_decl => b.bindEnum(n),
             .module_decl => b.bindModule(n),
             .import_decl => |d| {
-                b.moduleSpec(d.specifier);
+                b.statementSpec(n, d.specifier);
                 b.bindImport(n);
             },
             .export_decl => |d| {
-                if (d.specifier) |s| b.moduleSpec(s);
+                if (d.specifier) |s| b.statementSpec(n, s);
                 b.bindExport(n);
             },
             .import_type => |d| {
@@ -1051,7 +1060,7 @@ pub const Binder = struct {
             },
             .export_assign => b.bindExportAssign(n),
             .import_equals => |d| {
-                if (d.ref.data == .external_module_ref) b.moduleSpec(d.ref.data.external_module_ref.expr);
+                if (d.ref.data == .external_module_ref) b.statementSpec(n, d.ref.data.external_module_ref.expr);
                 _ = b.declareModuleMember(n, d.name.data.identifier, F.alias, F.alias_ex, n.mods, d.name);
             },
             .namespace_export_decl => |d| {
@@ -1548,6 +1557,13 @@ pub fn callOnTheSpot(fnode: *Node) ?*Node {
         callee = x;
     }
     return null;
+}
+
+/// Parentheses alone: unlike `stripParens` this keeps an assertion, which changes the type.
+pub fn skipParens(n: *Node) *Node {
+    var x = n;
+    while (x.data == .paren) x = x.data.paren.expr;
+    return x;
 }
 
 pub fn stripParens(n: *Node) *Node {

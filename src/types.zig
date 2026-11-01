@@ -343,6 +343,9 @@ pub const Relation = enum { assignable, comparable, identity, subtype, strict_su
 
 pub const flow_untouched = std.math.maxInt(u32);
 
+/// A `null` key is a wall: cycles closing past it were caused by reading too early, not by the code.
+pub const Resolving = struct { key: ?*anyopaque, failed: bool = false };
+
 pub const Checker = struct {
     a: Allocator,
     prog: *project.Program,
@@ -409,6 +412,8 @@ pub const Checker = struct {
 
     sym_types: IdMap(*Symbol, *Type) = .empty,
     sym_resolving: IdMap(*Symbol, void) = .empty,
+    /// What is being resolved, outermost first. A cycle fails every entry from where it closes.
+    resolution: std.ArrayList(Resolving) = .empty,
     write_types: IdMap(*Symbol, *Type) = .empty,
     declared: IdMap(*Symbol, *Type) = .empty,
     declared_resolving: IdMap(*Symbol, void) = .empty,
@@ -982,6 +987,26 @@ pub const Checker = struct {
 
     pub fn key2(l: u32, r: u32) u64 {
         return (@as(u64, l) << 32) | r;
+    }
+
+    pub fn pushResolution(c: *Checker, key: ?*anyopaque) void {
+        c.resolution.append(c.a, .{ .key = key }) catch oom();
+    }
+
+    /// True when a cycle went through what this entry was resolving.
+    pub fn popResolution(c: *Checker) bool {
+        return c.resolution.pop().?.failed;
+    }
+
+    pub fn closeCycle(c: *Checker, key: *anyopaque) void {
+        var i = c.resolution.items.len;
+        while (i > 0) {
+            i -= 1;
+            const at = c.resolution.items[i].key orelse return;
+            if (at != key) continue;
+            for (c.resolution.items[i..]) |*x| x.failed = true;
+            return;
+        }
     }
 
     pub fn metCycle(c: *Checker) *Type {
