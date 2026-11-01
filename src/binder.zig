@@ -298,7 +298,9 @@ pub const Binder = struct {
     fn addAnte(b: *Binder, l: *Label, f: *FlowNode) void {
         if (f.kind == .unreachable_end) return;
         for (l.list.items) |e| if (e == f) return;
-        l.list.append(b.a, f) catch oom();
+        // The list ends up in the flow graph, so what it reserves stays for the whole run.
+        if (l.list.items.len == l.list.capacity) l.list.ensureTotalCapacityPrecise(b.a, @max(2, l.list.capacity * 2)) catch oom();
+        l.list.appendAssumeCapacity(f);
     }
 
     fn finish(b: *Binder, l: *Label) *FlowNode {

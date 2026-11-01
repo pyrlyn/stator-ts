@@ -1203,7 +1203,8 @@ pub fn removeDefinitelyUndefined(c: *Checker, t: *Type) *Type {
     for (t.data.union_) |m| {
         if (m.data == .undefined) break;
     } else return t;
-    var out = std.ArrayList(*Type).initCapacity(c.a, t.data.union_.len) catch oom();
+    var small: [d.small_list]*Type = undefined;
+    var out = std.ArrayList(*Type).initBuffer(d.smallList(c, &small, t.data.union_.len));
     for (t.data.union_) |m| if (m.data != .undefined) out.appendAssumeCapacity(m);
     return c.getUnion(out.items);
 }
