@@ -1,6 +1,8 @@
 # stator-ts
 
-Standalone TypeScript compiler in Zig 0.16 that emits JavaScript, aims for `tsc` compatibility, scans projects in parallel and runs tests on Node or Bun.
+https://github.com/pyrlyn/stator-ts
+
+Standalone TypeScript compiler in Zig 0.17 that emits JavaScript, aims for `tsc` compatibility, scans projects in parallel and runs tests on Node or Bun.
 
 ## Decisions
 
@@ -10,7 +12,7 @@ Standalone TypeScript compiler in Zig 0.16 that emits JavaScript, aims for `tsc`
 - The emitter applies edits to source text, so comments and formatting survive.
 - `tsc` compatibility is the goal and is measured by the differential suite; full parity is far larger than one task.
 - Tests run on Node or Bun in a process pool, one process per test file.
-- One persistent thread pool per process. Files are cut by path into runs, a free worker takes the next run and builds a fresh checker for it in its own arena, so memory follows the runs in flight and not the files checked so far. Results are byte-identical across runs at a fixed `-j`.
+- Each parallel pass spawns its own big-stack workers through `coroutines.state_machine.runParallel` and joins them; the caller only waits. Files are cut by path into runs, a free worker takes the next run and builds a fresh checker for it in its own arena, so memory follows the runs in flight and not the files checked so far. Results are byte-identical across runs at a fixed `-j`.
 - `check` leaves function bodies out of the shared tree: a run parses and binds the ones it needs. `build` and `test` parse everything for the emitter, and a body that does not parse sends `check` back to a full load before anything is printed.
 - `check` and `build` follow the tsc command line: semantic errors stay hidden while syntax errors exist. `--all-diagnostics` shows both, as tsc's test harness does.
 - TypeScript 7's tests are fetched by script and never vendored.
@@ -72,6 +74,40 @@ Not worth taking:
 - Lazy `.d.ts` member lists: 0 on VS Code (`notes/mem-lazy-dts-members.md`).
 - Freeing finished leaf files: 321 MB of parse and bind output on VS Code (`notes/mem-free-leaf-files.md`), much of it function bodies that `check` no longer keeps in the shared tree.
 - Types shared between checkers: tsrs's design note ends with no design meeting both constraints (`notes/design-shared-type-layer.md`), which agrees with T10 being worth little.
+
+### pyrlyn/coroutines
+
+Facts come from https://github.com/pyrlyn/coroutines at commit 8b175b24723c352944811b3bf05fe0853bbca64e, checked 2026-11-01. It is a coroutine library for Zig 0.17.0 under GPL-3.0-or-later (`LICENSE`), not a TypeScript compiler, so it has no row in the first table. Since T16 stator-ts's parallel passes run on it.
+
+- `state_machine.runParallel` (`src/state_machine.zig`) hands out work with one atomic cursor and spawns and joins its threads for each call. Before https://github.com/pyrlyn/coroutines/pull/5 stacks were 1 MiB, the caller worked too and a task was not told its worker index, and stator-ts could live with none of the three. That pull adds `stack_size`, `caller_works` and `currentWorker()`.
+- `state_machine.Cursor` is that queue on its own, moved there from stator-ts's `schedule.Cursor` by https://github.com/pyrlyn/coroutines/pull/6. stator-ts reaches it only through `runParallel`.
+- `io.spawnEach` (`src/io.zig`) calls `std.Io.Group.async` once per item. stator-ts does not use it.
+
+VS Code at `-j 16`, five interleaved rounds here, with other sessions keeping the load average near 20. Both builds printed the same bytes.
+
+| Build | Wall | User | Sys | Peak RSS |
+| --- | --- | --- | --- | --- |
+| T13, persistent pool, Zig 0.16 | 2.49-2.96 s | 21.1-21.5 s | 2.4-2.5 s | 2.14-2.19 GB |
+| T16, `runParallel`, Zig 0.17 | 2.50-3.02 s | 20.7-21.4 s | 2.3-2.6 s | 2.14-2.23 GB |
+
+A two-file fixture, 150 alternating rounds here, takes a median of 19.3 ms on T13 and 19.7 ms with `runParallel`; the fastest rounds are 17.2 ms and 17.1 ms. So threads per pass cost a tiny project under 1 ms, and a persistent pool was not worth keeping.
+
+The rows below come from before T16: they reproduce the library's two schemes with stator-ts's own code and `std.Io` on Zig 0.16, built from T13's commit, and the library itself was not run. Same corpus and same `-j`, with another session loading the machine.
+
+| Build | Wall | User | Sys | Peak RSS |
+| --- | --- | --- | --- | --- |
+| stator-ts, persistent pool | 2.12-2.79 s, one round 4.50 s | 19.4-19.9 s | 2.6-3.5 s | 2.16-2.22 GB |
+| Threads per pass, 256 MiB stacks | 2.04-2.62 s | 19.4-19.9 s | 2.5-2.8 s | 2.11-2.18 GB |
+| Threads per pass, 1 MiB stacks | 2.06-2.73 s | 19.3-19.9 s | 2.6-3.5 s | 2.09-2.21 GB |
+| One `std.Io.Group` task per item | 2.74-3.62 s | 18.6-19.3 s | 3.2-7.1 s | 2.12-2.19 GB |
+
+`check` makes 21 passes over VS Code, and a pass costs 0.03-0.04 ms on the pool against 0.21-0.23 ms spawning sixteen threads, about 4 ms a run. One `Group` task per item loses on wall and not on CPU. Once `async_limit` is reached, `Group.async` runs the task on the thread that spawns it (`std/Io/Threaded.zig`, Zig 0.16), so a slow run there stops work being handed out. That build also needs a big-stack thread to spawn from.
+
+1 MiB is not enough. It passes VS Code and all 914 fixtures, but `compiler/binderBinaryExpressionStress` dies with SIGBUS, which costs one of the 8136 TS7 tests. It passes at 256 MiB.
+
+On the library's own workload, 10,000 tasks of 4 times 256 xorshift64 rounds on 16 threads, medians of 25 in three processes here: sequential 16.8-17.8 ms, pool 1.7-2.4 ms, threads per pass 2.1-2.3 ms at 1 MiB and 2.5-2.6 ms at 256 MiB, `std.Io.Group` 13.3-15.7 ms. Its `README.md` publishes 17.3 ms sequential, 1.5 ms for `sm-parallel` and 30.2-32.6 ms for `io-group` on an M3 Max with Zig 0.17. That is another sitting and another compiler, so it shows only the same order.
+
+The move buys no speed, and none was expected. Scheduling is not where stator-ts loses time to tsrs. A checker recurses, so it cannot yield in the middle of a file: a `step` is a whole pass item, and stackless coroutines have nothing to switch. `-j` now stops at the library's `max_threads`, 64.
 
 TS7 suite (`microsoft/TypeScript` at 6161772c1370bdd4a82f808e6823bd755eb1870d, `tsc/testdata`): 13,737 tests, 8,136 pass (59.2%), 18,753 expected diagnostics missed, 9,949 extra. The largest gaps are unimplemented features: JS checking, JSX, node16 resolution modes, unused-symbol reports. A failing test often differs in one diagnostic, so the percentage understates the checker on ordinary code and says nothing about emit.
 
