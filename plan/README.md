@@ -133,6 +133,16 @@ VS Code at `-j 16`, five interleaved rounds here, with other sessions keeping th
 
 A two-file fixture, 150 alternating rounds here, takes a median of 19.3 ms on T13 and 19.7 ms with `runParallel`; the fastest rounds are 17.2 ms and 17.1 ms. So threads per pass cost a tiny project under 1 ms, and a persistent pool was not worth keeping.
 
+The bump from 8b175b2 to 65b74e7 pays off only where a pass has fewer chunks than `-j`. Medians at `-j 16`, interleaved on the same machine, load average 5 to 10, printing the same bytes:
+
+| Project | Rounds, wall / counters | Wall | Cycles | Instructions |
+| --- | --- | --- | --- | --- |
+| `tests/fixtures/function-body-across-files` | 150 / 30 | 18.66 → 17.83 ms | 85.2 → 71.9 M | 201.2 → 186.2 M |
+| `apps/stator/packages/std` | 50 / 15 | 13.18 → 12.44 ms | 67.3 → 52.4 M | 120.8 → 104.3 M |
+| VS Code | 7 / 5 | 1.435 → 1.419 s | 54.4 → 55.3 G | 151.8 → 152.1 G |
+
+The fixture at `-j 4` stays level, 17.71 and 17.82 ms, as it should with few threads to save. On VS Code the wall ranges overlap, so that row is noise.
+
 The rows below come from before T16: they reproduce the library's two schemes with stator-ts's own code and `std.Io` on Zig 0.16, built from T13's commit, and the library itself was not run. Same corpus and same `-j`, with another session loading the machine.
 
 | Build | Wall | User | Sys | Peak RSS |
