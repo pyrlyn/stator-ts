@@ -873,7 +873,7 @@ fn sigsRelated(c: *Checker, s: *Type, t: *Type, rel: Relation, ctor: bool) bool 
 /// again and again, so the copy is kept on the signature.
 fn erasedToShape(c: *Checker, s: *Sig) *Sig {
     if (s.shape) |e| return e;
-    const e = d.instSig(c, s, c.create(Mapper, .{ .kind = .erase }));
+    const e = d.instSig(c, s, c.create(Mapper, .erase));
     s.shape = e;
     return e;
 }
@@ -1209,7 +1209,7 @@ pub fn removeDefinitelyUndefined(c: *Checker, t: *Type) *Type {
 }
 
 pub fn permissive(c: *Checker, t: *Type) *Type {
-    return d.instantiate(c, t, c.create(Mapper, .{ .kind = .erase }));
+    return d.instantiate(c, t, c.create(Mapper, .erase));
 }
 
 pub fn restrictive(_: *Checker, t: *Type) *Type {
@@ -1331,9 +1331,9 @@ pub fn newInferCtx(c: *Checker, params: []const *Type, _: u32) *InferCtx {
     const infos = c.a.alloc(InferInfo, params.len) catch oom();
     for (params, 0..) |p, i| infos[i] = .{ .param = p };
     const ctx = c.a.create(InferCtx) catch oom();
-    const m1 = c.create(Mapper, .{ .kind = .infer, .ctx = ctx });
-    const m2 = c.create(Mapper, .{ .kind = .infer, .ctx = ctx });
-    const m3 = c.create(Mapper, .{ .kind = .infer, .ctx = ctx });
+    const m1 = c.create(Mapper, .{ .infer = ctx });
+    const m2 = c.create(Mapper, .{ .infer = ctx });
+    const m3 = c.create(Mapper, .{ .infer = ctx });
     ctx.* = .{ .infos = infos, .mapper = m1, .non_fixing = m2, .no_default = m3 };
     return ctx;
 }
@@ -1608,6 +1608,7 @@ const Infer = struct {
         if (st.priority == info.priority) {
             const list = if (st.contra and !st.bivariant) &info.contra else &info.candidates;
             for (list.items) |x| if (x == s) return;
+            if (list.capacity == 0) list.* = c.newList(*Type);
             list.append(c.a, s) catch oom();
             info.inferred = null;
         }

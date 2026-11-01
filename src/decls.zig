@@ -1212,26 +1212,27 @@ fn unresolvedType(c: *Checker, name: *Node) *Type {
 // ---- mappers and instantiation ----
 
 pub fn arrayMapper(c: *Checker, from: []*Type, to: []*Type) *Mapper {
-    return c.create(Mapper, .{ .kind = .array, .from = from, .to = to });
+    std.debug.assert(from.len <= to.len);
+    return c.create(Mapper, .{ .array = .{ .from = from, .to = to.ptr } });
 }
 
 pub fn compose(c: *Checker, m1: ?*Mapper, m2: ?*Mapper) ?*Mapper {
     if (m1 == null) return m2;
     if (m2 == null) return m1;
-    return c.create(Mapper, .{ .kind = .composite, .m1 = m1, .m2 = m2 });
+    return c.create(Mapper, .{ .composite = .{ .m1 = m1.?, .m2 = m2.? } });
 }
 
 pub fn mapType(c: *Checker, m: *Mapper, t: *Type) *Type {
-    switch (m.kind) {
-        .array => {
-            for (m.from, 0..) |f, i| if (f == t) return m.to[i];
+    switch (m.*) {
+        .array => |a| {
+            for (a.from, 0..) |f, i| if (f == t) return a.to[i];
             return t;
         },
-        .composite => {
-            const t1 = mapType(c, m.m1.?, t);
-            return if (t1 != t) instantiate(c, t1, m.m2) else mapType(c, m.m2.?, t);
+        .composite => |x| {
+            const t1 = mapType(c, x.m1, t);
+            return if (t1 != t) instantiate(c, t1, x.m2) else mapType(c, x.m2, t);
         },
-        .infer => return relate.inferMap(c, m.ctx.?, t, m),
+        .infer => |ctx| return relate.inferMap(c, ctx, t, m),
         .erase => return if (t.data == .param and !t.data.param.is_this) c.t_any else t,
     }
 }

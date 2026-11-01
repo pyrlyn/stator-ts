@@ -262,15 +262,12 @@ pub const IdsContext = struct {
 
 pub const InternMap = std.HashMapUnmanaged([]const u32, *Type, IdsContext, 80);
 
-pub const MapperKind = enum { array, composite, infer, erase };
-
-pub const Mapper = struct {
-    kind: MapperKind,
-    from: []*Type = &.{},
-    to: []*Type = &.{},
-    m1: ?*Mapper = null,
-    m2: ?*Mapper = null,
-    ctx: ?*InferCtx = null,
+pub const Mapper = union(enum) {
+    /// `to` is as long as `from` or longer.
+    array: struct { from: []*Type, to: [*]*Type },
+    composite: struct { m1: *Mapper, m2: *Mapper },
+    infer: *InferCtx,
+    erase,
 };
 
 pub const Priority = struct {
