@@ -1329,10 +1329,9 @@ test "a root that cannot be read is reported, not dropped" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const tp = try pool.ThreadPool.init(a, std.testing.io, 1);
-    defer tp.deinit();
+    var tp = pool.ThreadPool.init(1);
     const cfg = Config{ .root = "/nonexistent-stator-ts-test" };
-    const p = loadProgram(a, std.testing.io, tp, &cfg, &.{"/nonexistent-stator-ts-test/missing.ts"}, .{ .want_libs = false });
+    const p = loadProgram(a, std.testing.io, &tp, &cfg, &.{"/nonexistent-stator-ts-test/missing.ts"}, .{ .want_libs = false });
     try std.testing.expectEqual(@as(usize, 1), p.missing_roots.items.len);
     try std.testing.expectEqualStrings("/nonexistent-stator-ts-test/missing.ts", p.missing_roots.items[0]);
     try std.testing.expectEqual(@as(usize, 0), p.files.items.len);

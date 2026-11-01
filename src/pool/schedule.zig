@@ -3,19 +3,6 @@ const Allocator = std.mem.Allocator;
 
 pub const Range = struct { start: usize, end: usize };
 
-/// Hands out `[0, total)` in chunks, each index exactly once.
-pub const Cursor = struct {
-    next: std.atomic.Value(usize) = .init(0),
-    total: usize,
-    chunk: usize,
-
-    pub fn claim(c: *Cursor) ?Range {
-        const start = c.next.fetchAdd(c.chunk, .monotonic);
-        if (start >= c.total) return null;
-        return .{ .start = start, .end = @min(start + c.chunk, c.total) };
-    }
-};
-
 /// Small enough that a run of slow items still balances, large enough that workers on small
 /// items do not all fight over one cache line.
 pub fn chunkSize(count: usize, workers: usize) usize {
@@ -39,15 +26,6 @@ pub fn runsByWeight(a: Allocator, weights: []const u64, most: usize, least: u64)
         load = 0;
     }
     return runs.items;
-}
-
-test "cursor hands out every index once" {
-    var c = Cursor{ .total = 10, .chunk = 3 };
-    var seen: [10]u8 = @splat(0);
-    while (c.claim()) |r| for (r.start..r.end) |i| {
-        seen[i] += 1;
-    };
-    for (seen) |s| try std.testing.expectEqual(@as(u8, 1), s);
 }
 
 test "runs cover every index in order and balance" {
