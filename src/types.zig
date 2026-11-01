@@ -456,7 +456,10 @@ pub const Checker = struct {
     instantiation_count: u32 = 0,
     /// End of the last assignment to a binding, as a source offset.
     assigned_syms: IdMap(*Symbol, u32) = .empty,
-    assigned_files: IdMap(*ast.File, void) = .empty,
+    /// Functions and files already searched for assignments.
+    assigned_scopes: IdMap(*Node, void) = .empty,
+    /// The function blocks this checker has parsed for itself.
+    bodies: IdMap(*Node, binder.Body) = .empty,
     /// Contextual types pushed for an expression that is being checked against a candidate.
     ctx_stack: std.ArrayList(CtxEntry) = .empty,
     infer_depth: u32 = 0,

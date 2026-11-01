@@ -22,42 +22,23 @@ pub fn chunkSize(count: usize, workers: usize) usize {
     return @max(1, count / (workers * 8));
 }
 
-/// Cuts `weights` into `runs_per_worker * n` contiguous runs of similar weight, then deals them to
-/// `n` groups, heaviest first, each to the lightest group so far. Fixed for fixed input: ties
-/// keep input order, and every group lists its indices in deal order.
-pub fn partitionByWeight(a: Allocator, weights: []const u64, n: usize, runs_per_worker: usize) ![][]usize {
+/// Cuts `weights` into at most `most` contiguous runs of similar weight, none lighter than
+/// `least` but the last. Fixed for fixed input.
+pub fn runsByWeight(a: Allocator, weights: []const u64, most: usize, least: u64) ![]Range {
     var total: u64 = 0;
     for (weights) |w| total += w;
-    const per_run = total / (n * runs_per_worker) + 1;
-    const Run = struct { start: usize, end: usize, load: u64 };
-    var runs: std.ArrayList(Run) = .empty;
+    const per_run = @max(total / most + 1, least);
+    var runs: std.ArrayList(Range) = .empty;
     var start: usize = 0;
     var load: u64 = 0;
     for (weights, 0..) |w, i| {
         load += w;
         if (load < per_run and i + 1 < weights.len) continue;
-        try runs.append(a, .{ .start = start, .end = i + 1, .load = load });
+        try runs.append(a, .{ .start = start, .end = i + 1 });
         start = i + 1;
         load = 0;
     }
-    std.mem.sort(Run, runs.items, {}, struct {
-        fn less(_: void, l: Run, r: Run) bool {
-            if (l.load != r.load) return l.load > r.load;
-            return l.start < r.start;
-        }
-    }.less);
-    const lists = try a.alloc(std.ArrayList(usize), n);
-    @memset(lists, .empty);
-    const loads = try a.alloc(u64, n);
-    @memset(loads, 0);
-    for (runs.items) |r| {
-        const k = std.mem.indexOfMin(u64, loads);
-        for (r.start..r.end) |i| try lists[k].append(a, i);
-        loads[k] += r.load;
-    }
-    const out = try a.alloc([]usize, n);
-    for (lists, 0..) |l, i| out[i] = l.items;
-    return out;
+    return runs.items;
 }
 
 test "cursor hands out every index once" {
@@ -69,17 +50,29 @@ test "cursor hands out every index once" {
     for (seen) |s| try std.testing.expectEqual(@as(u8, 1), s);
 }
 
-test "partition covers every index and balances" {
+test "runs cover every index in order and balance" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const groups = try partitionByWeight(arena.allocator(), &.{ 90, 10, 10, 10, 10, 10, 10, 10, 10, 10 }, 2, 8);
-    var seen = [_]u8{0} ** 10;
-    var loads = [_]u64{ 0, 0 };
-    for (groups, 0..) |g, k| for (g) |i| {
-        seen[i] += 1;
-        loads[k] += if (i == 0) 90 else 10;
-    };
-    for (seen) |s| try std.testing.expectEqual(@as(u8, 1), s);
-    try std.testing.expectEqual(@as(u64, 90), loads[0]);
-    try std.testing.expectEqual(@as(u64, 90), loads[1]);
+    const runs = try runsByWeight(arena.allocator(), &.{ 90, 10, 10, 10, 10, 10, 10, 10, 10, 10 }, 2, 1);
+    try std.testing.expectEqual(@as(usize, 2), runs.len);
+    try std.testing.expectEqual(Range{ .start = 0, .end = 2 }, runs[0]);
+    try std.testing.expectEqual(Range{ .start = 2, .end = 10 }, runs[1]);
+}
+
+test "a light input stays in fewer runs than it could have" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqual(@as(usize, 1), (try runsByWeight(a, &.{ 10, 10, 10 }, 8, 100)).len);
+    const runs = try runsByWeight(a, &.{ 10, 10, 10 }, 8, 20);
+    try std.testing.expectEqual(@as(usize, 2), runs.len);
+    try std.testing.expectEqual(@as(usize, 3), runs[1].end);
+}
+
+test "never more runs than asked for" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqual(@as(usize, 2), (try runsByWeight(a, &.{ 7, 7, 7 }, 3, 1)).len);
+    try std.testing.expectEqual(@as(usize, 3), (try runsByWeight(a, &.{ 1, 1, 1 }, 64, 1)).len);
 }

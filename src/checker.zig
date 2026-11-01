@@ -117,11 +117,12 @@ fn checkParams(c: *Checker, n: *Node) void {
 fn checkReturnEnd(c: *Checker, n: *Node) void {
     const f = n.data.func;
     const rn = f.ret orelse return;
-    if (f.body == null or f.asterisk) return;
-    const body = f.body.?;
+    if (f.asterisk) return;
+    const b = d.bodyOf(c, n) orelse return;
+    const body = b.block;
     if (body.data != .block) return;
     if (rn.data == .type_predicate and rn.data.type_predicate.asserts) return;
-    const end = f.end_flow orelse return;
+    const end = b.end_flow orelse return;
     if (!flow.isReachable(c, end)) return;
     var t = d.typeFromNode(c, rn);
     if (n.mods.async) t = expr.awaitedOf(c, t);
@@ -166,13 +167,15 @@ fn hasReturnValue(body: *Node) bool {
 
 fn checkFuncBody(c: *Checker, n: *Node) void {
     const f = n.data.func;
+    // First, since a parameter's default can name what the block declares.
+    const fbody = d.bodyOf(c, n);
     expr.assignContext(c, n);
     checkParams(c, n);
     for (f.decorators) |x| _ = expr.checkExpression(c, x.data.decorator.expr);
     if (f.name) |nm| if (nm.data == .computed_name) {
         _ = expr.checkExpression(c, nm.data.computed_name.expr);
     };
-    const body = f.body orelse return;
+    const body = (fbody orelse return).block;
     if (body.data == .block) {
         checkBlock(c, body.data.block.stmts);
         checkReturnEnd(c, n);
@@ -718,9 +721,9 @@ fn checkAbstract(c: *Checker, n: *Node, t: *Type, base: *Type) void {
 fn hasDefiniteInit(c: *Checker, cls: *Node, name: []const u8) bool {
     for (cls.data.class.members) |m| {
         if (m.data != .func or m.data.func.kind != .ctor) continue;
-        const body = m.data.func.body orelse continue;
+        const body = d.bodyOf(c, m) orelse continue;
         var s = InitScan{ .c = c, .name = name };
-        ast.forEachChild(body, &s, scanInit);
+        ast.forEachChild(body.block, &s, scanInit);
         return s.found;
     }
     return false;
@@ -831,6 +834,10 @@ fn isTypeNode(n: *Node) bool {
 /// Every written type gets resolved once, even in positions no expression reaches, because
 /// unknown names and bad arguments in types are reported from there and nowhere else.
 fn walkTypes(c: *Checker, n: *Node) void {
+    if (n.data == .lazy_body) {
+        if (d.bodyOf(c, n.parent.?)) |b| walkTypes(c, b.block);
+        return;
+    }
     if (isAsConst(n)) return;
     if (isTypeNode(n)) _ = d.typeFromNode(c, n);
     if (n.data == .func) {
@@ -858,30 +865,47 @@ fn checkFile(c: *Checker, f: *ast.File) void {
     walkTypes(c, f.root);
 }
 
-const runs_per_worker = 8;
+/// More runs hold less at once and rebuild lib types more often: 24 costs 0.2 s of CPU per worker.
+const runs_per_worker = 24;
+
+/// A fresh checker costs about 20 ms of lib types, which is what 100 KB of source takes to check.
+const least_run_bytes = 256 * 1024;
 
 const Work = struct {
     prog: *project.Program,
-    groups: [][]*ast.File,
+    runs: [][]*ast.File,
     results: [][]Diag,
     arenas: []std.heap.ArenaAllocator,
 };
 
-fn runGroup(w: *Work, _: usize, i: usize) void {
-    w.arenas[i] = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
-    const a = w.arenas[i].allocator();
+/// What a checker builds for one run is little use to the next, while keeping it all costs more
+/// than the AST does, so each run gets a fresh checker and the worker's arena comes back whole.
+fn runFiles(w: *Work, worker: usize, i: usize) void {
+    w.results[i] = &.{};
+    if (w.prog.body_failed.load(.monotonic)) return;
+    const arena = &w.arenas[worker];
+    defer _ = arena.reset(.retain_capacity);
+    const a = arena.allocator();
     const c = Checker.new(a, w.prog);
     d.initGlobals(c);
-    for (w.groups[i]) |f| c.owned.put(a, f, {}) catch oom();
-    for (w.groups[i]) |f| checkFile(c, f);
-    w.results[i] = c.diags.items;
+    for (w.runs[i]) |f| c.owned.put(a, f, {}) catch oom();
+    for (w.runs[i]) |f| checkFile(c, f);
+    w.results[i] = keepDiags(c.diags.items);
 }
 
-/// Files that sit together import the same things, so a run of neighbours keeps each checker's
-/// lazily built types useful and stops every worker rebuilding the whole program. Runs are small
-/// enough that the largest-first deal still balances the workers, and the deal is fixed for a
-/// given job count, so a run can be reproduced.
-fn partition(a: std.mem.Allocator, files: []*ast.File, n: usize) [][]*ast.File {
+/// Workers run these at once, and the driver's allocator is not theirs to share.
+fn keepDiags(diags: []const Diag) []Diag {
+    const a = std.heap.smp_allocator;
+    const out = a.dupe(Diag, diags) catch oom();
+    for (out) |*x| x.msg = a.dupe(u8, x.msg) catch oom();
+    return out;
+}
+
+/// Files that sit together import the same things, so a run of neighbours keeps its checker's
+/// lazily built types useful. Runs outnumber workers so that a free worker can take the next one,
+/// whatever core it landed on, and they are fixed for a given job count whichever worker takes
+/// them, so a run can be reproduced.
+fn partition(a: std.mem.Allocator, files: []*ast.File, most: usize) [][]*ast.File {
     const sorted = a.dupe(*ast.File, files) catch oom();
     std.mem.sort(*ast.File, sorted, {}, struct {
         fn less(_: void, l: *ast.File, r: *ast.File) bool {
@@ -890,12 +914,9 @@ fn partition(a: std.mem.Allocator, files: []*ast.File, n: usize) [][]*ast.File {
     }.less);
     const weights = a.alloc(u64, sorted.len) catch oom();
     for (sorted, weights) |f, *w| w.* = f.src.len + 256;
-    const groups = pool.schedule.partitionByWeight(a, weights, n, runs_per_worker) catch oom();
-    const out = a.alloc([]*ast.File, n) catch oom();
-    for (groups, out) |g, *o| {
-        o.* = a.alloc(*ast.File, g.len) catch oom();
-        for (g, o.*) |i, *f| f.* = sorted[i];
-    }
+    const runs = pool.schedule.runsByWeight(a, weights, most, least_run_bytes) catch oom();
+    const out = a.alloc([]*ast.File, runs.len) catch oom();
+    for (runs, out) |r, *o| o.* = sorted[r.start..r.end];
     return out;
 }
 
@@ -908,13 +929,14 @@ pub fn checkProgram(a: std.mem.Allocator, p: *project.Program) []Diag {
         files.append(a, sf.file) catch oom();
     }
     if (files.items.len == 0) return &.{};
-    const n = @max(1, @min(p.tp.width(), files.items.len));
-    const results = a.alloc([]Diag, n) catch oom();
-    const arenas = a.alloc(std.heap.ArenaAllocator, n) catch oom();
-    var w = Work{ .prog = p, .groups = partition(a, files.items, n), .results = results, .arenas = arenas };
-    pool.parallelForEach(p.tp, n, &w, runGroup);
+    const runs = partition(a, files.items, p.tp.width() * runs_per_worker);
+    const results = a.alloc([]Diag, runs.len) catch oom();
+    const arenas = a.alloc(std.heap.ArenaAllocator, p.tp.width()) catch oom();
+    for (arenas) |*x| x.* = .init(std.heap.smp_allocator);
+    defer for (arenas) |*x| x.deinit();
+    var w = Work{ .prog = p, .runs = runs, .results = results, .arenas = arenas };
+    pool.parallelForEach(p.tp, runs.len, &w, runFiles);
     var out: std.ArrayList(Diag) = .empty;
     for (results) |r| out.appendSlice(a, r) catch oom();
-    // Messages live in the workers' arenas; those outlive the driver's use of them on purpose.
     return out.items;
 }

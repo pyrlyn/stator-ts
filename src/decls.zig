@@ -10,6 +10,7 @@ const expr = @import("expr.zig");
 const relate = @import("relate.zig");
 const flow = @import("flow.zig");
 const emit = @import("emit.zig");
+const parser = @import("parser.zig");
 const checker = @import("checker.zig");
 const Node = ast.Node;
 const Symbol = binder.Symbol;
@@ -34,6 +35,28 @@ fn matches(c: *Checker, s: *Symbol, meaning: u32) ?*Symbol {
     return null;
 }
 
+/// What `n` runs. A block outside the shared tree is read and bound the first time this checker
+/// asks, into its own arena, so memory follows the bodies a run needs and not all there are.
+pub fn bodyOf(c: *Checker, n: *Node) ?binder.Body {
+    const f = n.data.func;
+    const b = f.body orelse return null;
+    if (b.data != .lazy_body) return .{ .block = b, .end_flow = f.end_flow, .locals = n.locals };
+    if (c.bodies.get(n)) |known| return known;
+    const file = fileOf(c, n).?;
+    const parsed = parser.parseBody(c.a, file, n);
+    if (!parsed.ok) c.prog.body_failed.store(true, .monotonic);
+    const bound = binder.bindBody(c.a, file, n, parsed.block);
+    c.bodies.put(c.a, n, bound.body) catch oom();
+    for (bound.diags) |x| reportSpan(c, n, x.start, x.start + x.len, x.code, x.msg);
+    return bound.body;
+}
+
+/// `n`'s scope, which for a function takes in its block once this checker has read that.
+pub fn localsOf(c: *Checker, n: *Node) ?*binder.SymbolTable {
+    if (n.data == .func) if (n.data.func.body) |b| if (b.data == .lazy_body) if (c.bodies.get(n)) |x| return x.locals;
+    return n.locals;
+}
+
 pub fn resolveName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?*Symbol {
     var cur: ?*Node = from;
     var last: ?*Node = null;
@@ -43,7 +66,7 @@ pub fn resolveName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?*S
     }) {
         // `T extends [infer T] ? T : T`: the name is taken in the true branch alone.
         const hidden = n.data == .conditional_type and last != n.data.conditional_type.then;
-        if (!hidden) if (n.locals) |l| if (l.get(name)) |s| {
+        if (!hidden) if (localsOf(c, n)) |l| if (l.get(name)) |s| {
             if (matches(c, s, meaning)) |r| {
                 // A parameter's own scope does not include the function's return type for values.
                 return r;
@@ -1929,8 +1952,31 @@ pub fn paramTypeAt(c: *Checker, s: *Sig, i: usize) *Type {
     return t;
 }
 
+/// The context of a lambda under a union of functions: their parameters agree, and it may return
+/// what any of them wants. Members sort by type id, so none of them may stand for the rest.
+pub fn unionOfReturns(c: *Checker, sigs: []*Sig) *Sig {
+    const q = c.create(Sig, sigs[0].*);
+    q.ret = null;
+    q.pred = null;
+    q.pred_done = false;
+    q.erased = null;
+    q.shape = null;
+    q.composite = sigs;
+    return q;
+}
+
 pub fn returnOf(c: *Checker, s: *Sig) *Type {
     if (s.ret) |t| return t;
+    if (s.composite.len > 0) {
+        if (s.ret_resolving) return c.t_err;
+        s.ret_resolving = true;
+        defer s.ret_resolving = false;
+        var rets = c.newList(*Type);
+        for (s.composite) |x| rets.append(c.a, returnOf(c, x)) catch oom();
+        const t = expr.reduceSubtypes(c, rets.items);
+        s.ret = t;
+        return t;
+    }
     if (s.target) |x| {
         if (s.ret_resolving) return c.t_err;
         s.ret_resolving = true;

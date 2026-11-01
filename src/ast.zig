@@ -63,7 +63,6 @@ pub const Func = struct {
     body: ?*Node = null,
     /// Null when control cannot fall off the end; set by the binder.
     end_flow: ?*binder.FlowNode = null,
-    ret_flow: []*binder.FlowNode = &.{},
 };
 
 pub const Class = struct {
@@ -203,6 +202,10 @@ pub const Data = union(enum) {
     jsx_text: []const u8,
 
     block: struct { stmts: []*Node },
+    /// A function's block left unparsed: most of a program is function bodies, and most of those
+    /// matter to one checker only. The node's span finds the text and its `flow` is where the
+    /// block starts. `specs` are the modules the block names, which must load with the program.
+    lazy_body: struct { specs: []const *Node = &.{} },
     var_stmt: struct { list: *Node },
     var_list: struct { kind: VarKind, decls: []*Node },
     var_decl: *VarDecl,
@@ -335,6 +338,11 @@ pub fn forEachChild(n: *Node, ctx: anytype, comptime visit: anytype) void {
     }
 }
 
+/// Both kinds of function block, as opposed to the expression an arrow can return directly.
+pub fn isBlockBody(n: *const Node) bool {
+    return n.data == .block or n.data == .lazy_body;
+}
+
 pub const File = struct {
     path: []const u8,
     src: []const u8,
@@ -354,6 +362,8 @@ pub const File = struct {
     augmentations: []*binder.Symbol = &.{},
     global_augs: []*binder.Symbol = &.{},
     umd_name: ?[]const u8 = null,
+    /// A body had to be parsed while loading and has a syntax error.
+    bad_body: bool = false,
 
     pub const Reference = struct { kind: enum { path, lib, types }, value: []const u8 };
 

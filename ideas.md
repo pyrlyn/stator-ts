@@ -3,5 +3,9 @@
 - Native backend.
 - Report TS5056 when `foo.ts` and `foo.tsx` map to one output file.
 - Find out why evaluating conditional types over mapped types that mention only `this` breaks `this is` narrowing on VS Code; `isGeneric` still treats them as generic for that reason.
-- Bring peak memory on VS Code down to tsc-rs's level: 9.8 GB against 7 GB, 8.7 GB of it in a single checker. The cuts left are building members of instantiated generics on demand, and freeing checker memory file by file, which needs an owner for every cached type.
+- Catch tsrs on time: checking VS Code takes about 1.65 times as long, on one thread and on sixteen, so the work is per thread. Hash maps are 19% of busy time and `relate.cached` is the largest function, so start with the relation cache and name lookups, then flow and inference-walk memos. `plan/README.md` has the profile.
+- Build members of instantiated generics on demand. tsrs instantiates 1,287,137 of 8,810,354 declared members on VS Code. Diagnostics must stay the same at every `-j`.
+- Try profile-guided optimization for release binaries: tsrs measures -13.5% instructions. Find out first whether Zig can do it.
+- Follow TypeScript 7.1: it reports 11 more errors on VS Code, all around `IConfigurationResolverService`, where a distributed `T` no longer relates to a non-distributed one.
+- Close the tsc gaps found while writing T13's fixtures: `let` over a parameter gives TS2451 where tsc gives TS2300; a `var` in a body is visible to a parameter initializer, TS2454 where tsc gives TS2304; TS2403 is missed for a `var` redeclaring a parameter with another type; a function declaration that only throws infers `never` where tsc infers `void`; TS7023 is missed for a self-referencing return; TS2451 is not reported in `lib.dom` for a script's `top`; grammar errors TS1184, TS1232, TS1234 and TS1235 are missed; TS2307 is not reported for `import c = require` in a body.
 - Print aliases, index parameter names and method members as tsc does, so message text matches and not just the code.

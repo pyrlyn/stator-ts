@@ -775,6 +775,7 @@ const Loading = struct {
     cfg: *const Config,
     list: []*SourceFile,
     lib_dir: ?[]const u8,
+    lazy_bodies: bool,
 };
 
 fn libFile(a: Allocator, io: Io, dir: []const u8, name: []const u8) []const u8 {
@@ -823,7 +824,7 @@ fn loadOne(l: *const Loading, _: usize, i: usize) void {
     };
     // tsc types a JSON module as `export =` of its one value.
     if (std.mem.endsWith(u8, path, ".json")) src = std.mem.concat(a, u8, &.{ "export = ", src, ";" }) catch oom();
-    const f = parser.parse(a, path, src);
+    const f = if (l.lazy_bodies) parser.parseLazily(a, path, src) else parser.parse(a, path, src);
     binder.bindFile(a, f);
     sf.file = f;
     sf.pending = a.alloc(?[]const u8, f.module_specs.len) catch oom();
@@ -864,6 +865,14 @@ pub const Program = struct {
     diags: std.ArrayList(ProgramDiag) = .empty,
     /// Roots that could not be read: tsc's TS6053, which has no position and is reported by the caller.
     missing_roots: std.ArrayList([]const u8) = .empty,
+    lazy_bodies: bool = false,
+    /// A body left for later has a syntax error, which needs every other one reported with it.
+    body_failed: std.atomic.Value(bool) = .init(false),
+
+    pub fn hasSyntaxErrors(p: *const Program) bool {
+        for (p.files.items) |sf| if (!sf.is_lib and (sf.file.diags.len > 0 or sf.file.bad_body)) return true;
+        return false;
+    }
 
     pub const ProgramDiag = struct { file: *ast.File, start: u32, len: u32, code: u32, msg: []const u8 };
 
@@ -940,7 +949,7 @@ pub const Program = struct {
         for (roots) |r| _ = p.add(r, &level, false, true);
         p.addTypeRoots(&level);
         while (level.items.len > 0) {
-            const l = Loading{ .io = p.io, .fs = &p.fs, .cfg = p.cfg, .list = level.items, .lib_dir = p.lib_dir };
+            const l = Loading{ .io = p.io, .fs = &p.fs, .cfg = p.cfg, .list = level.items, .lib_dir = p.lib_dir, .lazy_bodies = p.lazy_bodies };
             pool.parallelFor(p.tp, level.items.len, &l, loadOne);
             var next: std.ArrayList(*SourceFile) = .empty;
             for (level.items) |sf| {
@@ -1247,7 +1256,7 @@ pub const Program = struct {
     }
 };
 
-pub const LoadOptions = struct { lib_dir_flag: ?[]const u8 = null, lib_dir_env: ?[]const u8 = null, want_libs: bool = true };
+pub const LoadOptions = struct { lib_dir_flag: ?[]const u8 = null, lib_dir_env: ?[]const u8 = null, want_libs: bool = true, lazy_bodies: bool = false };
 
 fn findLibDir(a: Allocator, io: Io, root: []const u8, o: LoadOptions) ?[]const u8 {
     if (o.lib_dir_flag) |d| return d;
@@ -1293,7 +1302,7 @@ pub fn loadProgram(a: Allocator, io: Io, tp: *pool.ThreadPool, cfg: *const Confi
     const p = a.create(Program) catch oom();
     const g = a.create(SymbolTable) catch oom();
     g.* = .{};
-    p.* = .{ .a = a, .io = io, .fs = .{ .io = io }, .cfg = cfg, .tp = tp, .globals = g };
+    p.* = .{ .a = a, .io = io, .fs = .{ .io = io }, .cfg = cfg, .tp = tp, .globals = g, .lazy_bodies = o.lazy_bodies };
     p.lib_dir = findLibDir(a, io, cfg.root, o);
     if (p.lib_dir) |d| p.lib_dir_real = Io.Dir.cwd().realPathFileAlloc(io, d, a) catch d;
     var libs: std.ArrayList([]const u8) = .empty;

@@ -29,18 +29,61 @@ fn oom() noreturn {
 }
 
 pub fn parse(a: Allocator, path: []const u8, src: []const u8) *ast.File {
+    return parseFile(a, path, src, false).?;
+}
+
+/// Like `parse`, except that function blocks stay unparsed for `parseBody` to fill in. JSX text is
+/// not made of tokens, so a block holding some could not be skipped by looking at them.
+pub fn parseLazily(a: Allocator, path: []const u8, src: []const u8) *ast.File {
+    const lazy = for ([_][]const u8{ ".ts", ".mts", ".cts" }) |x| {
+        if (std.mem.endsWith(u8, path, x)) break true;
+    } else false;
+    return parseFile(a, path, src, lazy) orelse parse(a, path, src);
+}
+
+pub const Body = struct {
+    block: *Node,
+    /// False when the block has a syntax error or ends elsewhere than the skip found, which also
+    /// proves every skip that passes: this runs for each body of each file the program checks.
+    ok: bool,
+};
+
+/// Parses the block `parseLazily` skipped for the function `n`.
+pub fn parseBody(a: Allocator, file: *const ast.File, n: *Node) Body {
+    const f = n.data.func;
+    const skipped = f.body.?;
+    var p = Parser{
+        .a = a,
+        .lx = .{ .src = file.src, .a = a, .pos = skipped.start },
+        .tsx = false,
+        .ambient = false,
+        .in_async = n.mods.async,
+        .in_gen = f.asterisk,
+        .in_func = true,
+    };
+    _ = p.lx.next();
+    const block = p.parseBlock();
+    setParents(block);
+    block.parent = n;
+    return .{ .block = block, .ok = block.end == skipped.end and p.lx.diags.items.len == 0 };
+}
+
+/// Null when `lazy` could not skip a block; only then is there anything to do over.
+fn parseFile(a: Allocator, path: []const u8, src: []const u8, lazy: bool) ?*ast.File {
     const is_dts = std.mem.endsWith(u8, path, ".d.ts") or std.mem.endsWith(u8, path, ".d.mts") or std.mem.endsWith(u8, path, ".d.cts") or std.mem.endsWith(u8, path, ".json");
     var p = Parser{
         .a = a,
         .lx = .{ .src = src, .a = a },
         .tsx = std.mem.endsWith(u8, path, ".tsx") or std.mem.endsWith(u8, path, ".jsx"),
         .ambient = is_dts,
+        .lazy = lazy and !is_dts,
     };
     _ = p.lx.next();
     var stmts: NodeList = .empty;
     while (p.t() != .eof) {
         p.parseListStatement(&stmts);
     }
+    if (p.skip_failed) return null;
     const root = p.mk(0, .{ .source_file = .{ .stmts = stmts.items } });
     root.end = @intCast(src.len);
     setParents(root);
@@ -146,6 +189,8 @@ const Parser = struct {
     not_arrow: std.AutoHashMapUnmanaged(u32, void) = .empty,
     strip: std.ArrayList(Span) = .empty,
     pending_new_args: ?ast.TypeList = null,
+    lazy: bool = false,
+    skip_failed: bool = false,
 
     fn t(p: *const Parser) Tok {
         return p.lx.tok;
@@ -983,11 +1028,97 @@ const Parser = struct {
         p.in_gen = f.asterisk;
         p.in_func = true;
         p.no_in = false;
-        f.body = p.parseBlock();
+        f.body = p.parseFunctionBlock();
         p.in_async = save_a;
         p.in_gen = save_g;
         p.in_func = save_f;
         p.no_in = save_in;
+    }
+
+    fn parseFunctionBlock(p: *Parser) *Node {
+        return if (p.lazy and !p.ambient and p.t() == .l_brace) p.skipBlock() else p.parseBlock();
+    }
+
+    /// Finds where a block ends from its tokens, far cheaper than parsing what is in it. The one
+    /// thing tokens leave open is whether a `/` starts a regex; a wrong guess can only matter if
+    /// that regex holds quotes or braces, and then lexing fails here or `parseBody` sees it.
+    fn skipBlock(p: *Parser) *Node {
+        const s = p.lx.start;
+        const errors = p.lx.diags.items.len;
+        var specs: NodeList = .empty;
+        var depth: u32 = 0;
+        // The brace depth at which each open template substitution started.
+        var subst: [32]u32 = undefined;
+        var open: usize = 0;
+        var prev: Tok = .semi;
+        var tok = p.t();
+        while (true) {
+            switch (tok) {
+                .eof => {
+                    p.skip_failed = true;
+                    break;
+                },
+                .l_brace => depth += 1,
+                .r_brace => {
+                    if (open > 0 and subst[open - 1] == depth) {
+                        tok = p.lx.rescanTemplate();
+                        if (tok == .template_tail) open -= 1;
+                    } else {
+                        depth -= 1;
+                        if (depth == 0) break;
+                    }
+                },
+                .template_head => {
+                    if (open == subst.len) {
+                        p.skip_failed = true;
+                        break;
+                    }
+                    subst[open] = depth;
+                    open += 1;
+                },
+                .slash, .slash_assign => if (regexCanFollow(prev)) {
+                    tok = p.lx.rescanRegex();
+                },
+                .kw_import => {
+                    const member = prev == .dot or prev == .question_dot;
+                    prev = tok;
+                    tok = p.lx.next();
+                    if (member) continue;
+                    if (tok == .dot) {
+                        prev = tok;
+                        tok = p.lx.next();
+                        if (tok == .identifier and std.mem.eql(u8, p.lx.text(), "meta")) p.saw_import_meta = true;
+                    } else if (tok == .l_paren) {
+                        prev = tok;
+                        tok = p.lx.next();
+                        if (tok == .string) {
+                            const spec = p.mk(p.lx.start, .{ .string_lit = p.lx.value });
+                            spec.end = p.lx.pos;
+                            p.push(&specs, spec);
+                        }
+                    } else {
+                        p.skip_failed = true;
+                    }
+                    continue;
+                },
+                // Whatever these start reaches past the block, so the file has to see it.
+                .kw_export, .kw_declare => p.skip_failed = true,
+                else => {},
+            }
+            prev = tok;
+            tok = p.lx.next();
+        }
+        p.next();
+        if (p.lx.diags.items.len != errors) p.skip_failed = true;
+        return p.mk(s, .{ .lazy_body = .{ .specs = specs.items } });
+    }
+
+    fn regexCanFollow(prev: Tok) bool {
+        return switch (prev) {
+            .numeric, .bigint, .string, .no_subst_template, .template_tail, .regex, .private_name => false,
+            .r_paren, .r_bracket, .plus2, .minus2, .kw_this, .kw_super, .kw_null, .kw_true, .kw_false => false,
+            else => !prev.isIdentifierLike(),
+        };
     }
 
     fn parseParams(p: *Parser) []*Node {
@@ -1619,7 +1750,7 @@ const Parser = struct {
         if (p.t() == .l_brace or p.startsPlainStatement()) {
             const save_in = p.no_in;
             p.no_in = false;
-            f.body = p.parseBlock();
+            f.body = p.parseFunctionBlock();
             p.no_in = save_in;
         } else {
             f.body = p.parseAssignment();
@@ -3013,4 +3144,81 @@ test "reference attributes need a name boundary" {
     try std.testing.expectEqual(@as(?[]const u8, null), attrValue("/// <reference no-default-lib=\"true\"/>", "lib"));
     try std.testing.expectEqualStrings("es2015", attrValue("/// <reference lib=\"es2015\" />", "lib").?);
     try std.testing.expectEqualStrings("./a.ts", attrValue("/// <reference path='./a.ts' lib=\"dom\" />", "path").?);
+}
+
+fn bodyOfFirst(f: *const ast.File) *Node {
+    return f.root.data.source_file.stmts[0].data.func.body.?;
+}
+
+test "a skipped body ends where parsing it does" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const bodies = [_][]const u8{
+        "{ return 1 / 2 / 3; }",
+        "{ i++ / 2; (a) / b / c; [a][0] / b / c; }",
+        "{ const a = /[/}'\"`]/.test('}'); }",
+        "{ return x ? y / 2 : /}/; }",
+        "{ return `a${`b${1}c${{ a: 1 }.a}`}d}`; }",
+        "{ return `}${\"}\"}{`; }",
+        "{ // }\n /* } */ }",
+        "{ if (a) { b(); } else { c({ d: {} }); } }",
+    };
+    for (bodies) |body| {
+        const src = std.fmt.allocPrint(a, "function f() {s}\nconst after = 1;", .{body}) catch unreachable;
+        const f = parseLazily(a, "t.ts", src);
+        try std.testing.expectEqual(@as(usize, 0), f.diags.len);
+        try std.testing.expectEqual(@as(usize, 2), f.root.data.source_file.stmts.len);
+        try std.testing.expect(bodyOfFirst(f).data == .lazy_body);
+        try std.testing.expect(parseBody(a, f, f.root.data.source_file.stmts[0]).ok);
+    }
+}
+
+test "a skip hands back what tokens cannot settle" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const bodies = [_][]const u8{
+        "{ if (x) /'/.test(y); }",
+        "{ export const a = 1; }",
+        "{ import a = require('a'); }",
+        "{ declare const a: number; }",
+    };
+    for (bodies) |body| {
+        const src = std.fmt.allocPrint(a, "function f() {s}", .{body}) catch unreachable;
+        try std.testing.expect(bodyOfFirst(parseLazily(a, "t.ts", src)).data == .block);
+    }
+}
+
+test "only a body that parses to the same end is accepted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for ([_][]const u8{ "function f() { return 1 +; }", "function f() { const = 2; }" }) |src| {
+        const f = parseLazily(a, "t.ts", src);
+        try std.testing.expectEqual(@as(usize, 0), f.diags.len);
+        try std.testing.expect(!parseBody(a, f, f.root.data.source_file.stmts[0]).ok);
+    }
+}
+
+test "bodies stay in code that needs them whole" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect(bodyOfFirst(parseLazily(a, "t.tsx", "function f() { return <a>{'}'}</a>; }")).data == .block);
+    try std.testing.expect(bodyOfFirst(parseLazily(a, "t.js", "function f() {}")).data == .block);
+    try std.testing.expect(bodyOfFirst(parse(a, "t.ts", "function f() {}")).data == .block);
+}
+
+test "a skipped body still shows what the file needs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f = parseLazily(a, "t.ts", "function f() { import.meta.url; x.import('./c'); y?.import('./d'); }");
+    try std.testing.expect(f.is_module);
+    try std.testing.expectEqual(@as(usize, 0), bodyOfFirst(f).data.lazy_body.specs.len);
+    const specs = bodyOfFirst(parseLazily(a, "t.ts", "function f() { import('./a'); let b: typeof import('./b'); }")).data.lazy_body.specs;
+    try std.testing.expectEqual(@as(usize, 2), specs.len);
+    try std.testing.expectEqualStrings("./a", specs[0].data.string_lit);
+    try std.testing.expectEqualStrings("./b", specs[1].data.string_lit);
 }

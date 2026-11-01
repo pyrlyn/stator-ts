@@ -106,7 +106,7 @@ fn suggestIn(c: *Checker, map: anytype, name: []const u8, meaning: u32, primitiv
 pub fn suggestName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?[]const u8 {
     var cur: ?*Node = from;
     while (cur) |n| : (cur = n.parent) {
-        if (n.locals) |l| if (suggestIn(c, l.map, name, meaning, false)) |s| return s;
+        if (d.localsOf(c, n)) |l| if (suggestIn(c, l.map, name, meaning, false)) |s| return s;
         if (n.data == .module_decl) if (n.symbol) |sym| if (sym.resolve().exports) |e| {
             if (suggestIn(c, e.map, name, meaning, false)) |s| return s;
         };
@@ -217,13 +217,26 @@ pub fn isAssignOp(op: Tok) bool {
     return @intFromEnum(op) >= @intFromEnum(Tok.assign) and @intFromEnum(op) <= @intFromEnum(Tok.qq_assign);
 }
 
-fn markAssignments(c: *Checker, f: *ast.File) void {
-    const gop = c.assigned_files.getOrPut(c.a, f) catch oom();
-    if (gop.found_existing) return;
-    walkAssign(c, f.root);
+/// Only code in a binding's scope can assign to it, so a local costs its outermost function and
+/// not every block in the file, which would each have to be read.
+fn markAssignments(c: *Checker, s: *Symbol) void {
+    for (s.decls) |x| {
+        var scope = x;
+        var top: ?*Node = null;
+        while (scope.parent) |p| : (scope = p) {
+            if (p.data == .func) top = p;
+        }
+        const from = top orelse scope;
+        const gop = c.assigned_scopes.getOrPut(c.a, from) catch oom();
+        if (!gop.found_existing) walkAssign(c, from);
+    }
 }
 
 fn walkAssign(c: *Checker, n: *Node) void {
+    if (n.data == .lazy_body) {
+        if (d.bodyOf(c, n.parent.?)) |b| walkAssign(c, b.block);
+        return;
+    }
     if (n.data == .identifier and isAssignTarget(n)) {
         if (symbolOf(c, n)) |s0| {
             const s = s0.resolve();
@@ -253,7 +266,7 @@ fn assignmentEnd(n: *Node, s: *Symbol) u32 {
 }
 
 fn isPastLastAssignment(c: *Checker, s: *Symbol, n: *Node) bool {
-    for (s.decls) |x| if (d.fileOf(c, x)) |f| markAssignments(c, f);
+    markAssignments(c, s);
     const last = c.assigned_syms.get(s.resolve()) orelse return true;
     return last < n.start;
 }
@@ -267,14 +280,14 @@ fn neverInitialized(c: *Checker, s: *Symbol) bool {
     if (v.init != null or v.excl or l.data != .var_list) return false;
     if (l.parent) |p| if (p.data == .for_of or p.data == .for_in) return false;
     if (!isMutableLocal(c, s)) return false;
-    for (s.decls) |x| if (d.fileOf(c, x)) |f| markAssignments(c, f);
+    markAssignments(c, s);
     return !c.assigned_syms.contains(s.resolve());
 }
 
 pub fn isStableBinding(c: *Checker, s: *Symbol) bool {
     if (isConstVar(s)) return true;
     if (!isMutableLocal(c, s)) return false;
-    for (s.decls) |x| if (d.fileOf(c, x)) |f| markAssignments(c, f);
+    markAssignments(c, s);
     return !c.assigned_syms.contains(s.resolve());
 }
 
@@ -641,7 +654,7 @@ fn aliasIsTypeOnly(s: *Symbol) bool {
 
 /// Builds `this.<name>` as read at the end of `ctor`, for a question no source node asks.
 pub fn thisAccess(c: *Checker, name: *Node, ctor: *Node) ?*Node {
-    const end = ctor.data.func.end_flow orelse return null;
+    const end = (d.bodyOf(c, ctor) orelse return null).end_flow orelse return null;
     const this = c.a.create(Node) catch oom();
     const ref = c.a.create(Node) catch oom();
     this.* = .{ .start = ctor.start, .end = ctor.start, .parent = ref, .data = .this_expr };
@@ -1649,7 +1662,7 @@ pub fn isSensitive(n0: *Node) bool {
             if (f.kind != .arrow and f.kind != .expr and f.kind != .method) return false;
             for (f.params) |p| if (isUntypedParam(p)) return true;
             if (f.kind == .arrow and f.type_params.items.len == 0 and f.ret == null) {
-                if (f.body) |b| if (b.data != .block) return isSensitive(b);
+                if (f.body) |b| if (!ast.isBlockBody(b)) return isSensitive(b);
             }
             return false;
         },
@@ -1678,15 +1691,16 @@ pub fn isSensitive(n0: *Node) bool {
 fn sigFromType(c: *Checker, t0: *Type, fnode: *Node) ?*Sig {
     const t = t0;
     if (t.data == .union_) {
-        var found: ?*Sig = null;
+        var sigs = c.newList(*Sig);
         for (t.data.union_) |m| {
             if (m.data == .null or m.data == .undefined) continue;
             const s = sigFromType(c, m, fnode) orelse continue;
-            if (found) |x| {
-                if (!sameShape(c, x, s)) return null;
-            } else found = s;
+            if (sigs.items.len > 0 and !sameShape(c, sigs.items[0], s)) return null;
+            sigs.append(c.a, s) catch oom();
         }
-        return found;
+        if (sigs.items.len == 0) return null;
+        if (sigs.items.len == 1) return sigs.items[0];
+        return d.unionOfReturns(c, sigs.items);
     }
     if (t.data == .param or t.data == .access or t.data == .cond) {
         const k = d.baseConstraint(c, t);
@@ -1942,7 +1956,7 @@ pub fn predicateFromBody(c: *Checker, s: *Sig, fnode: *Node) ?*T.Pred {
     const f = fnode.data.func;
     if (s.params.len == 0 or fnode.mods.async or f.asterisk) return null;
     if (f.kind == .getter or f.kind == .setter or f.kind == .ctor) return null;
-    const body = f.body orelse return null;
+    if (f.body == null) return null;
     const offset: usize = if (d.thisParam(fnode) != null) 1 else 0;
     // A lambda typed from context has no parameter types yet; it is asked again once it does.
     for (f.params[offset..]) |p| {
@@ -1951,15 +1965,16 @@ pub fn predicateFromBody(c: *Checker, s: *Sig, fnode: *Node) ?*T.Pred {
             return null;
         }
     }
+    const body = d.bodyOf(c, fnode).?;
     var single: ?*Node = null;
-    if (body.data != .block) {
-        single = body;
+    if (body.block.data != .block) {
+        single = body.block;
     } else {
         var r = Returns{ .c = c };
-        ast.forEachChild(body, &r, collectReturns);
+        ast.forEachChild(body.block, &r, collectReturns);
         if (r.list.items.len != 1) return null;
         single = r.list.items[0].data.return_stmt.expr orelse return null;
-        if (f.end_flow) |e| if (flow.isReachable(c, e)) return null;
+        if (body.end_flow) |e| if (flow.isReachable(c, e)) return null;
     }
     const e = binder.stripParens(single.?);
     if (checkSilent(c, e) != c.t_boolean) return null;
@@ -1992,7 +2007,7 @@ pub fn constInit(s: *Symbol) ?*Node {
 
 pub fn returnTypeFromBody(c: *Checker, fnode: *Node) *Type {
     const f = fnode.data.func;
-    const body = f.body orelse return c.t_any;
+    const body = d.bodyOf(c, fnode) orelse return c.t_any;
     c.silent += 1;
     defer c.silent -= 1;
     // A body has one answer, whichever pass over which call happens to ask first.
@@ -2002,11 +2017,11 @@ pub fn returnTypeFromBody(c: *Checker, fnode: *Node) *Type {
     const is_async = fnode.mods.async;
     var parts = c.newList(*Type);
     var r = Returns{ .c = c };
-    if (body.data != .block) {
-        parts.append(c.a, checkExpr(c, body)) catch oom();
+    if (body.block.data != .block) {
+        parts.append(c.a, checkExpr(c, body.block)) catch oom();
     } else {
-        ast.forEachChild(body, &r, collectReturns);
-        var implicit = if (f.end_flow) |e| flow.isReachable(c, e) else false;
+        ast.forEachChild(body.block, &r, collectReturns);
+        var implicit = if (body.end_flow) |e| flow.isReachable(c, e) else false;
         for (r.list.items) |x| {
             if (x.data.return_stmt.expr) |e| {
                 if (!flow.isReachable(c, x.flow)) continue;
@@ -2031,7 +2046,7 @@ pub fn returnTypeFromBody(c: *Checker, fnode: *Node) *Type {
     if (is_async) for (parts.items) |*x| {
         x.* = awaitedOf(c, x.*);
     };
-    const t = widenFor(c, fnode, body, reduceSubtypes(c, parts.items), if (f.asterisk) generatorContext(c, fnode, .ret) else literalReturnContext(c, fnode));
+    const t = widenFor(c, fnode, body.block, reduceSubtypes(c, parts.items), if (f.asterisk) generatorContext(c, fnode, .ret) else literalReturnContext(c, fnode));
     if (f.asterisk) {
         var ys = c.newList(*Type);
         for (r.yields.items) |y| {
@@ -2040,7 +2055,7 @@ pub fn returnTypeFromBody(c: *Checker, fnode: *Node) *Type {
                 ys.append(c.a, if (x.expr) |e| iteratedOf(c, e, checkExpr(c, e), is_async) else c.t_any) catch oom();
             } else if (x.expr) |e| ys.append(c.a, checkExpr(c, e)) catch oom() else ys.append(c.a, c.t_undefined) catch oom();
         }
-        const y = if (ys.items.len == 0) c.t_never else widenFor(c, fnode, body, c.getUnion(ys.items), generatorContext(c, fnode, .yield));
+        const y = if (ys.items.len == 0) c.t_never else widenFor(c, fnode, body.block, c.getUnion(ys.items), generatorContext(c, fnode, .yield));
         return d.generic(c, if (is_async) "AsyncGenerator" else "Generator", &.{ y, t, generatorContext(c, fnode, .next) orelse c.t_err });
     }
     return if (is_async) promiseOf(c, t) else t;
@@ -3764,7 +3779,7 @@ fn elaborate(c: *Checker, n0: *Node, s: *Type, t: *Type) bool {
             // A lambda's single returned expression is where the blame belongs.
             if (f.kind != .arrow or f.ret != null) return false;
             const body = f.body orelse return false;
-            if (body.data == .block) return false;
+            if (ast.isBlockBody(body)) return false;
             const ss = d.callSigs(c, s);
             const ts = d.callSigs(c, t);
             if (ss.len != 1 or ts.len != 1) return false;

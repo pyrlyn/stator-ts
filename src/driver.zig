@@ -129,7 +129,21 @@ fn lessDiag(_: void, l: Printed, r: Printed) bool {
 
 pub fn run(a: Allocator, io: Io, o: Options, w: *Io.Writer) !u8 {
     const roots = project.projectFiles(a, io, o.tp, o.cfg);
-    const p = project.loadProgram(a, io, o.tp, o.cfg, roots, .{ .lib_dir_flag = o.lib_dir, .lib_dir_env = o.lib_env });
+    // The emitter walks every body, so only a run that writes nothing can leave them unparsed.
+    if (!o.emit or (o.cfg.options.noEmit orelse false)) {
+        const p = load(a, io, o, roots, true);
+        if (!p.hasSyntaxErrors() and p.missing_roots.items.len == 0) if (try report(a, io, o, p, w)) |code| return code;
+    }
+    // tsc lists every syntax error at once and then stops, so the checker cannot be what finds them.
+    return (try report(a, io, o, load(a, io, o, roots, false), w)).?;
+}
+
+fn load(a: Allocator, io: Io, o: Options, roots: []const []const u8, lazy_bodies: bool) *Program {
+    return project.loadProgram(a, io, o.tp, o.cfg, roots, .{ .lib_dir_flag = o.lib_dir, .lib_dir_env = o.lib_env, .lazy_bodies = lazy_bodies });
+}
+
+/// Null, with nothing written, when a body left for later turned out to have a syntax error.
+fn report(a: Allocator, io: Io, o: Options, p: *Program, w: *Io.Writer) !?u8 {
     if (p.lib_dir == null and !(o.cfg.options.noLib orelse false)) {
         try w.writeAll("error: cannot find lib.d.ts; pass --lib-dir, set STATOR_TS_LIB, or install typescript in the project\n");
         return 1;
@@ -137,11 +151,7 @@ pub fn run(a: Allocator, io: Io, o: Options, w: *Io.Writer) !u8 {
 
     // tsc reports a missing root as a config-level error and, like a syntax error, holds back
     // the semantic diagnostics while one exists.
-    var count: u32 = 0;
-    for (p.missing_roots.items) |path| {
-        try w.print("error TS6053: File '{s}' not found.\n", .{path});
-        count += 1;
-    }
+    var count: u32 = @intCast(p.missing_roots.items.len);
 
     var all: std.ArrayList(Printed) = .empty;
     for (p.files.items) |sf| {
@@ -157,8 +167,10 @@ pub fn run(a: Allocator, io: Io, o: Options, w: *Io.Writer) !u8 {
         }
         for (p.diags.items) |d| if (!(d.file.is_dts and skip_lib)) all.append(a, .{ .file = d.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
         for (checker.checkProgram(a, p)) |d| all.append(a, .{ .file = d.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
+        if (p.body_failed.load(.monotonic)) return null;
     }
 
+    for (p.missing_roots.items) |path| try w.print("error TS6053: File '{s}' not found.\n", .{path});
     std.mem.sort(Printed, all.items, {}, lessDiag);
     const cwd = try Io.Dir.cwd().realPathFileAlloc(io, ".", a);
     var prev: ?Printed = null;

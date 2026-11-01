@@ -4,6 +4,7 @@ const ast = @import("ast.zig");
 const lexer = @import("lexer.zig");
 const decls = @import("decls.zig");
 const emit = @import("emit.zig");
+const parser = @import("parser.zig");
 const Node = ast.Node;
 
 fn oom() noreturn {
@@ -145,6 +146,15 @@ const NamedLabel = struct { name: []const u8, brk: *Label, cont: ?*Label, parent
 
 const VarScope = enum { function, block };
 
+/// A function's block as `bindBody` left it for one checker.
+pub const Body = struct {
+    block: *Node,
+    /// Null when control cannot fall off the end.
+    end_flow: ?*FlowNode,
+    /// The function's scope with the block's declarations in it.
+    locals: ?*SymbolTable,
+};
+
 pub const Binder = struct {
     a: Allocator,
     file: *ast.File,
@@ -168,6 +178,10 @@ pub const Binder = struct {
     in_ambient: bool = false,
     /// In an ambient module without `export` statements every declaration is exported.
     export_context: bool = false,
+    /// The function whose block `bindBody` is binding: part of a tree others are reading.
+    frozen: ?*Node = null,
+    /// `frozen`'s scope, as this block adds to it.
+    frozen_locals: ?*SymbolTable = null,
 
     fn mkSym(b: *Binder, name: []const u8, flags: u32) *Symbol {
         const s = b.a.create(Symbol) catch oom();
@@ -182,8 +196,34 @@ pub const Binder = struct {
     }
 
     fn localsOf(b: *Binder, n: *Node) *SymbolTable {
+        if (n == b.frozen) {
+            if (b.frozen_locals == null) {
+                b.frozen_locals = b.table();
+                if (n.locals) |l| b.frozen_locals.?.map = l.map.clone(b.a) catch oom();
+            }
+            return b.frozen_locals.?;
+        }
         if (n.locals == null) n.locals = b.table();
         return n.locals.?;
+    }
+
+    fn scopeOf(b: *const Binder, n: *Node) ?*SymbolTable {
+        return if (n == b.frozen and b.frozen_locals != null) b.frozen_locals else n.locals;
+    }
+
+    /// `var x` can join the parameter `x`, whose symbol is in the frozen tree.
+    fn writable(b: *Binder, slot: **Symbol) *Symbol {
+        const s = slot.*;
+        const shared = (b.frozen orelse return s).locals orelse return s;
+        if (shared.map.get(s.name) != s) return s;
+        const own = b.a.create(Symbol) catch oom();
+        own.* = s.*;
+        // `append` writes in place below the next power of two.
+        const room = b.a.alloc(*Node, std.math.ceilPowerOfTwoAssert(usize, @max(s.decls.len, 1))) catch oom();
+        @memcpy(room[0..s.decls.len], s.decls);
+        own.decls = room[0..s.decls.len];
+        slot.* = own;
+        return own;
     }
 
     fn addDecl(b: *Binder, s: *Symbol, n: *Node, flags: u32) void {
@@ -196,7 +236,7 @@ pub const Binder = struct {
     fn declare(b: *Binder, t: *SymbolTable, parent: ?*Symbol, n: *Node, name: []const u8, flags: u32, excludes: u32, err_node: ?*Node) *Symbol {
         const gop = t.map.getOrPut(b.a, name) catch oom();
         if (gop.found_existing) {
-            const s = gop.value_ptr.*;
+            const s = b.writable(gop.value_ptr);
             if (s.flags & excludes == 0 or (flags & F.variable != 0 and s.flags & F.assignment != 0)) {
                 b.addDecl(s, n, flags);
                 return s;
@@ -551,10 +591,20 @@ pub const Binder = struct {
         b.enterTypeParams(n, f.type_params);
         for (f.params) |p| b.bindParam(n, p);
         if (f.ret) |r| b.bind(r);
+        // Run on the spot, its `return`s take part in the flow of the code around it.
+        if (in_place) if (f.body) |body| if (body.data == .lazy_body) {
+            const parsed = parser.parseBody(b.a, b.file, n);
+            f.body = parsed.block;
+            if (!parsed.ok) b.file.bad_body = true;
+        };
         if (f.body) |body| {
-            if (body.data == .block) b.bindList(body.data.block.stmts) else b.bind(body);
-            f.end_flow = if (b.flow.kind == .unreachable_end) null else b.flow;
-            f.ret_flow = b.ret.?.list.items;
+            if (body.data == .lazy_body) {
+                body.flow = b.flow;
+                for (body.data.lazy_body.specs) |s| b.moduleSpec(s);
+            } else {
+                if (body.data == .block) b.bindList(body.data.block.stmts) else b.bind(body);
+                f.end_flow = if (b.flow.kind == .unreachable_end) null else b.flow;
+            }
         }
         if (in_place) b.addAnte(ret, b.flow);
         b.container = save[0];
@@ -744,14 +794,16 @@ pub const Binder = struct {
             s.exports = b.table();
             b.addDecl(s, n, 0);
             n.symbol = s;
-            b.file.global_augs = append(b.a, b.file.global_augs, s);
+            if (b.frozen == null) b.file.global_augs = append(b.a, b.file.global_augs, s);
         } else if (d.name.data == .string_lit) {
             const name = d.name.data.string_lit;
             const s = b.mkSym(name, F.value_module);
             s.exports = b.table();
             b.addDecl(s, n, 0);
             n.symbol = s;
-            if (b.file.is_module) {
+            if (b.frozen != null) {
+                // Not legal in a function, and the file is no longer this binder's to change.
+            } else if (b.file.is_module) {
                 b.moduleSpec(d.name);
                 b.file.augmentations = append(b.a, b.file.augmentations, s);
             } else {
@@ -849,7 +901,7 @@ pub const Binder = struct {
     }
 
     fn moduleSpec(b: *Binder, n: *Node) void {
-        if (n.data == .string_lit) b.file.module_specs = append(b.a, b.file.module_specs, n);
+        if (n.data == .string_lit and b.frozen == null) b.file.module_specs = append(b.a, b.file.module_specs, n);
     }
 
     fn continuesChain(n: *Node) bool {
@@ -1383,8 +1435,26 @@ pub const Binder = struct {
     }
 
     fn expandoOwner(b: *Binder, target: *Node) ?*Symbol {
-        const s = accessSymbol(target, b.block) orelse accessSymbol(target, b.container) orelse return null;
+        const s = b.accessSymbol(target, b.block) orelse b.accessSymbol(target, b.container) orelse return null;
         return if (holdsExpandos(s)) s else null;
+    }
+
+    /// The symbol `x` of `x` or `x.y` as seen from `scope`, before any name resolution exists.
+    fn accessSymbol(b: *const Binder, n: *Node, scope: *Node) ?*Symbol {
+        switch (n.data) {
+            .identifier => |name| {
+                if (b.scopeOf(scope)) |l| if (l.get(name)) |s| return s;
+                // A function's exports are its expandos, in the frozen tree and not in scope anyway.
+                if (scope == b.frozen) return null;
+                const owner = scope.symbol orelse return null;
+                return (owner.exports orelse return null).get(name);
+            },
+            .prop_access => |x| {
+                const owner = b.accessSymbol(x.expr, scope) orelse return null;
+                return (owner.exports orelse return null).get(ast.memberText(x.name));
+            },
+            else => return null,
+        }
     }
 
     fn bindBinary(b: *Binder, left: *Node, op: lexer.Tok, right: *Node) void {
@@ -1441,22 +1511,6 @@ pub fn specName(n: *Node) []const u8 {
         .identifier, .string_lit => |v| v,
         else => "",
     };
-}
-
-/// The symbol `x` of `x` or `x.y` as seen from `scope`, before any name resolution exists.
-fn accessSymbol(n: *Node, scope: *Node) ?*Symbol {
-    switch (n.data) {
-        .identifier => |name| {
-            if (scope.locals) |l| if (l.get(name)) |s| return s;
-            const owner = scope.symbol orelse return null;
-            return (owner.exports orelse return null).get(name);
-        },
-        .prop_access => |x| {
-            const owner = accessSymbol(x.expr, scope) orelse return null;
-            return (owner.exports orelse return null).get(ast.memberText(x.name));
-        },
-        else => return null,
-    }
 }
 
 /// `let` and `var` can be reassigned, so only a function or a `const` holding one takes members.
@@ -1589,6 +1643,28 @@ pub fn bindFile(a: Allocator, f: *ast.File) void {
     f.bind_diags = b.diags.items;
 }
 
+/// Binds a block `parser.parseBody` read, for one checker: everything it creates lives in `a`,
+/// and the file, the function and whatever else is outside the block stay as they are.
+pub fn bindBody(a: Allocator, f: *ast.File, n: *Node, block: *Node) struct { body: Body, diags: []lexer.Diag } {
+    const unreachable_flow = a.create(FlowNode) catch oom();
+    unreachable_flow.* = .{ .kind = .unreachable_end };
+    var b = Binder{
+        .a = a,
+        .file = f,
+        .container = n,
+        .block = n,
+        .flow = n.data.func.body.?.flow.?,
+        .unreachable_flow = unreachable_flow,
+        .frozen = n,
+    };
+    b.ret = b.newLabel(.branch);
+    b.bindList(block.data.block.stmts);
+    return .{
+        .body = .{ .block = block, .end_flow = if (b.flow.kind == .unreachable_end) null else b.flow, .locals = b.scopeOf(n) },
+        .diags = b.diags.items,
+    };
+}
+
 /// Merged namespaces see each other's exports, but `export { X }` puts nothing in scope: inside
 /// `namespace S { export { S } }` the name still means the outer `S`, not the alias itself.
 pub fn isExportSpecifierOnly(s: *const Symbol) bool {
@@ -1615,7 +1691,6 @@ pub fn lookupLocal(from: *Node, name: []const u8, meaning: u32) ?*Symbol {
 }
 
 test "binder declares and merges function scope" {
-    const parser = @import("parser.zig");
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1629,7 +1704,6 @@ test "binder declares and merges function scope" {
 }
 
 test "binder stores numeric member names the way lookups spell them" {
-    const parser = @import("parser.zig");
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1645,7 +1719,6 @@ test "binder stores numeric member names the way lookups spell them" {
 }
 
 test "binder grows declaration lists in order and keeps the duplicate's value declaration" {
-    const parser = @import("parser.zig");
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1662,4 +1735,34 @@ test "binder grows declaration lists in order and keeps the duplicate's value de
     try std.testing.expect(second.symbol.? != f.root.locals.?.get("x").?);
     try std.testing.expectEqual(second, second.symbol.?.value_decl.?);
     try std.testing.expect(second.symbol.?.flags & F.block_var != 0);
+}
+
+test "a body redeclaring a parameter leaves the shared symbol alone" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f = parser.parseLazily(a, "t.ts", "function f(x: string) { var x: string; function g() {} g.y = 1; }");
+    bindFile(a, f);
+    const n = f.root.data.source_file.stmts[0];
+    const shared = n.locals.?.get("x").?;
+    const bound = bindBody(a, f, n, parser.parseBody(a, f, n).block);
+    try std.testing.expectEqual(@as(usize, 1), shared.decls.len);
+    const own = bound.body.locals.?.get("x").?;
+    try std.testing.expect(own != shared);
+    try std.testing.expectEqual(@as(usize, 2), own.decls.len);
+    try std.testing.expect(own.decls[0] == shared.decls[0]);
+    try std.testing.expect(n.locals.?.get("g") == null);
+    try std.testing.expect(bound.body.locals.?.get("g") != null);
+}
+
+test "a body cannot reach a file's module lists" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f = parser.parseLazily(a, "t.ts", "function f() { import('./a'); }");
+    bindFile(a, f);
+    try std.testing.expectEqual(@as(usize, 1), f.module_specs.len);
+    const n = f.root.data.source_file.stmts[0];
+    _ = bindBody(a, f, n, parser.parseBody(a, f, n).block);
+    try std.testing.expectEqual(@as(usize, 1), f.module_specs.len);
 }
