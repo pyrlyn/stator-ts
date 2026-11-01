@@ -118,11 +118,11 @@ Not worth taking:
 
 ### pyrlyn/coroutines
 
-Facts come from https://github.com/pyrlyn/coroutines at commit 8b175b24723c352944811b3bf05fe0853bbca64e, checked 2026-11-01. It is a coroutine library for Zig 0.17.0 under GPL-3.0-or-later (`LICENSE`), not a TypeScript compiler, so it has no row in the first table. Since T16 stator-ts's parallel passes run on it.
+Facts come from https://github.com/pyrlyn/coroutines at commit 65b74e7bf9617c7d4966542f923055c27f95565b, checked 2026-11-01. It is a coroutine library for Zig 0.17.0 under GPL-3.0-or-later (`LICENSE`), not a TypeScript compiler, so it has no row in the first table. Since T16 stator-ts's parallel passes run on it.
 
-- `state_machine.runParallel` (`src/state_machine.zig`) hands out work with one atomic cursor and spawns and joins its threads for each call. Before https://github.com/pyrlyn/coroutines/pull/5 stacks were 1 MiB, the caller worked too and a task was not told its worker index, and stator-ts could live with none of the three. That pull adds `stack_size`, `caller_works` and `currentWorker()`.
+- `state_machine.runParallel` (`src/state_machine.zig`) hands out work with one atomic cursor and spawns and joins its threads for each call. Before https://github.com/pyrlyn/coroutines/pull/5 stacks were 1 MiB, the caller worked too and a task was not told its worker index, and stator-ts could live with none of the three. That pull adds `stack_size`, `caller_works` and `currentWorker()`. Since https://github.com/pyrlyn/coroutines/pull/7 a call spawns no more threads than it has chunks, so a pass over few items gets fewer workers than `-j`; the worker indices stay below `-j`. Since https://github.com/pyrlyn/coroutines/pull/9 a chunk shrinks towards 1 as the queue drains. Neither changes the order a chunk of 1 is handed out in, which `spreadTurns` depends on. https://github.com/pyrlyn/coroutines/pull/10 leaves tasks over two words in place; stator-ts's task is two words, a pointer and an index, so that path does not run.
 - `state_machine.Cursor` is that queue on its own, moved there from stator-ts's `schedule.Cursor` by https://github.com/pyrlyn/coroutines/pull/6. stator-ts reaches it only through `runParallel`.
-- `io.spawnEach` (`src/io.zig`) calls `std.Io.Group.async` once per item. stator-ts does not use it.
+- `io.spawnEach` (`src/io.zig`) splits the items into `4 * CPU count` contiguous blocks and calls `std.Io.Group.async` once per block, since https://github.com/pyrlyn/coroutines/pull/11. stator-ts does not use it.
 
 VS Code at `-j 16`, five interleaved rounds here, with other sessions keeping the load average near 20. Both builds printed the same bytes.
 
