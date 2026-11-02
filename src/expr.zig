@@ -2197,12 +2197,12 @@ pub fn predicateFromBody(c: *Checker, s: *Sig, fnode: *Node) ?*T.Pred {
     if (f.body == null) return null;
     const offset: usize = if (d.thisParam(fnode) != null) 1 else 0;
     // A lambda typed from context has no parameter types yet; it is asked again once it does.
-    for (f.params[offset..]) |p| {
+    if (!neverContextual(fnode)) for (f.params[offset..]) |p| {
         if (p.data.param.type == null and p.data.param.init == null and !c.param_types.contains(p)) {
             s.pred_done = false;
             return null;
         }
-    }
+    };
     const body = d.bodyOf(c, fnode).?;
     var single: ?*Node = null;
     if (body.block.data != .block) {
@@ -2229,6 +2229,17 @@ pub fn predicateFromBody(c: *Checker, s: *Sig, fnode: *Node) ?*T.Pred {
         }
     }
     return null;
+}
+
+/// No context ever types this function's parameters, so the untyped ones stay `any`.
+fn neverContextual(fnode: *Node) bool {
+    const parent = fnode.parent orelse return false;
+    return switch (fnode.data.func.kind) {
+        .decl => true,
+        .method => parent.data == .class,
+        .arrow, .expr => parent.data == .var_decl and parent.data.var_decl.type == null,
+        else => false,
+    };
 }
 
 /// The initializer of a `const` declared without a type, which flow may read through.
