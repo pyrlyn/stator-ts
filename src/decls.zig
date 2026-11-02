@@ -12,6 +12,7 @@ const flow = @import("flow.zig");
 const emit = @import("emit.zig");
 const parser = @import("parser.zig");
 const checker = @import("checker.zig");
+const unused = @import("unused.zig");
 const Node = ast.Node;
 const Symbol = binder.Symbol;
 const F = binder.F;
@@ -61,7 +62,10 @@ pub fn resolveName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?*S
     const hashed = binder.HashedName.of(name);
     var cur: ?*Node = from;
     var last: ?*Node = null;
+    // The declaration the name is looked up from inside of: naming itself does not use it.
+    var self: ?*Node = null;
     while (cur) |n| : ({
+        if (unused.isSelfReference(n, last)) self = n;
         last = n;
         cur = n.parent;
     }) {
@@ -69,14 +73,14 @@ pub fn resolveName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?*S
         const hidden = n.data == .conditional_type and last != n.data.conditional_type.then;
         if (!hidden) if (localsOf(c, n)) |l| if (l.getHashed(hashed)) |s| {
             if (matches(c, s, meaning)) |r| {
-                if (n.data != .func or visibleInFunc(c, n, last, r, meaning)) return r;
+                if (n.data != .func or visibleInFunc(c, n, last, r, meaning)) return unused.noteUse(c, from, r, self, meaning);
             } else if (n.data == .source_file) if (fileOf(c, n)) |f| if (f.symbol) |m| if (m.exports) |e| if (e.getHashed(hashed)) |x| {
-                if (x != s and !binder.isExportSpecifierOnly(x)) if (matches(c, x, meaning)) |r| return r;
+                if (x != s and !binder.isExportSpecifierOnly(x)) if (matches(c, x, meaning)) |r| return unused.noteUse(c, from, r, self, meaning);
             };
         };
         switch (n.data) {
             .module_decl, .enum_decl => if (n.symbol()) |sym| if (sym.resolve().exports) |e| if (e.getHashed(hashed)) |x| {
-                if (!binder.isExportSpecifierOnly(x)) if (matches(c, x, meaning)) |r| return r;
+                if (!binder.isExportSpecifierOnly(x)) if (matches(c, x, meaning)) |r| return unused.noteUse(c, from, r, self, meaning);
             },
             else => {},
         }

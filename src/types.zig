@@ -371,6 +371,10 @@ pub const Checker = struct {
     bind_call_apply: bool,
     exact_optional: bool,
     no_unchecked_index: bool,
+    no_unused_locals: bool,
+    no_unused_params: bool,
+    /// The meanings each symbol was read as, for `noUnusedLocals` and `noUnusedParameters`.
+    referenced: std.AutoHashMapUnmanaged(*binder.Symbol, u32) = .empty,
 
     t_any: *Type = undefined,
     /// The declared type of a property that only assignments in the constructor give a type.
@@ -551,6 +555,8 @@ pub const Checker = struct {
             .bind_call_apply = o.flag("strictBindCallApply"),
             .exact_optional = o.exactOptionalPropertyTypes orelse false,
             .no_unchecked_index = o.noUncheckedIndexedAccess orelse false,
+            .no_unused_locals = o.noUnusedLocals orelse false,
+            .no_unused_params = o.noUnusedParameters orelse false,
         };
         c.t_any = c.mk(.any);
         c.t_auto = c.mk(.any);

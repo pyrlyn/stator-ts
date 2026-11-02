@@ -9,6 +9,7 @@ const d = @import("decls.zig");
 const spelling = @import("spelling.zig");
 const relate = @import("relate.zig");
 const flow = @import("flow.zig");
+const unused = @import("unused.zig");
 const print = @import("print.zig");
 const emit = @import("emit.zig");
 const checker = @import("checker.zig");
@@ -2546,10 +2547,16 @@ pub fn destructuredType(c: *Checker, parent: *Type, pat: *Node, el: *Node) *Type
         if (T.isAny(base)) return base;
         if (base.data == .unknown or base.vars and base.data != .obj) {
             const ap = d.getApparent(c, base);
-            if (d.getProp(c, ap, name)) |p| return d.propType(c, p);
+            if (d.getProp(c, ap, name)) |p| {
+                unused.noteProperty(c, el, p);
+                return d.propType(c, p);
+            }
             return c.t_err;
         }
-        if (d.getProp(c, base, name)) |p| return d.propType(c, p);
+        if (d.getProp(c, base, name)) |p| {
+            unused.noteProperty(c, el, p);
+            return d.propType(c, p);
+        }
         if (d.indexValue(c, base, d.nameToKey(c, name))) |v| return v;
         if (base.data == .obj and (base.data.obj.open or base.data.obj.any_base)) return c.t_err;
         err(c, key, 2339, c.fmt("Property '{s}' does not exist on type '{s}'.", .{ name, show(c, base) }));
@@ -3059,6 +3066,7 @@ fn propAccessType(c: *Checker, n: *Node, left: *Type, name_node: *Node, name: []
         return c.t_err;
     };
     checkVisibility(c, n, left, p, name_node);
+    unused.noteProperty(c, n, p);
     checkUsedBeforeInit(c, n, p, name_node);
     if (isWriteOnly(n)) return d.propWriteType(c, p);
     const declared = d.propType(c, p);

@@ -59,6 +59,7 @@ pub const Options = struct {
     jsxFactory: ?[]const u8 = null,
     jsxFragmentFactory: ?[]const u8 = null,
     jsxImportSource: ?[]const u8 = null,
+    reactNamespace: ?[]const u8 = null,
     outDir: ?[]const u8 = null,
     rootDir: ?[]const u8 = null,
     baseUrl: ?[]const u8 = null,

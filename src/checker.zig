@@ -11,6 +11,7 @@ const d = @import("decls.zig");
 const expr = @import("expr.zig");
 const relate = @import("relate.zig");
 const flow = @import("flow.zig");
+const unused = @import("unused.zig");
 const Node = ast.Node;
 const Symbol = binder.Symbol;
 const F = binder.F;
@@ -1262,6 +1263,7 @@ fn checkFile(c: *Checker, f: *ast.File) void {
     checkBlock(c, f.root.data.source_file.stmts);
     drainDeferred(c);
     walkTypes(c, f.root);
+    unused.checkFile(c, f);
     forgetBodies(c);
 }
 
