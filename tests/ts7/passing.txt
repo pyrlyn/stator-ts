@@ -1442,6 +1442,7 @@ compiler/decoratorMetadataGenericTypeVariable
 compiler/decoratorMetadataGenericTypeVariableDefault
 compiler/decoratorMetadataGenericTypeVariableInScope
 compiler/decoratorMetadataNoStrictNull
+compiler/decoratorMetadataObjectLiteralMethodNoCrash
 compiler/decoratorMetadataOnInferredType(target=es2015)
 compiler/decoratorMetadataPromise
 compiler/decoratorMetadataRestParameterWithImportedType(target=es2015)
@@ -3776,6 +3777,8 @@ compiler/overloadsWithConstraints
 compiler/overrideBaseIntersectionMethod
 compiler/packageDeduplicationDuplicateGlobals
 compiler/panicSatisfiesOnExportEqualsDeclaration
+compiler/parameterDecoratorInJsFile(checkjs=true)
+compiler/parameterDecoratorsEmitCrash
 compiler/parameterDestructuringObjectLiteral
 compiler/parameterNamesInTypeParameterList
 compiler/parameterPropertyInConstructor4
@@ -5440,6 +5443,9 @@ conformance/autoAccessor7(target=esnext,usedefineforclassfields=true)
 conformance/autoAccessor8
 conformance/autoAccessor9
 conformance/autoAccessorAllowedModifiers
+conformance/autoAccessorExperimentalDecorators(target=es2015)
+conformance/autoAccessorExperimentalDecorators(target=es2022)
+conformance/autoAccessorExperimentalDecorators(target=esnext)
 conformance/autoAccessorNoUseDefineForClassFields
 conformance/awaitBinaryExpression1_es2017
 conformance/awaitBinaryExpression1_es5(target=es2015)
@@ -5686,6 +5692,7 @@ conformance/classStaticBlock17
 conformance/classStaticBlock18(target=es2015)
 conformance/classStaticBlock18(target=es2022)
 conformance/classStaticBlock18(target=esnext)
+conformance/classStaticBlock19
 conformance/classStaticBlock2(target=es2015)
 conformance/classStaticBlock2(target=es2022)
 conformance/classStaticBlock2(target=esnext)
@@ -6009,6 +6016,7 @@ conformance/decoratorOnClassAccessor2(target=es2015)
 conformance/decoratorOnClassAccessor4(target=es2015)
 conformance/decoratorOnClassAccessor5(target=es2015)
 conformance/decoratorOnClassAccessor8(target=es2015)
+conformance/decoratorOnClassConstructor1(target=es2015)
 conformance/decoratorOnClassConstructor4(target=es2015)
 conformance/decoratorOnClassConstructorParameter5
 conformance/decoratorOnClassMethod1(target=es2015)
@@ -6025,6 +6033,7 @@ conformance/decoratorOnClassMethod2(target=es2015)
 conformance/decoratorOnClassMethod4
 conformance/decoratorOnClassMethod5
 conformance/decoratorOnClassMethod7
+conformance/decoratorOnClassMethodOverload1(target=es2015)
 conformance/decoratorOnClassMethodOverload2(target=es2015)
 conformance/decoratorOnClassMethodParameter1(target=es2015)
 conformance/decoratorOnClassMethodParameter1.es6
@@ -6035,7 +6044,16 @@ conformance/decoratorOnClassProperty10(target=es2015)
 conformance/decoratorOnClassProperty12(target=es2015)
 conformance/decoratorOnClassProperty13
 conformance/decoratorOnClassProperty2(target=es2015)
+conformance/decoratorOnEnum
+conformance/decoratorOnFunctionDeclaration
+conformance/decoratorOnFunctionParameter
+conformance/decoratorOnImportEquals1
+conformance/decoratorOnImportEquals2
+conformance/decoratorOnInterface
+conformance/decoratorOnInternalModule
+conformance/decoratorOnTypeAlias
 conformance/decoratorOnUsing
+conformance/decoratorOnVar
 conformance/decrementOperatorWithAnyOtherType
 conformance/decrementOperatorWithUnsupportedBooleanType
 conformance/decrementOperatorWithUnsupportedStringType
@@ -6300,9 +6318,18 @@ conformance/esDecorators-classDeclaration-fields-nonStatic(target=es2022,usedefi
 conformance/esDecorators-classDeclaration-fields-nonStatic(target=es2022,usedefineforclassfields=true)
 conformance/esDecorators-classDeclaration-fields-nonStatic(target=esnext,usedefineforclassfields=false)
 conformance/esDecorators-classDeclaration-fields-nonStatic(target=esnext,usedefineforclassfields=true)
+conformance/esDecorators-classDeclaration-fields-nonStaticAbstract(target=es2015)
+conformance/esDecorators-classDeclaration-fields-nonStaticAbstract(target=es2022)
+conformance/esDecorators-classDeclaration-fields-nonStaticAbstract(target=esnext)
+conformance/esDecorators-classDeclaration-fields-nonStaticAbstractAccessor(target=es2015)
+conformance/esDecorators-classDeclaration-fields-nonStaticAbstractAccessor(target=es2022)
+conformance/esDecorators-classDeclaration-fields-nonStaticAbstractAccessor(target=esnext)
 conformance/esDecorators-classDeclaration-fields-nonStaticAccessor(target=es2015)
 conformance/esDecorators-classDeclaration-fields-nonStaticAccessor(target=es2022)
 conformance/esDecorators-classDeclaration-fields-nonStaticAccessor(target=esnext)
+conformance/esDecorators-classDeclaration-fields-nonStaticAmbient(target=es2015)
+conformance/esDecorators-classDeclaration-fields-nonStaticAmbient(target=es2022)
+conformance/esDecorators-classDeclaration-fields-nonStaticAmbient(target=esnext)
 conformance/esDecorators-classDeclaration-fields-nonStaticPrivate(target=es2015)
 conformance/esDecorators-classDeclaration-fields-nonStaticPrivate(target=es2022)
 conformance/esDecorators-classDeclaration-fields-nonStaticPrivate(target=esnext)
@@ -6318,6 +6345,9 @@ conformance/esDecorators-classDeclaration-fields-static(target=esnext,usedefinef
 conformance/esDecorators-classDeclaration-fields-staticAccessor(target=es2015)
 conformance/esDecorators-classDeclaration-fields-staticAccessor(target=es2022)
 conformance/esDecorators-classDeclaration-fields-staticAccessor(target=esnext)
+conformance/esDecorators-classDeclaration-fields-staticAmbient(target=es2015)
+conformance/esDecorators-classDeclaration-fields-staticAmbient(target=es2022)
+conformance/esDecorators-classDeclaration-fields-staticAmbient(target=esnext)
 conformance/esDecorators-classDeclaration-fields-staticPrivate(target=es2015)
 conformance/esDecorators-classDeclaration-fields-staticPrivate(target=es2022)
 conformance/esDecorators-classDeclaration-fields-staticPrivate(target=esnext)
@@ -6327,6 +6357,9 @@ conformance/esDecorators-classDeclaration-fields-staticPrivateAccessor(target=es
 conformance/esDecorators-classDeclaration-methods-nonStatic(target=es2015)
 conformance/esDecorators-classDeclaration-methods-nonStatic(target=es2022)
 conformance/esDecorators-classDeclaration-methods-nonStatic(target=esnext)
+conformance/esDecorators-classDeclaration-methods-nonStaticAbstract(target=es2015)
+conformance/esDecorators-classDeclaration-methods-nonStaticAbstract(target=es2022)
+conformance/esDecorators-classDeclaration-methods-nonStaticAbstract(target=esnext)
 conformance/esDecorators-classDeclaration-methods-nonStaticPrivate(target=es2015)
 conformance/esDecorators-classDeclaration-methods-nonStaticPrivate(target=es2022)
 conformance/esDecorators-classDeclaration-methods-nonStaticPrivate(target=esnext)
@@ -6340,6 +6373,9 @@ conformance/esDecorators-classDeclaration-outerThisReference(target=es2015)
 conformance/esDecorators-classDeclaration-outerThisReference(target=es2021)
 conformance/esDecorators-classDeclaration-outerThisReference(target=es2022)
 conformance/esDecorators-classDeclaration-outerThisReference(target=esnext)
+conformance/esDecorators-classDeclaration-parameterDecorators(target=es2015)
+conformance/esDecorators-classDeclaration-parameterDecorators(target=es2022)
+conformance/esDecorators-classDeclaration-parameterDecorators(target=esnext)
 conformance/esDecorators-classDeclaration-parameterProperties(target=es2015,usedefineforclassfields=false)
 conformance/esDecorators-classDeclaration-parameterProperties(target=es2015,usedefineforclassfields=true)
 conformance/esDecorators-classDeclaration-parameterProperties(target=es2022,usedefineforclassfields=false)
@@ -7966,6 +8002,7 @@ conformance/privateNameStaticsAndStaticMethods(target=esnext)
 conformance/privateNameUnused
 conformance/privateNameWhenNotUseDefineForClassFieldsInEsNext(target=es2020)
 conformance/privateNameWhenNotUseDefineForClassFieldsInEsNext(target=esnext)
+conformance/privateNamesAndDecorators
 conformance/privateNamesAndStaticMethods(target=es2022)
 conformance/privateNamesAndStaticMethods(target=esnext)
 conformance/privateNamesAssertion(target=es2022)
