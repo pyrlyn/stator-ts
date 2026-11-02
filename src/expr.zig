@@ -2819,7 +2819,8 @@ fn isOpen(c: *Checker, t: *Type) bool {
         },
         .param, .access, .cond => {
             const k = d.baseConstraint(c, t);
-            return k != t and k.data != .unknown and (k.vars or isOpen(c, k));
+            // Nullable generic constraints still lack the flow facts of their indexed access.
+            return k != t and k.data != .unknown and ((k.vars and maybeNullable(k)) or isOpen(c, k));
         },
         else => return false,
     }
