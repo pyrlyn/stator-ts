@@ -308,8 +308,11 @@ compiler/asyncJsxArgumentsAttributeName
 compiler/asyncSuperDefaultParameters
 compiler/asyncYieldStarContextualType
 compiler/augmentArray
+compiler/augmentExportEquals1_1
+compiler/augmentExportEquals2_1
 compiler/augmentExportEquals5
 compiler/augmentExportEquals6
+compiler/augmentExportEquals6_1
 compiler/augmentedTypeBracketNamedPropertyAccess
 compiler/augmentedTypesClass
 compiler/augmentedTypesClass2
@@ -807,6 +810,7 @@ compiler/compoundAssignmentAfterExcludedLiteral
 compiler/compoundVarDecl1
 compiler/computedEnumMemberKeyNoCrash1
 compiler/computedEnumTypeWidening
+compiler/computedPropertiesTransformedInOtherwiseNonTSClasses
 compiler/computedPropertiesWithSetterAssignment
 compiler/computedPropertyBindingElementDeclarationNoCrash1
 compiler/computedPropertyNameAndTypeParameterConflict
@@ -1980,6 +1984,9 @@ compiler/es6ImportNamedImportInIndirectExportAssignment
 compiler/es6ImportNamedImportNoExportMember
 compiler/es6ImportNamedImportWithTypesAndValues
 compiler/es6ImportWithJsDocTags
+compiler/es6ImportWithoutFromClause
+compiler/es6ImportWithoutFromClauseInEs5(target=es2015)
+compiler/es6ImportWithoutFromClauseNonInstantiatedModule
 compiler/es6Module
 compiler/es6ModuleClassDeclaration
 compiler/es6ModuleConst
@@ -2659,6 +2666,8 @@ compiler/importTypeGenericArrowTypeParenthesized
 compiler/importTypeResolutionJSDocEOF
 compiler/importTypeTypeofClassStaticLookup
 compiler/importTypeWithUnparenthesizedGenericFunctionParsed
+compiler/importUrl
+compiler/importUrlNodeModulesExist
 compiler/importUsedInExtendsList1
 compiler/importUsedInGenericImportResolves
 compiler/importWithTrailingSlash_noResolve
@@ -2706,6 +2715,7 @@ compiler/indexTypeNoSubstitutionTemplateLiteral
 compiler/indexWithUndefinedAndNull
 compiler/indexWithUndefinedAndNullStrictNullChecks
 compiler/indexWithoutParamType
+compiler/indexWithoutParamType2
 compiler/indexedAccessAndNullableNarrowing
 compiler/indexedAccessCanBeHighOrder
 compiler/indexedAccessConstraints
@@ -3137,6 +3147,7 @@ compiler/jsxFactoryAndReactNamespace
 compiler/jsxFactoryIdentifier
 compiler/jsxFactoryIdentifierAsParameter
 compiler/jsxFactoryQualifiedName
+compiler/jsxFactoryQualifiedNameWithEs5(target=es2015)
 compiler/jsxFragReactReferenceErrors(jsx=preserve)
 compiler/jsxFragReactReferenceErrors(jsx=react-native)
 compiler/jsxFragmentAndFactoryUsedOnFragmentUse
@@ -3147,6 +3158,7 @@ compiler/jsxGenericComponentWithSpreadingResultOfGenericFunction
 compiler/jsxHasLiteralType
 compiler/jsxHash
 compiler/jsxHexEntityUppercaseMarker
+compiler/jsxImportForSideEffectsNonExtantNoError
 compiler/jsxImportInAttribute
 compiler/jsxInExtendsClause
 compiler/jsxInferenceProducesLiteralAsExpected
@@ -3186,6 +3198,7 @@ compiler/jsxSpreadTag(target=esnext)
 compiler/jsxTernaryWithObjectInAttribute
 compiler/jsxUnicodeEscapeSequence
 compiler/jsxViaImport.2
+compiler/keepImportsInDts1
 compiler/keepImportsInDts2
 compiler/keyRemappingKeyofResult2
 compiler/keyofModuleObjectHasCorrectKeys
@@ -3435,6 +3448,8 @@ compiler/moduleAugmentationInAmbientModule5
 compiler/moduleAugmentationInDependency
 compiler/moduleAugmentationNoNewNames
 compiler/moduleAugmentationOfAlias
+compiler/moduleAugmentationsImports1
+compiler/moduleAugmentationsImports2
 compiler/moduleClassArrayCodeGenTest
 compiler/moduleCodeGenTest3
 compiler/moduleCodeGenTest5
@@ -4015,6 +4030,7 @@ compiler/pathMappingWithoutBaseUrl1
 compiler/pathMappingWithoutBaseUrl2
 compiler/pathsAliasTrailingSlashConflictWithAtTypes
 compiler/pathsEntryReferencesDtsViaTsExtensionNoCrash
+compiler/pathsValidation5
 compiler/performanceComparisonOfStructurallyIdenticalInterfacesWithGenericSignatures
 compiler/pickOfLargeObjectUnionWorks
 compiler/pinnedComments1
@@ -4374,8 +4390,11 @@ compiler/shorthandPropertyAssignmentNoCrash
 compiler/shorthandPropertyUndefined
 compiler/shouldNotPrintNullEscapesIntoOctalLiterals
 compiler/sideEffectImports1(module=commonjs,nouncheckedsideeffectimports=false)
+compiler/sideEffectImports1(module=commonjs,nouncheckedsideeffectimports=true)
 compiler/sideEffectImports1(module=nodenext,nouncheckedsideeffectimports=false)
+compiler/sideEffectImports1(module=nodenext,nouncheckedsideeffectimports=true)
 compiler/sideEffectImports1(module=preserve,nouncheckedsideeffectimports=false)
+compiler/sideEffectImports1(module=preserve,nouncheckedsideeffectimports=true)
 compiler/sideEffectImports2(noimplicitany=false,nouncheckedsideeffectimports=false)
 compiler/sideEffectImports2(noimplicitany=false,nouncheckedsideeffectimports=true)
 compiler/sideEffectImports2(noimplicitany=true,nouncheckedsideeffectimports=false)
@@ -5465,6 +5484,7 @@ conformance/allowUnescapedParagraphAndLineSeparatorsInStringLiteral
 conformance/ambientAccessors(target=es2015)
 conformance/ambientDeclarations
 conformance/ambientDeclarationsExternal
+conformance/ambientDeclarationsPatterns
 conformance/ambientEnumDeclaration1
 conformance/ambientEnumDeclaration2
 conformance/ambientExternalModuleMerging
@@ -6447,6 +6467,8 @@ conformance/dynamicImportDefer(module=esnext)
 conformance/dynamicImportDefer(module=preserve)
 conformance/elementAccessChain
 conformance/elementAccessChain.2
+conformance/emit(jsx=preserve)
+conformance/emit(jsx=react)
 conformance/emitArrowFunction(target=es2015)
 conformance/emitArrowFunctionAsIs(target=es2015)
 conformance/emitArrowFunctionAsIsES6
@@ -7210,6 +7232,7 @@ conformance/innerTypeParameterShadowingOuterOne2
 conformance/instanceMemberAssignsToClassPrototype
 conformance/instanceMemberInitialization
 conformance/instanceMemberWithComputedPropertyName
+conformance/instanceMemberWithComputedPropertyName2
 conformance/instanceofOperatorWithAny
 conformance/instanceofOperatorWithInvalidOperands
 conformance/instanceofOperatorWithInvalidStaticToString
@@ -8058,9 +8081,13 @@ conformance/parserComputedPropertyName24
 conformance/parserComputedPropertyName25
 conformance/parserComputedPropertyName26
 conformance/parserComputedPropertyName27
+conformance/parserComputedPropertyName28
+conformance/parserComputedPropertyName29
+conformance/parserComputedPropertyName31
 conformance/parserComputedPropertyName32
 conformance/parserComputedPropertyName33
 conformance/parserComputedPropertyName34
+conformance/parserComputedPropertyName36
 conformance/parserComputedPropertyName37
 conformance/parserComputedPropertyName38
 conformance/parserComputedPropertyName39
@@ -8118,6 +8145,7 @@ conformance/parserES5SymbolProperty1(target=es2015)
 conformance/parserES5SymbolProperty2(target=es2015)
 conformance/parserES5SymbolProperty3(target=es2015)
 conformance/parserES5SymbolProperty4(target=es2015)
+conformance/parserES5SymbolProperty5(target=es2015)
 conformance/parserES5SymbolProperty6(target=es2015)
 conformance/parserES5SymbolProperty7(target=es2015)
 conformance/parserES5SymbolProperty8(target=es2015)
@@ -8416,6 +8444,7 @@ conformance/parserSymbolProperty1
 conformance/parserSymbolProperty2
 conformance/parserSymbolProperty3
 conformance/parserSymbolProperty4
+conformance/parserSymbolProperty5
 conformance/parserSymbolProperty6
 conformance/parserSymbolProperty7
 conformance/parserSymbolProperty8
@@ -8819,8 +8848,10 @@ conformance/superSymbolIndexedAccess6(target=es2015)
 conformance/switchBreakStatements
 conformance/switchCaseWithUnionTypes01
 conformance/switchWithConstrainedTypeVariable
+conformance/symbolDeclarationEmit1
 conformance/symbolDeclarationEmit10
 conformance/symbolDeclarationEmit11
+conformance/symbolDeclarationEmit12
 conformance/symbolDeclarationEmit13
 conformance/symbolDeclarationEmit14
 conformance/symbolDeclarationEmit2
@@ -8873,6 +8904,7 @@ conformance/symbolProperty56
 conformance/symbolProperty57
 conformance/symbolProperty58
 conformance/symbolProperty59
+conformance/symbolProperty6
 conformance/symbolProperty60
 conformance/symbolProperty8
 conformance/symbolProperty9
@@ -9485,6 +9517,8 @@ conformance/unionTypeMembers
 conformance/unionTypeReadonly
 conformance/unionTypeReduction
 conformance/unionTypesAssignability
+conformance/uniqueSymbols
+conformance/uniqueSymbolsDeclarations
 conformance/uniqueSymbolsDeclarationsErrors
 conformance/uniqueSymbolsDeclarationsInJs
 conformance/untypedModuleImport
