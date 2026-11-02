@@ -1147,6 +1147,12 @@ const Resolver = struct {
     }
 };
 
+/// tsc's `isShorthandAmbientModuleSymbol`: `declare module "x";` with no body.
+pub fn isShorthandAmbient(s: *const Symbol) bool {
+    const d = s.value_decl orelse if (s.decls.len > 0) s.decls[0] else return false;
+    return d.data == .module_decl and d.data.module_decl.body == null and d.data.module_decl.name.data == .string_lit;
+}
+
 pub const SourceFile = struct {
     file: *ast.File,
     /// Parallel to `file.module_specs`.
@@ -1608,6 +1614,8 @@ pub const Program = struct {
     }
 
     fn exportOfRec(p: *const Program, m: *Symbol, name: []const u8, seen: *[64]*Symbol, depth: usize) ?*Symbol {
+        // `declare module "x";` promises everything: each name it is asked for is the module, typed `any`.
+        if (isShorthandAmbient(m)) return m;
         if (m.exports) |e| {
             if (e.get(name)) |s| return s;
             // Members of the namespace behind `export =` can be imported by name.

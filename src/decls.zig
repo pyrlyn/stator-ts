@@ -13,6 +13,7 @@ const emit = @import("emit.zig");
 const parser = @import("parser.zig");
 const checker = @import("checker.zig");
 const unused = @import("unused.zig");
+const project = @import("project.zig");
 const Node = ast.Node;
 const Symbol = binder.Symbol;
 const F = binder.F;
@@ -1787,6 +1788,7 @@ fn typeOfSymbolWorker(c: *Checker, s: *Symbol) *Type {
             else => {},
         };
     }
+    if (s.flags & F.value_module != 0 and project.isShorthandAmbient(s)) return c.t_any;
     if (s.flags & (F.function | F.method | F.class | F.value_module) != 0) {
         const v = valueObject(c, s);
         if (s.flags & F.class != 0) if (baseTypeVariable(c, s)) |b| return c.getIntersection(&.{ v, b });
@@ -4187,7 +4189,7 @@ test "numeric property names normalize like tsc" {
 }
 
 test "a constraint depth limit marks its answer provisional" {
-    const project = @import("project.zig");
+
     const pool = @import("pool.zig");
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
