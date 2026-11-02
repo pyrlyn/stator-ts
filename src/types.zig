@@ -461,6 +461,10 @@ pub const Checker = struct {
     checked_funcs: IdMap(*Node, void) = .empty,
     /// Blocks (and function bodies) already told that statements cannot appear in an ambient context.
     ambient_reported: IdMap(*Node, void) = .empty,
+    /// Statements the binder found unreachable, while `allowUnreachableCode` is false, mapped to
+    /// whether an earlier sibling's error already covers them.
+    dead: IdMap(*Node, bool) = .empty,
+    within_unreachable: bool = false,
     /// A lambda's parameters get their contextual types once, from the first signature to reach it.
     context_assigned: IdMap(*Node, void) = .empty,
     context_assigning: IdMap(*Node, void) = .empty,

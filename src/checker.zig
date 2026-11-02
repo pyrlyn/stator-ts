@@ -1309,9 +1309,78 @@ fn isTypeNode(n: *Node) bool {
 /// unknown names and bad arguments in types are reported from there and nowhere else.
 fn walkTypes(c: *Checker, n: *Node) void {
     if (n.data == .lazy_body) {
-        if (d.bodyOf(c, n.parent.?)) |b| walkTypes(c, b.block);
+        if (d.bodyOf(c, n.parent.?)) |b| {
+            noteDead(c, b.dead);
+            walkTypes(c, b.block);
+        }
         return;
     }
+    if (n.data == .source_file) if (d.fileOf(c, n)) |f| noteDead(c, f.dead);
+    if (!c.within_unreachable and reportUnreachable(c, n)) {
+        c.within_unreachable = true;
+        defer c.within_unreachable = false;
+        return walkTypesIn(c, n);
+    }
+    walkTypesIn(c, n);
+}
+
+fn noteDead(c: *Checker, dead: []*Node) void {
+    if (!reportsUnreachable(c)) return;
+    for (dead) |x| c.dead.put(c.a, x, false) catch oom();
+}
+
+/// Left unset, tsc makes unreachable code a suggestion, which the command line never shows.
+fn reportsUnreachable(c: *Checker) bool {
+    return c.prog.cfg.options.allowUnreachableCode == false;
+}
+
+/// tsc's `checkSourceElementUnreachable`: one error spans a run of unreachable statements, and
+/// statements inside the run stay quiet even where they hold dead code of their own.
+fn reportUnreachable(c: *Checker, n: *Node) bool {
+    if (!reportsUnreachable(c)) return false;
+    if (c.dead.get(n) orelse false) return true;
+    if (!isUnreachable(c, n)) return false;
+    c.dead.put(c.a, n, true) catch oom();
+    var last = n;
+    const p = n.parent orelse return false;
+    const list: []*Node = switch (p.data) {
+        .block => |x| x.stmts,
+        .module_block => |x| x.stmts,
+        .default_clause => |x| x.stmts,
+        .case_clause => |x| x.stmts,
+        .source_file => |x| x.stmts,
+        else => &.{},
+    };
+    if (std.mem.indexOfScalar(*Node, list, n)) |i| for (list[i + 1 ..]) |next| {
+        if (!isUnreachable(c, next)) break;
+        c.dead.put(c.a, next, true) catch oom();
+        last = next;
+    };
+    d.reportSpan(c, n, n.start, last.end, 7027, "Unreachable code detected.");
+    return true;
+}
+
+/// tsc's `isSourceElementUnreachable`. What the binder left counts unless it emits nothing: a
+/// `const enum` that is not preserved or a namespace of types. Elsewhere the types decide, as
+/// after a call that never returns.
+fn isUnreachable(c: *Checker, n: *Node) bool {
+    if (c.dead.contains(n)) return switch (n.data) {
+        .enum_decl => !n.mods.@"const" or preservesConstEnums(c),
+        .module_decl => binder.Binder.isInstantiatedDecl(n),
+        else => true,
+    };
+    if (!binder.isStatement(n)) return false;
+    const f = n.flow() orelse return false;
+    return !flow.isReachable(c, f);
+}
+
+/// tsc's `ShouldPreserveConstEnums`.
+fn preservesConstEnums(c: *Checker) bool {
+    const o = c.prog.cfg.options;
+    return o.preserveConstEnums == true or o.isolatedModules == true or o.verbatimModuleSyntax == true;
+}
+
+fn walkTypesIn(c: *Checker, n: *Node) void {
     if (isAsConst(n)) return;
     checkStrictMode(c, n);
     if (isTypeNode(n)) {

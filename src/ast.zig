@@ -443,6 +443,8 @@ pub const File = struct {
     references: []Reference,
     symbol: ?*binder.Symbol = null,
     bind_diags: []lexer.Diag = &.{},
+    /// Executable statements no path reaches, from the binder.
+    dead: []*Node = &.{},
     /// String literals naming other modules, in binding order.
     module_specs: []*Node = &.{},
     ambient_modules: []*binder.Symbol = &.{},

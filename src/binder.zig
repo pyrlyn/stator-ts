@@ -247,6 +247,8 @@ pub const Body = struct {
     end_flow: ?*FlowNode,
     /// The function's scope with the block's declarations in it.
     locals: ?*SymbolTable,
+    /// Executable statements no path reaches.
+    dead: []*Node = &.{},
 };
 
 pub const Binder = struct {
@@ -269,6 +271,8 @@ pub const Binder = struct {
     ret: ?*Label = null,
     labels: ?*NamedLabel = null,
     diags: std.ArrayList(lexer.Diag) = .empty,
+    /// tsc's `NodeFlagsUnreachable`, kept aside: few statements are unreachable.
+    dead: std.ArrayList(*Node) = .empty,
     /// Target of the next `:` label applied to a loop, so `continue label` finds it.
     pending_label: ?*NamedLabel = null,
     in_ambient: bool = false,
@@ -1140,6 +1144,9 @@ pub const Binder = struct {
     }
 
     pub fn bind(b: *Binder, n: *Node) void {
+        if (b.flow.kind == .unreachable_end) {
+            if (isPotentiallyExecutable(n)) b.dead.append(b.a, n) catch oom();
+        } else if (isStatement(n)) n.setFlow(b.a, b.flow);
         switch (n.data) {
             .identifier, .this_expr, .super_expr => n.setFlow(b.a, b.flow),
             // `typeof a.b` is a read like any other and sees what `a.b` was narrowed to.
@@ -1909,6 +1916,27 @@ pub fn bindFile(a: Allocator, f: *ast.File) void {
     b.export_context = f.is_dts and !Binder.hasExportStatements(f.root.data.source_file.stmts);
     b.bindList(f.root.data.source_file.stmts);
     f.bind_diags = b.diags.items;
+    f.dead = b.dead.items;
+}
+
+/// tsc's `isPotentiallyExecutableNode`. Blocks, empty statements and functions are not.
+/// tsc's `FirstStatement`..`LastStatement`: the nodes whose entry flow the checker can ask about.
+pub fn isStatement(n: *Node) bool {
+    return switch (n.data) {
+        .var_stmt, .expr_stmt, .if_stmt, .do_stmt, .while_stmt, .for_stmt, .for_in, .for_of, .continue_stmt, .break_stmt, .return_stmt, .with_stmt, .switch_stmt, .labeled, .throw_stmt, .try_stmt, .debugger_stmt => true,
+        else => false,
+    };
+}
+
+fn isPotentiallyExecutable(n: *Node) bool {
+    return switch (n.data) {
+        .expr_stmt, .if_stmt, .do_stmt, .while_stmt, .for_stmt, .for_in, .for_of, .continue_stmt, .break_stmt, .return_stmt, .with_stmt, .switch_stmt, .labeled, .throw_stmt, .try_stmt, .debugger_stmt, .enum_decl, .module_decl => true,
+        .class => |k| !k.is_expr,
+        .var_stmt => |x| x.list.data.var_list.kind != .@"var" or for (x.list.data.var_list.decls) |v| {
+            if (v.data.var_decl.init != null) break true;
+        } else false,
+        else => false,
+    };
 }
 
 /// Binds a block `parser.parseBody` read, for one checker: everything it creates lives in `a`,
@@ -1930,7 +1958,7 @@ pub fn bindBody(a: Allocator, f: *ast.File, n: *Node, block: *Node) struct { bod
     };
     b.bindList(block.data.block.stmts);
     return .{
-        .body = .{ .block = block, .end_flow = if (b.flow.kind == .unreachable_end) null else b.flow, .locals = b.scopeOf(n) },
+        .body = .{ .block = block, .end_flow = if (b.flow.kind == .unreachable_end) null else b.flow, .locals = b.scopeOf(n), .dead = b.dead.items },
         .diags = b.diags.items,
     };
 }

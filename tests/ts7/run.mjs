@@ -53,7 +53,7 @@ const optionNames = new Map([
     'importHelpers', 'isolatedDeclarations', 'isolatedModules', 'jsx', 'jsxFactory', 'jsxFragmentFactory', 'jsxImportSource', 'lib',
     'libReplacement', 'module', 'moduleDetection', 'moduleResolution', 'noCheck', 'noFallthroughCasesInSwitch', 'noImplicitAny',
     'noImplicitOverride', 'noImplicitReturns', 'noImplicitThis', 'noLib', 'noPropertyAccessFromIndexSignature', 'noResolve',
-    'noUncheckedIndexedAccess', 'noUncheckedSideEffectImports', 'noUnusedLocals', 'noUnusedParameters', 'paths', 'preserveSymlinks',
+    'noUncheckedIndexedAccess', 'noUncheckedSideEffectImports', 'noUnusedLocals', 'noUnusedParameters', 'paths', 'preserveConstEnums', 'preserveSymlinks',
     'reactNamespace', 'resolveJsonModule', 'resolvePackageJsonExports', 'resolvePackageJsonImports', 'rewriteRelativeImportExtensions',
     'rootDir', 'rootDirs', 'skipDefaultLibCheck', 'skipLibCheck', 'strict', 'strictBindCallApply', 'strictBuiltinIteratorReturn',
     'strictFunctionTypes', 'strictNullChecks', 'strictPropertyInitialization', 'target', 'typeRoots', 'types', 'useDefineForClassFields',
