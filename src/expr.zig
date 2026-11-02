@@ -2814,6 +2814,11 @@ fn isOpen(c: *Checker, t: *Type) bool {
             return false;
         },
         .inter, .union_ => |x| {
+            if (t.data == .inter) {
+                // An intersection can remove the nullable part of an indexed-access constraint.
+                const apparent = d.getApparent(c, t);
+                if (apparent != t) return isOpen(c, apparent);
+            }
             for (x) |m| if (isOpen(c, m)) return true;
             return false;
         },
