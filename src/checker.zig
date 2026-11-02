@@ -49,7 +49,9 @@ fn implicitAny(c: *Checker, p: *Node, fnode: ?*Node) void {
     const x = p.data.param;
     if (x.type != null or x.init != null) return;
     if (c.param_types.contains(p)) return;
-    if (fnode) |f| if (f.data == .func and d.setterGetter(f) != null) return;
+    if (fnode) |f| if (f.data == .func) {
+        if (d.setterGetter(f) != null or privateWithinAmbient(c, f, f.data.func.name)) return;
+    };
     if (jsDocTyped(c, p)) return;
     if (x.name.data == .identifier) {
         const name = x.name.data.identifier;
@@ -64,6 +66,13 @@ fn implicitAny(c: *Checker, p: *Node, fnode: ?*Node) void {
     }
 }
 
+/// tsc's `isPrivateWithinAmbient`: nothing outside can use such a member, so its implicit `any`
+/// harms no one.
+fn privateWithinAmbient(c: *Checker, n: *Node, name: ?*Node) bool {
+    const private = n.mods.private or (if (name) |x| x.data == .private_name else false);
+    return private and isAmbient(c, n);
+}
+
 /// tsc's `widenTypeForVariableLikeDeclaration` for a property with neither a type nor an initializer.
 fn implicitAnyMember(c: *Checker, n: *Node) void {
     if (!c.no_implicit_any) return;
@@ -76,7 +85,7 @@ fn implicitAnyMember(c: *Checker, n: *Node) void {
     const f = d.fileOf(c, n) orelse return;
     // JSDoc may type it, and is not modeled.
     if (project.isJs(f.path)) return;
-    if ((n.mods.private or name.data == .private_name) and isAmbient(c, n)) return;
+    if (privateWithinAmbient(c, n, name)) return;
     if (n.data == .property_decl) {
         if (d.typeFromConstructor(c, n)) |t| if (t != c.t_auto) return;
         // tsc takes a `declare`d member's type from the base class, which this does not look up.
@@ -301,7 +310,7 @@ fn implicitAnyReturn(c: *Checker, n: *Node) void {
         err(c, n, 7011, "Function expression, which lacks return-type annotation, implicitly has an 'any' return type.");
         return;
     };
-    if ((n.mods.private or name.data == .private_name) and isAmbient(c, n)) return;
+    if (privateWithinAmbient(c, n, name)) return;
     err(c, name, 7010, c.fmt("'{s}', which lacks return-type annotation, implicitly has an 'any' return type.", .{file.src[name.start..name.end]}));
 }
 
