@@ -357,6 +357,12 @@ fn structured(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
     }
     if (s.data == .inter) {
         for (s.data.inter) |m| if (related(c, m, t, rel)) return true;
+        // `object` asks what the members may be, not the wrapper interfaces primitives read through:
+        // `T & 0` is a number.
+        if (t.data == .nonprim) {
+            const k = d.baseConstraint(c, s);
+            return k != s and !k.vars and related(c, k, t, rel);
+        }
         // A generic member's constraint may be what supplies the target's shape.
         const ap = d.getApparent(c, s);
         if (ap != s and (ap.data != .never or !hasFreeMember(c, s)) and related(c, ap, t, rel)) return true;

@@ -4071,10 +4071,13 @@ fn binaryResult(c: *Checker, n: *Node, op: Tok, ln: *Node, rn: *Node, l0: *Type,
             return c.t_boolean;
         },
         .kw_in => {
-            const r = checkNonNull(c, r0, rn);
-            if (!T.isAny(r) and !r.vars and isPrimitiveValue(c, r)) {
-                err(c, rn, 2322, c.fmt("Type '{s}' is not assignable to type 'object'.", .{show(c, r)}));
+            // A private name is looked up on the right instead.
+            if (ln.data != .private_name) {
+                const l = checkNonNull(c, l0, ln);
+                if (!T.isAny(l)) checkAssignable(c, l, c.getUnion(&.{ c.t_string, c.t_number, c.t_symbol }), null, ln);
             }
+            const r = checkNonNull(c, r0, rn);
+            if (!T.isAny(r)) checkAssignable(c, r, c.t_nonprim, null, rn);
             return c.t_boolean;
         },
         else => return c.t_err,
