@@ -458,11 +458,11 @@ pub const Binder = struct {
     fn condFlow(b: *Binder, kind: FlowKind, ante: *FlowNode, e: *Node) *FlowNode {
         if (ante.kind == .unreachable_end) return ante;
         const wanted = kind == .true_cond;
-        const lit = stripParens(e);
+        // tsc folds only a bare `true` or `false`: `(true)` and `!false` keep both branches live.
         // `a ?? true` is a default, not a constant: `a` can still be `false`.
         const defaulted = if (e.parent) |p| p.data == .binary and p.data.binary.op == .qq else false;
-        if (!defaulted and ((lit.data == .true_lit and !wanted) or (lit.data == .false_lit and wanted))) return b.unreachable_flow;
-        if (lit.data == .true_lit or lit.data == .false_lit) return ante;
+        if (!defaulted and ((e.data == .true_lit and !wanted) or (e.data == .false_lit and wanted))) return b.unreachable_flow;
+        if (e.data == .true_lit or e.data == .false_lit) return ante;
         if (!isNarrowing(e)) return ante;
         return b.createFlow(kind, e, ante);
     }
@@ -473,9 +473,13 @@ pub const Binder = struct {
             b.addAnte(t, b.flow);
             return;
         };
-        switch (node.data) {
+        // tsc's `isLogicalExpression`: parens and `!` split only around `&&`, `||` and `??`.
+        if (isLogicalExpr(node)) switch (node.data) {
             .paren => |p| return b.bindCond(p.expr, t, f),
-            .prefix => |p| if (p.op == .bang) return b.bindCond(p.expr, f, t),
+            .prefix => |p| return b.bindCond(p.expr, f, t),
+            else => {},
+        };
+        switch (node.data) {
             .binary => |x| switch (x.op) {
                 .amp2 => {
                     const mid = b.newLabel(.branch);
@@ -1831,6 +1835,15 @@ pub fn isReference(n: *Node) bool {
         .elem_access => |x| isReference(x.expr),
         .paren => |x| isReference(x.expr),
         .non_null => |x| isReference(x.expr),
+        else => false,
+    };
+}
+
+fn isLogicalExpr(n: *Node) bool {
+    return switch (n.data) {
+        .paren => |x| isLogicalExpr(x.expr),
+        .prefix => |x| x.op == .bang and isLogicalExpr(x.expr),
+        .binary => |x| x.op == .amp2 or x.op == .pipe2 or x.op == .qq,
         else => false,
     };
 }
