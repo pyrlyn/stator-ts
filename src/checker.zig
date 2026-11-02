@@ -1102,6 +1102,7 @@ pub fn checkProgram(a: std.mem.Allocator, p: *project.Program) []Diag {
     for (p.files.items) |sf| {
         if (sf.is_lib or sf.read_failed) continue;
         if (sf.file.is_dts and skip_lib) continue;
+        if (p.cfg.options.semantics(sf.file) == .none) continue;
         files.append(a, sf.file) catch oom();
     }
     if (files.items.len == 0) return &.{};

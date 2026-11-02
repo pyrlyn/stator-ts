@@ -47,6 +47,7 @@ pub const Options = struct {
     allowImportingTsExtensions: ?bool = null,
     rewriteRelativeImportExtensions: ?bool = null,
     allowJs: ?bool = null,
+    checkJs: ?bool = null,
     target: ?[]const u8 = null,
     module: ?[]const u8 = null,
     moduleResolution: ?[]const u8 = null,
@@ -81,6 +82,16 @@ pub const Options = struct {
         return false;
     }
 
+    /// tsc's `canIncludeBindAndCheckDiagnostics`. A JavaScript file with neither `checkJs` nor a
+    /// `@ts-check` comment is still checked, but keeps only the errors in `plain_js_errors`.
+    pub fn semantics(o: Options, f: *const ast.File) Semantics {
+        const directive = checkDirective(f.src);
+        if (directive == false) return .none;
+        if (!isJs(f.path)) return .all;
+        if (directive orelse o.checkJs) |on| return if (on) .all else .none;
+        return .plain;
+    }
+
     pub fn jsxMode(o: Options) emit.Jsx {
         const v = o.jsx orelse return .preserve;
         if (std.ascii.eqlIgnoreCase(v, "react")) return .react;
@@ -88,6 +99,60 @@ pub const Options = struct {
         if (std.ascii.eqlIgnoreCase(v, "react-jsxdev")) return .react_jsxdev;
         return .preserve;
     }
+};
+
+pub const Semantics = enum { all, plain, none };
+
+pub fn isJs(path: []const u8) bool {
+    for ([_][]const u8{ ".js", ".jsx", ".mjs", ".cjs" }) |ext| if (std.mem.endsWith(u8, path, ext)) return true;
+    return false;
+}
+
+/// The last `// @ts-check` or `// @ts-nocheck` among the comments before the first token, as
+/// tsc reads pragmas.
+fn checkDirective(src: []const u8) ?bool {
+    var out: ?bool = null;
+    var i: usize = if (std.mem.startsWith(u8, src, "\xef\xbb\xbf")) 3 else 0;
+    if (std.mem.startsWith(u8, src[i..], "#!")) i = std.mem.indexOfScalarPos(u8, src, i, '\n') orelse src.len;
+    while (i < src.len) {
+        switch (src[i]) {
+            ' ', '\t', '\r', '\n', 0x0b, 0x0c => i += 1,
+            '/' => {
+                if (std.mem.startsWith(u8, src[i..], "//")) {
+                    const end = std.mem.indexOfScalarPos(u8, src, i, '\n') orelse src.len;
+                    var line = src[i + 2 .. end];
+                    if (std.mem.startsWith(u8, line, "/")) line = line[1..];
+                    line = std.mem.trimStart(u8, line, " \t");
+                    if (std.mem.startsWith(u8, line, "@")) {
+                        const name_end = std.mem.indexOfAny(u8, line, " \t\r:") orelse line.len;
+                        const name = line[1..name_end];
+                        if (std.ascii.eqlIgnoreCase(name, "ts-check")) out = true;
+                        if (std.ascii.eqlIgnoreCase(name, "ts-nocheck")) out = false;
+                    }
+                    i = end;
+                } else if (std.mem.startsWith(u8, src[i..], "/*")) {
+                    i = if (std.mem.indexOfPos(u8, src, i + 2, "*/")) |e| e + 2 else src.len;
+                } else return out;
+            },
+            else => return out,
+        }
+    }
+    return out;
+}
+
+/// tsc's `plainJSErrors`: the binder and grammar errors it keeps for an unchecked JavaScript file.
+pub fn plainJsError(code: u32) bool {
+    return std.mem.indexOfScalar(u32, &plain_js_errors, code) != null;
+}
+
+const plain_js_errors = [_]u32{
+    2451,  2528,  2753,  2752, 1262,  1214,  1359,  18012, 1102, 1210,  1215,  1100,  1344,  1101,  1105, 1116,
+    1211,  1248,  1171,  1104, 1115,  1113,  1258,  18117, 1255, 1182,  1054,  2501,  2566,  1186,  2462, 1048,
+    1014,  1013,  18041, 1053, 1049,  18111, 1474,  1193,  1473, 1191,  1162,  1325,  2803,  2492,  1197, 18036,
+    1174,  18006, 1312,  1114, 1450,  18038, 17000, 17001, 18007, 2633, 1107,  1200,  1184,  18112, 1091, 1188,
+    18114, 18016, 1451,  18013, 18115, 18113, 1358, 1106,  1189,  1190, 1009,  1123,  5076,  1005,  18061, 17012,
+    1097,  1030,  1089,  1044, 1090,  1031,  1042,  1029, 1156,  1155,  1172,  2480,  1368,  1341,  1308, 2852,
+    1111,  2839,
 };
 
 pub const PathMapping = struct { pattern: []const u8, targets: []const []const u8 };

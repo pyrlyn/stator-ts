@@ -1,5 +1,6 @@
 //! Types of expressions: names, member access, operators, literals, contextual typing and calls.
 const std = @import("std");
+const project = @import("project.zig");
 const ast = @import("ast.zig");
 const binder = @import("binder.zig");
 const lexer = @import("lexer.zig");
@@ -2783,8 +2784,7 @@ fn declaredInJs(c: *Checker, s: *Symbol) bool {
 
 pub fn inJs(c: *Checker, n: *Node) bool {
     const f = d.fileOf(c, n) orelse return false;
-    for ([_][]const u8{ ".js", ".jsx", ".mjs", ".cjs" }) |ext| if (std.mem.endsWith(u8, f.path, ext)) return true;
-    return false;
+    return project.isJs(f.path);
 }
 
 /// `import * as f from 'cjs'` under interop: the module comes back as `default`.

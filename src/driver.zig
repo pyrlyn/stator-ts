@@ -162,13 +162,14 @@ fn report(a: Allocator, io: Io, o: Options, p: *Program, w: *Io.Writer) !?u8 {
     const syntax_only = (all.items.len > 0 or count > 0) and !o.all_diagnostics;
     if (!syntax_only) {
         const skip_lib = o.cfg.options.skipLibCheck orelse false;
+        const opts = o.cfg.options;
         for (p.files.items) |sf| {
             if (sf.is_lib or (sf.file.is_dts and skip_lib)) continue;
-            for (sf.file.bind_diags) |d| all.append(a, .{ .file = sf.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
+            for (sf.file.bind_diags) |d| if (keepSemantic(opts, sf.file, d.code)) all.append(a, .{ .file = sf.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
         }
         const skip_default = o.cfg.options.skipDefaultLibCheck orelse false;
-        for (p.diags.items) |d| if (!(d.file.is_dts and skip_lib) and !(skip_default and p.sourceOf(d.file).?.is_lib)) all.append(a, .{ .file = d.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
-        for (checker.checkProgram(a, p)) |d| all.append(a, .{ .file = d.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
+        for (p.diags.items) |d| if (!(d.file.is_dts and skip_lib) and !(skip_default and p.sourceOf(d.file).?.is_lib) and keepSemantic(opts, d.file, d.code)) all.append(a, .{ .file = d.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
+        for (checker.checkProgram(a, p)) |d| if (keepSemantic(opts, d.file, d.code)) all.append(a, .{ .file = d.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
         if (p.body_failed.load(.monotonic)) return null;
     }
 
@@ -203,6 +204,14 @@ fn report(a: Allocator, io: Io, o: Options, p: *Program, w: *Io.Writer) !?u8 {
 }
 
 /// `@ts-ignore` silences the next line; `@ts-expect-error` does too.
+fn keepSemantic(o: project.Options, f: *const ast.File, code: u32) bool {
+    return switch (o.semantics(f)) {
+        .all => true,
+        .plain => project.plainJsError(code),
+        .none => false,
+    };
+}
+
 fn filteredByDirective(d: Printed) bool {
     if (d.syntax) return false;
     const src = d.file.src;
