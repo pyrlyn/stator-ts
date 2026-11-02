@@ -3118,7 +3118,10 @@ const Parser = struct {
         f.type_params = p.parseTypeParams();
         f.params = p.parseParams();
         p.parseReturnAnnotation(&f, .colon);
-        p.typeMemberEnd();
+        // tsc's `parseFunctionBlockOrSemicolon`: an accessor keeps a body even here, for the checker to reject.
+        if ((kind == .getter_sig or kind == .setter_sig) and p.t() == .l_brace) {
+            p.parseFunctionBody(&f, false);
+        } else p.typeMemberEnd();
         return p.mk(s, .{ .func = p.box(f) });
     }
 };

@@ -14,6 +14,7 @@ const flow = @import("flow.zig");
 const unused = @import("unused.zig");
 const overloads = @import("overloads.zig");
 const modifiers = @import("modifiers.zig");
+const lexer = @import("lexer.zig");
 const Node = ast.Node;
 const Symbol = binder.Symbol;
 const F = binder.F;
@@ -514,6 +515,82 @@ const import_context = "An import declaration can only be used at the top level 
 fn grammarErr(c: *Checker, n: *Node, code: u32, msg: []const u8) void {
     const f = d.fileOf(c, n) orelse return;
     if (f.diags.len == 0) err(c, n, code, msg);
+}
+
+/// tsc's `grammarErrorOnFirstToken`.
+fn grammarErrFirstToken(c: *Checker, n: *Node, code: u32, msg: []const u8) bool {
+    const f = d.fileOf(c, n) orelse return false;
+    if (f.diags.len > 0) return false;
+    var lx = lexer.Lexer{ .src = f.src, .a = c.a, .pos = n.start };
+    _ = lx.next();
+    d.reportSpan(c, n, lx.start, lx.pos, code, msg);
+    return true;
+}
+
+/// tsc's `checkGrammarStatementInAmbientContext`: reported once per block, at its first statement.
+fn statementInAmbient(c: *Checker, n: *Node) void {
+    switch (n.data) {
+        .block, .empty_stmt, .debugger_stmt, .if_stmt, .do_stmt, .while_stmt, .for_stmt, .for_in, .for_of, .break_stmt, .continue_stmt, .return_stmt, .with_stmt, .switch_stmt, .labeled, .throw_stmt, .try_stmt, .expr_stmt => {},
+        else => return,
+    }
+    if (!isAmbient(c, n)) return;
+    const p = n.parent orelse return;
+    const owner, const code, const msg = switch (p.data) {
+        .func => .{ n, @as(u32, 1183), @as([]const u8, "An implementation cannot be declared in ambient contexts.") },
+        // A statement inside another statement is covered by its parent's report.
+        .block, .module_block, .source_file => .{ p, 1036, "Statements are not allowed in ambient contexts." },
+        else => return,
+    };
+    if (c.ambient_reported.contains(owner)) return;
+    if (grammarErrFirstToken(c, n, code, msg)) c.ambient_reported.put(c.a, owner, {}) catch oom();
+}
+
+/// tsc's `checkAmbientInitializer`: only a `const` or `readonly` without a type may keep a literal.
+fn ambientInitializer(c: *Checker, n: *Node) void {
+    const init, const typed, const const_like = switch (n.data) {
+        .var_decl => |x| blk: {
+            const list = n.parent orelse return;
+            if (list.data != .var_list) return;
+            if (list.parent) |st| if (st.data == .for_in or st.data == .for_of) return;
+            const k = list.data.var_list.kind;
+            break :blk .{ x.init, x.type != null, k == .@"const" or k == .using or k == .await_using };
+        },
+        // A decorator there is already an error, and tsc stops at the first one.
+        .property_decl => |x| if (x.decorators.len > 0) return else .{ x.init, x.type != null, n.mods.readonly },
+        else => return,
+    };
+    const i = init orelse return;
+    if (!isAmbient(c, n)) return;
+    if (!const_like or typed) return grammarErr(c, i, 1039, "Initializers are not allowed in ambient contexts.");
+    if (!simpleAmbientInit(c, i)) grammarErr(c, i, 1254, "A 'const' initializer in an ambient context must be a string or numeric literal or literal enum reference.");
+}
+
+fn simpleAmbientInit(c: *Checker, i: *Node) bool {
+    return switch (i.data) {
+        .string_lit, .no_subst_template, .numeric_lit, .bigint_lit, .true_lit, .false_lit => true,
+        .prefix => |x| x.op == .minus and (x.expr.data == .numeric_lit or x.expr.data == .bigint_lit),
+        .prop_access => enumLike(expr.checkExpression(c, i)),
+        .elem_access => |x| (x.index.data == .string_lit or x.index.data == .no_subst_template or x.index.data == .numeric_lit) and isEntityName(x.expr) and enumLike(expr.checkExpression(c, i)),
+        else => false,
+    };
+}
+
+fn isEntityName(n: *Node) bool {
+    return switch (n.data) {
+        .identifier => true,
+        .prop_access => |x| isEntityName(x.expr),
+        else => false,
+    };
+}
+
+fn enumLike(t: *T.Type) bool {
+    return switch (t.data) {
+        .enum_, .enum_lit => true,
+        .union_ => |ms| for (ms) |m| {
+            if (m.data != .enum_lit) break false;
+        } else true,
+        else => false,
+    };
 }
 
 fn grammarErrSpan(c: *Checker, n: *Node, start: u32, end: u32, code: u32, msg: []const u8) void {
@@ -1246,10 +1323,14 @@ fn walkTypes(c: *Checker, n: *Node) void {
         const f = n.data.func;
         if (f.body == null) for (f.params) |p| implicitAny(c, p, n);
         implicitAnyReturn(c, n);
+        // tsc's `checkGrammarAccessor`.
+        if (f.kind == .getter_sig or f.kind == .setter_sig) if (f.body) |b| grammarErr(c, b, 1183, "An implementation cannot be declared in ambient contexts.");
         checkGetterReturns(c, n);
         if (f.kind == .method_sig) overloads.check(c, n);
     }
     modifiers.check(c, n);
+    statementInAmbient(c, n);
+    ambientInitializer(c, n);
     if (n.data == .param) checkParameter(c, n);
     if (n.data == .index_sig) checkIndexSignatureGrammar(c, n);
     if (n.data == .property_decl or n.data == .property_sig) implicitAnyMember(c, n);
@@ -1447,8 +1528,16 @@ fn isIdentifierName(n: *Node) bool {
 pub fn isAmbient(c: *Checker, n: *Node) bool {
     if (d.fileOf(c, n)) |f| if (f.is_dts) return true;
     var x: ?*Node = n;
-    while (x) |y| : (x = y.parent) if (y.mods.declare) return true;
+    while (x) |y| : (x = y.parent) if (y.mods.declare and !notAmbientMember(y)) return true;
     return false;
+}
+
+/// tsc's parser makes `declare` ambient only on fields and methods; constructors and accessors are
+/// parsed before it looks.
+fn notAmbientMember(n: *Node) bool {
+    if (n.data != .func) return false;
+    const k = n.data.func.kind;
+    return k == .ctor or k == .getter or k == .setter;
 }
 
 fn inModule(c: *Checker, n: *Node) bool {

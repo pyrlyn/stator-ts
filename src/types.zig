@@ -459,6 +459,8 @@ pub const Checker = struct {
     const_keys: IdMap(*Node, ?[]const u8) = .empty,
     binding_busy: IdMap(*Node, void) = .empty,
     checked_funcs: IdMap(*Node, void) = .empty,
+    /// Blocks (and function bodies) already told that statements cannot appear in an ambient context.
+    ambient_reported: IdMap(*Node, void) = .empty,
     /// A lambda's parameters get their contextual types once, from the first signature to reach it.
     context_assigned: IdMap(*Node, void) = .empty,
     context_assigning: IdMap(*Node, void) = .empty,
