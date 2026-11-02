@@ -3649,6 +3649,9 @@ fn checkBinary(c: *Checker, n: *Node) *Type {
     if (isAssignOp(op)) return checkCompound(c, n);
     if (op == .comma) {
         _ = checkExpr(c, x.left);
+        if (!(c.prog.cfg.options.allowUnreachableCode orelse false) and isSideEffectFree(x.left) and !isIndirectCall(n) and !inJsxParentError(c, x.left)) {
+            err(c, x.left, 2695, "Left side of comma operator is unused and has no side effects.");
+        }
         return checkExpr(c, x.right);
     }
     const l0 = checkExpr(c, x.left);
@@ -3656,6 +3659,37 @@ fn checkBinary(c: *Checker, n: *Node) *Type {
     if (op == .pipe2 or op == .qq) c.logical_left.put(c.a, n, l0) catch oom();
     const r0 = checkExpr(c, x.right);
     return binaryResult(c, n, op, x.left, x.right, l0, r0);
+}
+
+fn isSideEffectFree(n0: *Node) bool {
+    const n = binder.stripParens(n0);
+    return switch (n.data) {
+        .identifier, .string_lit, .regex_lit, .tagged_template, .template_expr, .no_subst_template, .numeric_lit, .bigint_lit, .true_lit, .false_lit, .null_lit, .array_lit, .object_lit, .typeof_expr, .non_null, .jsx_self_closing, .jsx_element => true,
+        .func => |f| f.kind == .expr or f.kind == .arrow,
+        .class => |k| k.is_expr,
+        .conditional => |x| isSideEffectFree(x.then) and isSideEffectFree(x.els),
+        .binary => |x| !x.op.isAssignment() and isSideEffectFree(x.left) and isSideEffectFree(x.right),
+        .prefix => |x| x.op == .bang or x.op == .plus or x.op == .minus or x.op == .tilde,
+        else => false,
+    };
+}
+
+/// `(0, x.f)(…)` and `(0, eval)(…)` call without passing `this`, which is the point of the `0`.
+fn isIndirectCall(n: *Node) bool {
+    const x = n.data.binary;
+    const p = n.parent orelse return false;
+    if (p.data != .paren or x.left.data != .numeric_lit or !std.mem.eql(u8, x.left.data.numeric_lit, "0")) return false;
+    const pp = p.parent orelse return false;
+    const called = (pp.data == .call and pp.data.call.callee == p) or pp.data == .tagged_template;
+    const right_ok = x.right.data == .prop_access or x.right.data == .elem_access or isIdent(x.right, "eval");
+    return called and right_ok;
+}
+
+/// The parser already said that adjacent JSX elements need one parent there.
+fn inJsxParentError(c: *Checker, n: *Node) bool {
+    const f = d.fileOf(c, n) orelse return false;
+    for (f.diags) |x| if (x.code == 2657 and x.start <= n.start and n.start < x.start + x.len) return true;
+    return false;
 }
 
 /// A generic `x` that may be undefined says so only through its constraint, so in `x || y` the
