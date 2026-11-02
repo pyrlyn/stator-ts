@@ -2886,7 +2886,9 @@ const Parser = struct {
         var e = if (p.t() == .kw_this) p.identNode() else p.parseIdent();
         while (p.t() == .dot) {
             p.next();
-            const r = if (p.t() == .private_name) p.parseMemberName() else p.parseIdentName();
+            const private = p.t() == .private_name;
+            const r = if (private) p.parseMemberName() else p.parseIdentName();
+            if (private) p.errHere(1003, "Identifier expected.");
             e = p.mk(s, .{ .qualified_name = .{ .left = e, .right = r } });
         }
         return e;

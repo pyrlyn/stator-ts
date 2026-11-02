@@ -20,3 +20,9 @@ Find and fix reproducible bugs, refactor the responsible code, and target at lea
 ## Current result
 
 The verified fixes and resource improvements are recorded in `report.md`. The creator selected the existing fixtures and `stator/packages/compiler` as the benchmark workloads. Peak RSS falls 14.4%, wall time 10.0%, and CPU time 17.1% on the compiler workload; the small fixtures change little. The 30% memory and time acceptance target remains unmet, so this task remains open.
+
+## Follow-up execution plan
+
+Continue from merged commit `69986bf` as the new baseline. Keep the earlier report intact. Inspect allocation and filesystem profiles on the selected workloads; prioritize duplicated work and ownership bugs. Keep the parallel T20 library-API work isolated. Record regressions before fixes, compare identical commands against a retained baseline, and run unit, differential and TS7 checks before reporting the new measurements.
+
+The follow-up fixes directory-cycle traversal, prunes excluded subtrees, and diagnoses private names in type queries. Its measurements and verification are in `followup-report.md`: the additional excluded-output stress case improves RSS by 41.2% and wall time by 80.1%, while the selected original workloads are essentially unchanged. The original acceptance target remains open.
