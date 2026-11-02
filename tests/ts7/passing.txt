@@ -12,6 +12,10 @@ compiler/ClassDeclaration8
 compiler/ClassDeclaration9
 compiler/ClassDeclarationWithInvalidConstOnPropertyDeclaration2
 compiler/DeclarationErrorsNoEmitOnError
+compiler/FunctionDeclaration3
+compiler/FunctionDeclaration4
+compiler/FunctionDeclaration6
+compiler/FunctionDeclaration7
 compiler/MemberAccessorDeclaration15
 compiler/ParameterList4
 compiler/ParameterList5
@@ -27,6 +31,7 @@ compiler/acceptSymbolAsWeakType
 compiler/acceptableAlias1
 compiler/accessOverriddenBaseClassMember1
 compiler/accessStaticMemberFromInstanceMethod01
+compiler/accessorBodyInTypeContext
 compiler/accessorDeclarationEmitJs
 compiler/accessorDeclarationEmitVisibilityErrors
 compiler/accessorDeclarationOrder
@@ -34,6 +39,7 @@ compiler/accessorInferredReturnTypeErrorInReturnStatement
 compiler/accessorParameterAccessibilityModifier(target=es2015)
 compiler/accessorWithLineTerminator(target=es2015)
 compiler/accessorsEmit
+compiler/accessorsInAmbientContext(target=es2015)
 compiler/accessors_spec_section-4.5_error-cases
 compiler/accessors_spec_section-4.5_inference
 compiler/addMoreCallSignaturesToBaseSignature
@@ -74,6 +80,7 @@ compiler/ambientClassDeclarationWithExtends
 compiler/ambientClassDeclaredBeforeBase
 compiler/ambientClassMergesOverloadsWithInterface
 compiler/ambientClassOverloadForFunction
+compiler/ambientConstInitializerNonEnumReference
 compiler/ambientConstLiterals
 compiler/ambientEnumElementInitializer1
 compiler/ambientEnumElementInitializer2
@@ -81,10 +88,12 @@ compiler/ambientEnumElementInitializer3
 compiler/ambientEnumElementInitializer4
 compiler/ambientEnumElementInitializer5
 compiler/ambientEnumElementInitializer6
+compiler/ambientErrors1
 compiler/ambientExternalModuleReopen
 compiler/ambientExternalModuleWithInternalImportDeclaration
 compiler/ambientExternalModuleWithoutInternalImportDeclaration
 compiler/ambientFundule
+compiler/ambientGetters(target=es2015)
 compiler/ambientModuleExports
 compiler/ambientModuleWithClassDeclarationWithExtends
 compiler/ambientModuleWithTemplateLiterals
@@ -92,6 +101,7 @@ compiler/ambientModules
 compiler/ambientNameRestrictions
 compiler/ambientRequireFunction(module=commonjs)
 compiler/ambientRequireFunction(module=preserve)
+compiler/ambientStatement1
 compiler/ambiguousCallsWhereReturnTypesAgree
 compiler/ambiguousGenericAssertion1
 compiler/ambiguousOverload
@@ -192,6 +202,7 @@ compiler/arrowFunctionWithObjectLiteralBody5
 compiler/arrowFunctionWithObjectLiteralBody6
 compiler/asConstReadonlyTupleInferenceThroughNestedGenericCall
 compiler/asiAbstract
+compiler/asiAmbientFunctionDeclaration
 compiler/asiArith
 compiler/asiBreak
 compiler/asiContinue
@@ -516,6 +527,7 @@ compiler/classDeclarationMergedInModuleWithContinuation
 compiler/classDeclaredBeforeClassFactory
 compiler/classExpressionAssignment
 compiler/classExpressionNames
+compiler/classExpressionPropertyModifiers
 compiler/classExpressionTest1
 compiler/classExpressionTest2
 compiler/classExpressionWithComputedPropertyInLoop
@@ -843,6 +855,7 @@ compiler/constDeclarations
 compiler/constDeclarations-access
 compiler/constDeclarations-access2
 compiler/constDeclarations-ambient
+compiler/constDeclarations-ambient-errors
 compiler/constDeclarations-es5(target=es2015)
 compiler/constDeclarations-scopes(alwaysstrict=true)
 compiler/constDeclarations-scopes2
@@ -896,6 +909,7 @@ compiler/constructorAsType
 compiler/constructorInvocationWithTooFewTypeArgs
 compiler/constructorOverloads2
 compiler/constructorOverloads4
+compiler/constructorOverloads6
 compiler/constructorOverloads7
 compiler/constructorOverloads8
 compiler/constructorOverloads9
@@ -1711,6 +1725,7 @@ compiler/duplicatePackage_referenceTypes
 compiler/duplicatePackage_relativeImportWithinPackage
 compiler/duplicatePackage_relativeImportWithinPackage_scoped
 compiler/duplicatePackage_subModule
+compiler/duplicatePackage_withErrors
 compiler/duplicateVarAndImport
 compiler/duplicateVariableDeclaration1
 compiler/duplicateVariablesByScope
@@ -2048,6 +2063,7 @@ compiler/exportDeclarationForModuleOrEnumWithMemberOfSameName(module=commonjs)
 compiler/exportDeclarationWithModuleSpecifierNameOnNextLine1
 compiler/exportDeclarationsInAmbientNamespaces
 compiler/exportDeclarationsInAmbientNamespaces2
+compiler/exportDeclareClass1
 compiler/exportDefaultAbstractClass
 compiler/exportDefaultAsyncFunction
 compiler/exportDefaultAsyncFunction2
@@ -2146,6 +2162,8 @@ compiler/extension
 compiler/externFunc
 compiler/externModule
 compiler/externModuleClobber
+compiler/externSemantics
+compiler/externSyntax
 compiler/externalModuleAssignToVar
 compiler/externalModuleExportingGenericClass
 compiler/externalModuleQualification
@@ -2213,6 +2231,7 @@ compiler/freshLiteralTypesInIntersections
 compiler/fromAsIdentifier1
 compiler/fromAsIdentifier2
 compiler/funcdecl
+compiler/functionAndInterfaceWithSeparateErrors
 compiler/functionAndPropertyNameConflict
 compiler/functionArgShadowing
 compiler/functionAssignabilityWithArrayLike01(strict=false)
@@ -2336,6 +2355,7 @@ compiler/functionWithSameNameAsField
 compiler/functionWithThrowButNoReturn1
 compiler/functionsInClassExpressions
 compiler/functionsWithImplicitReturnTypeAssignableToUndefined(strictnullchecks=true)
+compiler/functionsWithModifiersInBlocks1
 compiler/funduleExportedClassIsUsedBeforeDeclaration
 compiler/funduleOfFunctionWithoutReturnTypeAnnotation
 compiler/funduleUsedAcrossFileBoundary
@@ -2510,6 +2530,7 @@ compiler/getParameterNameAtPosition
 compiler/getSetEnumerable(target=es2015)
 compiler/getsetReturnTypes
 compiler/getterErrorMessageNotDuplicated
+compiler/getterMissingReturnError
 compiler/getterSetterNonAccessor
 compiler/getterThatThrowsShouldNotNeedReturn
 compiler/gettersAndSetters
@@ -2542,8 +2563,10 @@ compiler/identityRelationNeverTypes
 compiler/ifElseWithStatements1
 compiler/ifStatementInternalComments
 compiler/illegalGenericWrapping1
+compiler/illegalModifiersOnClassElements
 compiler/implementInterfaceAnyMemberWithVoid
 compiler/implementsInClassExpression
+compiler/implicitAnyAmbients
 compiler/implicitAnyAnyReturningFunction
 compiler/implicitAnyCastedValue
 compiler/implicitAnyDeclareFunctionExprWithoutFormalType
@@ -2553,6 +2576,7 @@ compiler/implicitAnyDeclareMemberWithoutType2
 compiler/implicitAnyDeclareVariablesWithoutTypeAndInit
 compiler/implicitAnyFromCircularInference(target=es2015)
 compiler/implicitAnyFunctionInvocationWithAnyArguements
+compiler/implicitAnyFunctionOverloadWithImplicitAnyReturnType
 compiler/implicitAnyFunctionReturnNullOrUndefined
 compiler/implicitAnyGenericTypeInference
 compiler/implicitAnyGenerics
@@ -3308,6 +3332,7 @@ compiler/metadataOfUnionWithNull(strictnullchecks=true)
 compiler/metadataReferencedWithinFilteredUnion(strictnullchecks=false,target=es2015)
 compiler/metadataReferencedWithinFilteredUnion(strictnullchecks=true,target=es2015)
 compiler/methodContainingLocalFunction(target=es2015)
+compiler/methodInAmbientClass1
 compiler/methodSignatureDeclarationEmit1
 compiler/mismatchedClassConstructorVariable
 compiler/mismatchedExplicitTypeParameterAndArgumentType
@@ -3663,6 +3688,7 @@ compiler/noFlakyExportEqualsWithOtherExportsImportOrder
 compiler/noImplicitAnyDestructuringParameterDeclaration
 compiler/noImplicitAnyDestructuringVarDeclaration2
 compiler/noImplicitAnyFunctionExpressionAssignment
+compiler/noImplicitAnyFunctions
 compiler/noImplicitAnyInCastExpression
 compiler/noImplicitAnyInContextuallyTypesFunctionParamter
 compiler/noImplicitAnyParametersInAmbientFunctions
@@ -3670,6 +3696,7 @@ compiler/noImplicitAnyParametersInAmbientModule
 compiler/noImplicitAnyParametersInBareFunctions
 compiler/noImplicitAnyParametersInClass
 compiler/noImplicitAnyParametersInModule
+compiler/noImplicitAnyWithOverloads
 compiler/noImplicitReturnInConstructors
 compiler/noImplicitReturnsInAsync1
 compiler/noImplicitReturnsWithProtectedBlocks1
@@ -4291,6 +4318,7 @@ compiler/selfRef
 compiler/selfReference
 compiler/selfReferencingTypeReferenceInference
 compiler/selfReferentialFunctionType
+compiler/semicolonsInModuleDeclarations
 compiler/separate1-1
 compiler/separate1-2
 compiler/setMethods
@@ -5581,6 +5609,8 @@ conformance/asyncFunctionDeclaration9_es5(target=es2015)
 conformance/asyncFunctionDeclaration9_es6
 conformance/asyncGeneratorGenericNonWrappedReturn
 conformance/asyncGeneratorPromiseNextType
+conformance/asyncGetter_es5(target=es2015)
+conformance/asyncGetter_es6
 conformance/asyncInterface_es5(target=es2015)
 conformance/asyncInterface_es6
 conformance/asyncMethodWithSuperConflict_es6
@@ -5814,6 +5844,7 @@ conformance/classAbstractClinterfaceAssignability
 conformance/classAbstractConstructor
 conformance/classAbstractConstructorAssignability
 conformance/classAbstractCrashedOnce
+conformance/classAbstractDeclarations.d
 conformance/classAbstractExtends
 conformance/classAbstractFactoryFunction
 conformance/classAbstractGeneric
@@ -6008,6 +6039,8 @@ conformance/computedPropertyNames28_ES5(target=es2015)
 conformance/computedPropertyNames28_ES6
 conformance/computedPropertyNames29_ES5(target=es2015)
 conformance/computedPropertyNames29_ES6
+conformance/computedPropertyNames2_ES5(target=es2015)
+conformance/computedPropertyNames2_ES6
 conformance/computedPropertyNames31_ES5(target=es2015)
 conformance/computedPropertyNames31_ES6
 conformance/computedPropertyNames33_ES5(target=es2015)
@@ -7065,6 +7098,7 @@ conformance/initializationOrdering1(target=es2022,usedefineforclassfields=true)
 conformance/initializationOrdering1(target=esnext,usedefineforclassfields=false)
 conformance/initializationOrdering1(target=esnext,usedefineforclassfields=true)
 conformance/initializerReferencingConstructorLocals
+conformance/initializersInDeclarations
 conformance/initializersWidened
 conformance/inlineJsxAndJsxFragPragmaOverridesCompilerOptions
 conformance/inlineJsxFactoryDeclarations
@@ -7675,6 +7709,8 @@ conformance/objectTypesIdentityWithStringIndexers
 conformance/objectTypesIdentityWithStringIndexers2
 conformance/optionalBindingParameters1
 conformance/optionalBindingParameters2
+conformance/optionalBindingParametersInOverloads1
+conformance/optionalBindingParametersInOverloads2
 conformance/optionalChainingInArrow(target=es2015)
 conformance/optionalChainingInLoop(target=es2015)
 conformance/optionalChainingInParameterBindingPattern(target=es2015)
@@ -7751,6 +7787,7 @@ conformance/parser509534
 conformance/parser509546
 conformance/parser509546_1
 conformance/parser509546_2
+conformance/parser509618
 conformance/parser509667
 conformance/parser509668
 conformance/parser509677
@@ -7783,8 +7820,12 @@ conformance/parserAccessibilityAfterStatic4
 conformance/parserAccessibilityAfterStatic5
 conformance/parserAccessibilityAfterStatic6
 conformance/parserAccessibilityAfterStatic7
+conformance/parserAccessors1(target=es2015)
 conformance/parserAccessors2(target=es2015)
+conformance/parserAccessors3(target=es2015)
 conformance/parserAccessors4(target=es2015)
+conformance/parserAccessors5(target=es2015)
+conformance/parserAccessors6(target=es2015)
 conformance/parserAdditiveExpression1
 conformance/parserAmbiguity1
 conformance/parserAmbiguity2
@@ -7820,6 +7861,8 @@ conformance/parserArrowFunctionExpression7
 conformance/parserArrowFunctionExpression8
 conformance/parserArrowFunctionExpression9
 conformance/parserAutomaticSemicolonInsertion1
+conformance/parserBlockStatement1.d
+conformance/parserBreakStatement1.d
 conformance/parserClass1
 conformance/parserClass2
 conformance/parserClassDeclaration10
@@ -7830,6 +7873,7 @@ conformance/parserClassDeclaration14
 conformance/parserClassDeclaration15
 conformance/parserClassDeclaration16
 conformance/parserClassDeclaration17
+conformance/parserClassDeclaration18
 conformance/parserClassDeclaration19
 conformance/parserClassDeclaration20
 conformance/parserClassDeclaration21
@@ -7862,6 +7906,7 @@ conformance/parserComputedPropertyName34
 conformance/parserComputedPropertyName37
 conformance/parserComputedPropertyName38
 conformance/parserComputedPropertyName39
+conformance/parserComputedPropertyName4
 conformance/parserComputedPropertyName40
 conformance/parserComputedPropertyName6
 conformance/parserComputedPropertyName7
@@ -7877,17 +7922,24 @@ conformance/parserConstructorDeclaration4
 conformance/parserConstructorDeclaration5
 conformance/parserConstructorDeclaration6
 conformance/parserConstructorDeclaration7
+conformance/parserContinueStatement1.d
 conformance/parserDebuggerStatement1
+conformance/parserDebuggerStatement1.d
 conformance/parserDebuggerStatement2
+conformance/parserDoStatement1.d
 conformance/parserDoStatement2
+conformance/parserES3Accessors1
 conformance/parserES3Accessors2
+conformance/parserES3Accessors3
 conformance/parserES5ComputedPropertyName1(target=es2015)
 conformance/parserES5ComputedPropertyName10(target=es2015)
 conformance/parserES5ComputedPropertyName11(target=es2015)
 conformance/parserES5ComputedPropertyName2(target=es2015)
+conformance/parserES5ComputedPropertyName4(target=es2015)
 conformance/parserES5ComputedPropertyName6(target=es2015)
 conformance/parserES5ComputedPropertyName7(target=es2015)
 conformance/parserES5ComputedPropertyName9(target=es2015)
+conformance/parserES5ForOfStatement1.d(target=es2015)
 conformance/parserES5ForOfStatement10(target=es2015)
 conformance/parserES5ForOfStatement11(target=es2015)
 conformance/parserES5ForOfStatement12(target=es2015)
@@ -7913,6 +7965,7 @@ conformance/parserES5SymbolProperty9(target=es2015)
 conformance/parserEmptyFile1
 conformance/parserEmptyParenthesizedExpression1
 conformance/parserEmptyStatement1
+conformance/parserEmptyStatement1.d
 conformance/parserEnum1
 conformance/parserEnum2
 conformance/parserEnum3
@@ -7947,7 +8000,10 @@ conformance/parserExportAssignment2
 conformance/parserExportAssignment3
 conformance/parserExportAssignment4
 conformance/parserExportAssignment6
+conformance/parserExpressionStatement1.d
+conformance/parserForInStatement1.d
 conformance/parserForInStatement2
+conformance/parserForOfStatement1.d
 conformance/parserForOfStatement10
 conformance/parserForOfStatement11
 conformance/parserForOfStatement12
@@ -7961,10 +8017,14 @@ conformance/parserForOfStatement23
 conformance/parserForOfStatement24
 conformance/parserForOfStatement8
 conformance/parserForOfStatement9
+conformance/parserForStatement1.d
 conformance/parserForStatement2
 conformance/parserForStatement3
 conformance/parserForStatement9
 conformance/parserFunctionDeclaration1
+conformance/parserFunctionDeclaration1.d
+conformance/parserFunctionDeclaration2
+conformance/parserFunctionDeclaration3
 conformance/parserFunctionDeclaration4
 conformance/parserFunctionDeclaration5
 conformance/parserFunctionDeclaration6
@@ -8002,6 +8062,7 @@ conformance/parserGreaterThanTokenAmbiguity6
 conformance/parserGreaterThanTokenAmbiguity7
 conformance/parserGreaterThanTokenAmbiguity8
 conformance/parserGreaterThanTokenAmbiguity9
+conformance/parserIfStatement1.d
 conformance/parserIfStatement2
 conformance/parserInExpression1
 conformance/parserIndexMemberDeclaration1
@@ -8033,15 +8094,26 @@ conformance/parserInterfaceKeywordInEnum1
 conformance/parserInvocationOfMemberAccessOffOfObjectCreationExpression1
 conformance/parserKeywordsAsIdentifierName1
 conformance/parserKeywordsAsIdentifierName2
+conformance/parserLabeledStatement1.d
 conformance/parserMemberAccessAfterPostfixExpression1
+conformance/parserMemberAccessor1(target=es2015)
+conformance/parserMemberAccessorDeclaration1(target=es2015)
+conformance/parserMemberAccessorDeclaration10(target=es2015)
+conformance/parserMemberAccessorDeclaration11(target=es2015)
 conformance/parserMemberAccessorDeclaration15(target=es2015)
+conformance/parserMemberAccessorDeclaration2(target=es2015)
+conformance/parserMemberAccessorDeclaration3(target=es2015)
 conformance/parserMemberAccessorDeclaration4(target=es2015)
 conformance/parserMemberAccessorDeclaration5(target=es2015)
 conformance/parserMemberAccessorDeclaration6(target=es2015)
+conformance/parserMemberAccessorDeclaration7(target=es2015)
+conformance/parserMemberAccessorDeclaration8(target=es2015)
+conformance/parserMemberAccessorDeclaration9(target=es2015)
 conformance/parserMemberFunctionDeclaration1
 conformance/parserMemberFunctionDeclaration2
 conformance/parserMemberFunctionDeclaration3
 conformance/parserMemberFunctionDeclaration4
+conformance/parserMemberFunctionDeclaration5
 conformance/parserMemberFunctionDeclarationAmbiguities1
 conformance/parserMemberVariableDeclaration1
 conformance/parserMemberVariableDeclaration2
@@ -8065,6 +8137,7 @@ conformance/parserMissingToken2
 conformance/parserModifierOnPropertySignature1
 conformance/parserModifierOnPropertySignature2
 conformance/parserModifierOnStatementInBlock1
+conformance/parserModifierOnStatementInBlock2
 conformance/parserModifierOnStatementInBlock3
 conformance/parserModifierOnStatementInBlock4
 conformance/parserModule1
@@ -8132,6 +8205,7 @@ conformance/parserRegularExpressionDivideAmbiguity2
 conformance/parserRegularExpressionDivideAmbiguity5
 conformance/parserRegularExpressionDivideAmbiguity6
 conformance/parserRegularExpressionDivideAmbiguity7
+conformance/parserReturnStatement1.d
 conformance/parserReturnStatement3
 conformance/parserReturnStatement4
 conformance/parserReturnStatement4
@@ -8173,6 +8247,7 @@ conformance/parserStrictMode4
 conformance/parserStrictMode8
 conformance/parserStrictMode9
 conformance/parserSuperExpression3
+conformance/parserSwitchStatement1.d
 conformance/parserSymbolIndexer1
 conformance/parserSymbolIndexer2
 conformance/parserSymbolIndexer3
@@ -8187,6 +8262,8 @@ conformance/parserSymbolProperty8
 conformance/parserSymbolProperty9
 conformance/parserSyntaxWalker.generated
 conformance/parserTernaryAndCommaOperators1
+conformance/parserThrowStatement1.d
+conformance/parserTryStatement1.d
 conformance/parserTypeAssertionInObjectCreationExpression1
 conformance/parserTypeQuery1
 conformance/parserTypeQuery2
@@ -8222,6 +8299,7 @@ conformance/parserVariableStatement2
 conformance/parserVariableStatement3
 conformance/parserVariableStatement4
 conformance/parserVoidExpression1
+conformance/parserWhileStatement1.d
 conformance/parserWithStatement2
 conformance/parserX_ArrowFunction1
 conformance/parserX_ArrowFunction3
@@ -8820,6 +8898,7 @@ conformance/thisTag2
 conformance/thisTypeAccessibility
 conformance/thisTypeInBasePropertyAndDerivedContainerOfBase01
 conformance/thisTypeInClasses
+conformance/thisTypeInFunctions2
 conformance/thisTypeInFunctions3
 conformance/thisTypeInInterfaces
 conformance/thisTypeInObjectLiterals
