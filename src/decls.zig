@@ -2252,6 +2252,7 @@ pub fn ownProp(c: *Checker, t: *Type, name: []const u8) ?*Prop {
         .declared => |x| declaredProp(c, x.owner, x.mapper, x.bases, name),
         .instance => |x| if (ownProp(c, x.root, name)) |q| instProp(c, q, x.mapper) else null,
     } orelse return null;
+    if (m.props.entries.capacity == 0) c.reserveProps(m, 2);
     m.props.put(c.a, p.name, p) catch oom();
     return p;
 }
