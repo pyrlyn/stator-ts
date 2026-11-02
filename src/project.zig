@@ -1170,6 +1170,11 @@ pub const SourceFile = struct {
 
     pub const Untyped = struct { spec: []const u8, path: []const u8 };
 
+    pub fn resolvedFile(sf: *const SourceFile, spec: []const u8) ?*SourceFile {
+        for (sf.file.module_specs, 0..) |n, i| if (std.mem.eql(u8, n.data.string_lit, spec)) return sf.resolved[i];
+        return null;
+    }
+
     pub fn untypedPath(sf: *const SourceFile, spec: []const u8) ?[]const u8 {
         for (sf.untyped) |u| if (std.mem.eql(u8, u.spec, spec)) return u.path;
         return null;
@@ -1282,7 +1287,8 @@ pub const Program = struct {
     by_file: std.AutoHashMapUnmanaged(*ast.File, *SourceFile) = .empty,
     by_root: std.AutoHashMapUnmanaged(*ast.Node, *ast.File) = .empty,
     globals: *SymbolTable,
-    ambient: std.StringHashMapUnmanaged(*Symbol) = .empty,
+    // In declaration order, so the first of two equally specific `*` patterns wins, as in tsc.
+    ambient: std.StringArrayHashMapUnmanaged(*Symbol) = .empty,
     lib_dir: ?[]const u8 = null,
     /// `lib_dir` with symlinks resolved, as file paths are; constant for the run.
     lib_dir_real: ?[]const u8 = null,
@@ -1678,13 +1684,28 @@ pub const Program = struct {
     /// The module symbol for a specifier written in `sf`; ambient declarations win, as in tsc.
     pub fn resolveModuleName(p: *const Program, sf: *const SourceFile, spec: []const u8) ?*Symbol {
         if (p.ambient.get(spec)) |s| return s.resolve();
-        for (sf.file.module_specs, 0..) |n, i| {
-            if (std.mem.eql(u8, n.data.string_lit, spec)) {
-                const t = sf.resolved[i] orelse return null;
-                return t.file.symbol;
-            }
+        if (sf.resolvedFile(spec)) |t| return t.file.symbol;
+        return p.patternAmbient(spec);
+    }
+
+    /// tsc's `findBestPatternMatch` over `declare module "pre*post"`: a real file wins, then the
+    /// pattern with the longest prefix. A name with two stars is no pattern.
+    fn patternAmbient(p: *const Program, spec: []const u8) ?*Symbol {
+        var best: ?*Symbol = null;
+        var best_len: usize = 0;
+        var it = p.ambient.iterator();
+        while (it.next()) |e| {
+            const name = e.key_ptr.*;
+            const star = std.mem.indexOfScalar(u8, name, '*') orelse continue;
+            if (std.mem.indexOfScalarPos(u8, name, star + 1, '*') != null) continue;
+            const pre = name[0..star];
+            const post = name[star + 1 ..];
+            if (spec.len < pre.len + post.len or !std.mem.startsWith(u8, spec, pre) or !std.mem.endsWith(u8, spec, post)) continue;
+            if (best != null and pre.len <= best_len) continue;
+            best = e.value_ptr.*;
+            best_len = pre.len;
         }
-        return null;
+        return if (best) |s| s.resolve() else null;
     }
 };
 
