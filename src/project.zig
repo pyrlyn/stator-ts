@@ -344,6 +344,7 @@ const Walk = struct {
     fs: *FsCache,
     level: []const []const u8,
     out: []WalkItem,
+    excludes: []const []const u8 = &.{},
 };
 
 fn walkOne(w: *const Walk, worker: usize, i: usize) void {
@@ -361,7 +362,8 @@ fn walkOne(w: *const Walk, worker: usize, i: usize) void {
         const kind = e.value_ptr.*;
         if (kind == .directory) {
             if (std.mem.eql(u8, name, "node_modules") or std.mem.eql(u8, name, ".git") or std.mem.eql(u8, name, "bower_components") or std.mem.eql(u8, name, "jspm_packages")) continue;
-            item.dirs.append(a, fspath.join(a, &.{ path, name }) catch oom()) catch oom();
+            const child = fspath.join(a, &.{ path, name }) catch oom();
+            if (!excludedDir(w.excludes, child)) item.dirs.append(a, child) catch oom();
         } else if (kind == .file and isSourceFile(name)) {
             item.files.append(a, fspath.join(a, &.{ path, name }) catch oom()) catch oom();
         }
@@ -370,13 +372,42 @@ fn walkOne(w: *const Walk, worker: usize, i: usize) void {
 
 /// Breadth-first, one parallel pass per directory level; no queue or lock needed.
 pub fn walkDirs(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, roots: []const []const u8) []const []const u8 {
+    return walkFiltered(a, fs, tp, roots, &.{});
+}
+
+fn excludedDir(patterns: []const []const u8, path: []const u8) bool {
+    for (patterns) |pattern| {
+        const prefix = if (std.mem.endsWith(u8, pattern, "/**/*")) pattern[0..@max(1, pattern.len - 5)] else continue;
+        var dir: ?[]const u8 = path;
+        while (dir) |d| : (dir = fspath.dirname(d)) if (globMatch(prefix, d)) return true;
+    }
+    return false;
+}
+
+fn pathLessThan(_: void, l: []const u8, r: []const u8) bool {
+    return std.mem.lessThan(u8, l, r);
+}
+
+fn walkFiltered(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, roots: []const []const u8, excludes: []const []const u8) []const []const u8 {
     var files: std.ArrayList([]const u8) = .empty;
     var level: std.ArrayList([]const u8) = .empty;
     level.appendSlice(a, roots) catch oom();
+    var visited: std.StringHashMapUnmanaged(void) = .empty;
     while (level.items.len > 0) {
+        var count: usize = 0;
+        for (level.items) |path| {
+            if (excludedDir(excludes, path)) continue;
+            // Lexical paths preserve diagnostics; canonical directory identity stops symlink cycles.
+            const real = Io.Dir.cwd().realPathFileAlloc(fs.io, path, a) catch path;
+            if ((visited.getOrPut(a, real) catch oom()).found_existing) continue;
+            level.items[count] = path;
+            count += 1;
+        }
+        level.items.len = count;
+        if (count == 0) break;
         const items = a.alloc(WalkItem, tp.width()) catch oom();
         for (items) |*x| x.* = .{ .arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator) };
-        const w = Walk{ .fs = fs, .level = level.items, .out = items };
+        const w = Walk{ .fs = fs, .level = level.items, .out = items, .excludes = excludes };
         pool.parallelFor(tp, level.items.len, &w, walkOne);
         var next: std.ArrayList([]const u8) = .empty;
         for (items) |*x| {
@@ -384,13 +415,10 @@ pub fn walkDirs(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, roots: []const
             for (x.dirs.items) |d| next.append(a, a.dupe(u8, d) catch oom()) catch oom();
             x.arena.deinit();
         }
+        std.mem.sort([]const u8, next.items, {}, pathLessThan);
         level = next;
     }
-    std.mem.sort([]const u8, files.items, {}, struct {
-        fn f(_: void, l: []const u8, r: []const u8) bool {
-            return std.mem.lessThan(u8, l, r);
-        }
-    }.f);
+    std.mem.sort([]const u8, files.items, {}, pathLessThan);
     return files.items;
 }
 
@@ -405,6 +433,33 @@ test "isWithin needs a component boundary" {
     try std.testing.expect(isWithin("/p/src/a", "/p/src"));
     try std.testing.expect(!isWithin("/p/src2", "/p/src"));
     try std.testing.expect(isWithin("/p/src2", "/p/"));
+}
+
+test "project discovery prunes excluded subtrees and terminates directory cycles" {
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "generated/nested");
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.ts", .data = "export const value = 1;" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "generated/nested/ignored.ts", .data = "export {};" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const excluded = try fspath.join(a, &.{ root, "generated" });
+    const cfg = Config{ .root = root, .exclude = &.{excluded} };
+    var tp = pool.ThreadPool.init(2);
+    const fs = FsCache.create(a, io);
+    const files = projectFiles(a, fs, &tp, &cfg);
+    try std.testing.expectEqual(@as(usize, 1), files.len);
+    try std.testing.expect(!fs.shardOf(excluded).dirs.contains(excluded));
+    try std.testing.expect(excludedDir(&.{"/**/*"}, root));
+    try std.testing.expect(excludedDir(&.{expandInclude(a, excluded)}, try fspath.join(a, &.{ excluded, "nested" })));
+    if (@import("builtin").os.tag == .windows) return;
+    try tmp.dir.symLink(io, ".", "loop", .{ .is_directory = true });
+    const cyclic = projectFiles(a, FsCache.create(a, io), &tp, &cfg);
+    try std.testing.expectEqual(@as(usize, 1), cyclic.len);
+    try std.testing.expectEqualStrings(files[0], cyclic[0]);
 }
 
 pub fn projectFiles(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, cfg: *const Config) []const []const u8 {
@@ -435,7 +490,7 @@ pub fn projectFiles(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, cfg: *cons
         for (ex) |e| excludes.append(a, expandInclude(a, e)) catch oom();
     } else if (cfg.options.outDir) |d| excludes.append(a, expandInclude(a, d)) catch oom();
 
-    next: for (walkDirs(a, fs, tp, roots.items)) |f| {
+    next: for (walkFiltered(a, fs, tp, roots.items, excludes.items)) |f| {
         var hit = false;
         for (patterns.items) |p| {
             if (globMatch(p, f)) {
