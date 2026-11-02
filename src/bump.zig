@@ -11,11 +11,11 @@ const chunk_len = 4 * 1024 * 1024;
 const big_len = chunk_len / 4;
 /// A freed block holds its own list entry, and below this it is not worth finding again.
 const least_block = 64;
-/// Enough for an ordinary run of files, which is most of them.
-const retained_chunks = 4;
+/// Keep one warm window without retaining every worker's high-water mark.
+const retained_chunks = 1;
 const class_count = @bitSizeOf(usize);
 const block_alignment: Alignment = .@"8";
-/// How far down a class to look. A block of the next class always fits, so this only saves waste.
+/// Bound the search through similarly sized blocks before splitting a larger one.
 const class_probes = 4;
 
 const Chunk = struct {
@@ -47,6 +47,7 @@ pub const Bump = struct {
     /// Blocks of `2^i` bytes up to the next power of two. Hash tables and lists grow by copying,
     /// and between them they keep asking for sizes something else just gave up.
     free_blocks: [class_count]?*Block = @splat(null),
+    available: usize = 0,
 
     pub fn init(backing: Allocator) Bump {
         return .{ .backing = backing };
@@ -65,6 +66,7 @@ pub const Bump = struct {
             b.backing.free(c.slice());
         }
         b.free_blocks = @splat(null);
+        b.available = 0;
         var kept: usize = 0;
         var last: ?*Chunk = null;
         var at = b.first;
@@ -102,13 +104,24 @@ pub const Bump = struct {
 
     fn reuse(b: *Bump, len: usize, al: Alignment) ?[*]u8 {
         const low = classOf(len);
-        for (low..@min(low + 2, class_count)) |class| {
+        var candidates = b.available & (~@as(usize, 0) << @intCast(low));
+        while (candidates != 0) {
+            const class = @ctz(candidates);
+            candidates &= candidates - 1;
             var link = &b.free_blocks[class];
-            var left: usize = if (class == low) class_probes else 1;
+            var left: usize = class_probes;
             while (link.*) |x| : (link = &x.next) {
-                if (x.len >= len and al.check(@intFromPtr(x))) {
+                const start = @intFromPtr(x);
+                const aligned = al.forward(start);
+                const prefix = aligned - start;
+                const room = x.len;
+                if (prefix <= room and len <= room - prefix) {
                     link.* = x.next;
-                    return @ptrCast(x);
+                    if (b.free_blocks[class] == null) b.available &= ~(@as(usize, 1) << @intCast(class));
+                    // Splitting keeps a large table useful for several smaller ones.
+                    b.keep(start, prefix);
+                    b.keep(aligned + len, room - prefix - len);
+                    return @ptrFromInt(aligned);
                 }
                 left -= 1;
                 if (left == 0) break;
@@ -125,6 +138,7 @@ pub const Bump = struct {
         const x: *Block = @ptrFromInt(p);
         x.* = .{ .next = b.free_blocks[class], .len = room };
         b.free_blocks[class] = x;
+        b.available |= @as(usize, 1) << @intCast(class);
     }
 
     fn mapped(b: *Bump, len: usize) ?*Chunk {
@@ -143,7 +157,6 @@ pub const Bump = struct {
             b.big = c;
             return @ptrFromInt(al.forward(c.start()));
         }
-        b.keep(b.at, b.limit - b.at);
         const c = if (b.cur) |x| x.next orelse blk: {
             const n = b.mapped(chunk_len) orelse return null;
             x.next = n;
@@ -153,6 +166,8 @@ pub const Bump = struct {
             b.first = n;
             break :blk n;
         };
+        // A failed mapping must leave the current window exclusively owned by the bump cursor.
+        b.keep(b.at, b.limit - b.at);
         b.cur = c;
         const p = al.forward(c.start());
         b.at = p + len;
@@ -172,7 +187,11 @@ pub const Bump = struct {
     fn resize(ctx: *anyopaque, m: []u8, _: Alignment, len: usize, _: usize) bool {
         const b: *Bump = @ptrCast(@alignCast(ctx));
         if (len <= m.len) {
-            if (@intFromPtr(m.ptr) + m.len == b.at) b.at = @intFromPtr(m.ptr) + len;
+            if (@intFromPtr(m.ptr) + m.len == b.at) {
+                b.at = @intFromPtr(m.ptr) + len;
+            } else {
+                b.keep(@intFromPtr(m.ptr) + len, m.len - len);
+            }
             return true;
         }
         if (@intFromPtr(m.ptr) + m.len != b.at or @intFromPtr(m.ptr) + len > b.limit) return false;
@@ -204,6 +223,64 @@ test "a freed table comes back for the next one" {
     const y = try a.alloc(u64, 90);
     try std.testing.expectEqual(@intFromPtr(x.ptr), @intFromPtr(y.ptr));
     _ = keep_end;
+}
+
+test "reusing a free block preserves its unused suffix" {
+    var b = Bump.init(std.testing.allocator);
+    defer b.deinit();
+    const a = b.allocator();
+    const block = try a.alloc(u8, 1024);
+    _ = try a.alloc(u8, 1);
+    a.free(block);
+    const first = try a.alloc(u8, 512);
+    const second = try a.alloc(u8, 512);
+    try std.testing.expectEqual(@intFromPtr(block.ptr), @intFromPtr(first.ptr));
+    try std.testing.expectEqual(@intFromPtr(block.ptr) + first.len, @intFromPtr(second.ptr));
+}
+
+test "shrinking an earlier allocation preserves its unused suffix" {
+    var b = Bump.init(std.testing.allocator);
+    defer b.deinit();
+    const a = b.allocator();
+    const block = try a.alloc(u8, 1024);
+    _ = try a.alloc(u8, 1);
+    try std.testing.expect(a.resize(block, 512));
+    const tail = try a.alloc(u8, 512);
+    try std.testing.expectEqual(@intFromPtr(block.ptr) + 512, @intFromPtr(tail.ptr));
+}
+
+test "a much larger free block serves aligned smaller allocations" {
+    var b = Bump.init(std.testing.allocator);
+    defer b.deinit();
+    const a = b.allocator();
+    const block = try a.alloc(u8, 4096);
+    _ = try a.alloc(u8, 1);
+    a.free(block);
+    const first = try a.alignedAlloc(u8, .fromByteUnits(256), 256);
+    const second = try a.alloc(u8, 512);
+    try std.testing.expectEqual(std.mem.alignForward(usize, @intFromPtr(block.ptr), 256), @intFromPtr(first.ptr));
+    try std.testing.expectEqual(@intFromPtr(first.ptr) + first.len, @intFromPtr(second.ptr));
+    @memset(first, 1);
+    @memset(second, 2);
+    for (first) |byte| try std.testing.expectEqual(@as(u8, 1), byte);
+    b.reset();
+    try std.testing.expectEqual(@as(usize, 0), b.available);
+}
+
+test "a failed chunk allocation cannot make live allocations overlap" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var b = Bump.init(failing.allocator());
+    defer b.deinit();
+    const a = b.allocator();
+    _ = try a.alloc(u8, 1);
+    const tail_len = 128;
+    while (b.limit - b.at > tail_len) {
+        _ = try a.alloc(u8, @min(big_len / 2, b.limit - b.at - tail_len));
+    }
+    try std.testing.expectError(error.OutOfMemory, a.alloc(u8, tail_len * 2));
+    const first = try a.alloc(u8, 64);
+    const second = try a.alloc(u8, 1);
+    try std.testing.expect(@intFromPtr(second.ptr) >= @intFromPtr(first.ptr) + first.len);
 }
 
 test "growing the last allocation stays in place and big blocks get their own mapping" {
