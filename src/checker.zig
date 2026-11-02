@@ -249,13 +249,14 @@ fn checkReturnEnd(c: *Checker, n: *Node) void {
     }
 }
 
-const RetScan = struct { found: bool = false };
+const RetScan = struct { found: bool = false, any: bool = false };
 
 fn scanRet(s: *RetScan, n: *Node) void {
     switch (n.data) {
         .func, .class => return,
-        .return_stmt => |x| if (x.expr != null) {
-            s.found = true;
+        .return_stmt => |x| {
+            s.any = true;
+            if (x.expr != null) s.found = true;
         },
         .throw_stmt => {},
         else => {},
@@ -267,6 +268,22 @@ fn hasReturnValue(body: *Node) bool {
     var s = RetScan{};
     ast.forEachChild(body, &s, scanRet);
     return s.found;
+}
+
+/// tsc's `HasExplicitReturn` node flag: any `return`, with a value or not.
+fn hasReturn(body: *Node) bool {
+    var s = RetScan{};
+    ast.forEachChild(body, &s, scanRet);
+    return s.any;
+}
+
+/// tsc's `checkAccessorDeclaration`: a getter whose end is reachable must have some `return`.
+fn checkGetterReturns(c: *Checker, n: *Node) void {
+    const f = n.data.func;
+    if (f.kind != .getter or f.body == null or isAmbient(c, n)) return;
+    const b = d.bodyOf(c, n) orelse return;
+    if (b.end_flow == null or hasReturn(b.block)) return;
+    err(c, f.name orelse n, 2378, "A 'get' accessor must return a value.");
 }
 
 /// tsc's `checkFunctionOrMethodDeclaration`: a signature without a body or a return type returns `any`.
@@ -1229,6 +1246,7 @@ fn walkTypes(c: *Checker, n: *Node) void {
         const f = n.data.func;
         if (f.body == null) for (f.params) |p| implicitAny(c, p, n);
         implicitAnyReturn(c, n);
+        checkGetterReturns(c, n);
         if (f.kind == .method_sig) overloads.check(c, n);
     }
     modifiers.check(c, n);
