@@ -1,0 +1,3123 @@
+{
+  "baselineCommit": "574ab7a480bea480fe0fdb3f5207e04e8a00401d",
+  "candidateRuntimeCommit": "07473abf857597bae35e76a7f26a7fadd12951c2",
+  "date": "2026-11-02",
+  "host": {
+    "model": "Mac15,9",
+    "architecture": "arm64",
+    "macOS": "27.0.1",
+    "loadSnapshot": [
+      27.07,
+      23.9,
+      21.44
+    ],
+    "idleCpuPercentSnapshot": 0.12
+  },
+  "toolchain": {
+    "zig": "0.17.0",
+    "clang": "23.1.4",
+    "llvm-profdata": "23.1.4",
+    "referenceTypeScript": "7.0.2"
+  },
+  "pgoTraining": {
+    "script": "scripts/pgo.sh",
+    "scriptSha256": "439c1ecc6ac61ad43af3a64f52ec7ede25136ac799e6423dd45f9d7280b21b35",
+    "command": [
+      "check",
+      "-p",
+      "/Users/listepo/GitHub/listepo/apps/stator/packages/compiler",
+      "--lib-dir",
+      "tests/node_modules/@typescript/typescript-darwin-arm64/lib",
+      "-j",
+      "16"
+    ],
+    "scope": "Only compiler check; the two fixtures and build emission were not training commands.",
+    "compileOptions": [
+      "-O3",
+      "-mcpu=native"
+    ],
+    "trainingCostIncludedInMeasurements": false
+  },
+  "compilerCorpus": {
+    "commit": "9b4fecf3344da837536f9359d1f09b5f3e1501e9",
+    "trackedFilesContentSha256": "b8b836cb4fe1c02fc678eb18a7463626b18d97b60002b15f37f6e74f31ff0f31",
+    "hashedFiles": 70
+  },
+  "binarySha256": {
+    "/Users/listepo/GitHub/_worktrees/stator-ts-t19/zig-out/bin/stator-ts-pgo": "57137b21bd4129e4d0973c99de2a27d2e7100f125e962bc2185834a8b3467be0",
+    "/tmp/stator-ts-t19-round5-baseline/bin/stator-ts": "134ad1da913e797c53301d1eb664490153a04b8501afa129a3e3b3548483cc16",
+    "/tmp/stator-ts-t19-round5-probes/bin/stator-ts": "bbe668702fed7dbfa3e638011682cd2a56d69f29b86c26fc9fdfc2214ae6ea6f"
+  },
+  "verification": {
+    "unitTests": "pass",
+    "differential": {
+      "reference": 1207,
+      "matched": 1206,
+      "falsePositives": 0,
+      "misses": 1,
+      "exactColumns": 1202
+    },
+    "ts7": {
+      "total": 13737,
+      "pass": 8249,
+      "fail": 5488,
+      "crash": 0,
+      "timeout": 0,
+      "lostPassing": 0
+    },
+    "emittedFilesIdentical": 64
+  },
+  "emissionComparisons": [
+    {
+      "variant": "baseline",
+      "command": [
+        "/tmp/stator-ts-t19-round5-baseline/bin/stator-ts",
+        "build",
+        "-p",
+        "/Users/listepo/GitHub/listepo/apps/stator/packages/compiler",
+        "--outDir",
+        "/tmp/stator-ts-t19-round5-emission/baseline",
+        "--lib-dir",
+        "tests/node_modules/@typescript/typescript-darwin-arm64/lib",
+        "-j",
+        "16"
+      ],
+      "stdout": "",
+      "stderr": "",
+      "files": {
+        "api.js": "053790f180af79a296e5e7e7cf7e377d7049a46a1c58c58869fbfb578c57beb4",
+        "cli/build.js": "50cb4e143649da484c0157023e87ebee2513e826805d680f9e9603565d9d9b02",
+        "cli/bundler.js": "182474562216a9e0afe336a822817720a70b2d4fa62f1c8e6b90c2c50acc93cd",
+        "cli/compile-jobs.js": "0be6560e720cc97afb3e06746e5e6bafe57417b4a49148e68cf8386888567397",
+        "cli/config.js": "e11bcd4b3ad70e0dd5d589bc465c200805bf0eb744b34c1108549f0997f51dda",
+        "cli/env-file.js": "77e5ceeacdd7bb8af8f80f2eaf318fb65274c028560c0c72db8f8250a3b9c408",
+        "cli/explain.js": "44814ce2fc71b8995761e97d8d412940052f0ef583dcc79630303d168da2f301",
+        "cli/library.js": "625b884758805015a25189f68e2c9ba4f916b6ef66153d12c5dc449801e02b1b",
+        "cli/main.js": "7a036a93a7a2c70c0022528261553dfc5323075de1ce136e636908e7a5311b1b",
+        "cli/outputs.js": "029b6e0c298d13e15e0289e0b6f5361b0b8885433132574de467206114418b21",
+        "cli/render.js": "948942f599681cacb0e7f61f4a1cff843a270d01ae81c1269277712f17941144",
+        "codegen/closures.js": "3dd8ec595e67e686d26dc8cf655e65a36db895ef1d82879488cdc337aa6b8267",
+        "codegen/emitter.js": "71c831df67bd9e59816acafc1cfe5869f978e4768bb4d2de2d5f9ee73645758f",
+        "codegen/expressions.js": "889534e5e3bd243923c411cae2742811278a91e0a12f98e446da297d83b3b6f3",
+        "codegen/helpers.js": "9a3ec42f8fb829d59d09d9c97a88c7b55f25e37982c00e091c5621f627067289",
+        "codegen/index.js": "b5b7a57f39ed38e18f1b7706d70d97ede00d5118503b92e0e2aa23071ed36730",
+        "codegen/install.js": "95cd1c60619902c138ac35b59ff60e81d50a483b514b49988e90c10a0bc61f96",
+        "codegen/module.js": "55c30381d398ea7907653237398ca17850e375827df85eb90a4c34126e50cdbc",
+        "codegen/runtime_calls.js": "4b9300cb55566eb7cce597d02b66b60ce072d50e84f02a245f11f179824170ee",
+        "codegen/slots.js": "2777912b6a7ec918f65a9b52c89ba69a788df401a0ea5216ee85e461df5e22ca",
+        "codegen/statements.js": "3437af1a7ce662725c49d243d703288e86868eeaf6475090f75ca9c9ca592ba8",
+        "codegen/tables.js": "08ae08271099e57fdf90f601615a69ff418998d59a180bdbf50752bf0ad25a2d",
+        "codegen/types.js": "cbf228ea1eea1b5382d98b684cf3323df02306efd51f84040a86c642bfc4948b",
+        "ffi-gen/abi.js": "9f989c31abc0d0fc6ad102de7af0cfc5702dd94f908aab40c9d323171a9938f1",
+        "ffi-gen/ast.js": "5521686331bdb02c2297e2d05eb731bedbc6bee79816f262a74410e5478f7838",
+        "ffi-gen/diff.js": "c7da275e87c0fe545fb2c8488c9c9472644054aaf653a9b32fed2d70012c8542",
+        "ffi-gen/emit.js": "6d00f6e42e2a1ba204c87a7179ea2dbe6b2132338b412896e451444ca86b44e4",
+        "ffi-gen/main.js": "28fd14e8d6514ba6d14fb148287a0b6a4a4e2a73ead3a3c8c820595dacf36f29",
+        "ffi-gen/model.js": "203e13156902e21c16bb8943eb21fddab7be4a24eebc7b444c16b47a232dc55a",
+        "frontend/annotation.js": "8b1769e210267665e1b9508ec963d4d0eb2250e8f4f6c04bf0378cf76c2ab2aa",
+        "frontend/export.js": "41b412d462dee68b774d42f9361cdfcb07c4184fd9958b442ddc9d31fc050e45",
+        "frontend/extern.js": "e23214461ed0634712f9db86614ef5d133175fef96ae68fe0bed68d7e8d4fb4e",
+        "frontend/gate.js": "22f7a8cda8cddca769f54e62c1aa59604bfb92608e318288dcff813b1a6fcfb3",
+        "frontend/generics.js": "e4acf3a593b59a6d9a979445c6609fa4807386a5764c9eec097755ae9caeb8f6",
+        "frontend/graph.js": "e4aab2c316a7d3f30e3501eac35135540b8d98b9eb27dc3eca4da73580683e89",
+        "frontend/index.js": "a21194c8640ce80c1893c20edf82cfc8b27ab4e04d32f8586d9e92c773d4d669",
+        "frontend/location.js": "f8bf45479d0102c0e25e6a6cc57e1f7460774179126079f86169c89cb08b3bd9",
+        "frontend/modules.js": "7aa7c40d77c2e7416e37877f711fb57aa37955e30b193884a8cb49471f0f12f2",
+        "frontend/narrowing.js": "ba9cf1311ec0c948a0605286a3c85d5312a249684549caf57a5658728d253367",
+        "frontend/node.js": "6c6ce133aeeda6fdc70f69aab256cff7f44bbad517259b83c7c5559a19a1d905",
+        "frontend/program.js": "b85affdaf3d8947e72610146a5eedd734ec2aecfc94ad536b4188922a1344969",
+        "frontend/std.js": "8edd931eeace62f52411a77a4b216c2ae2f1da5e2b7af1cd904d624773f58d09",
+        "frontend/types.js": "cac4a91ab33cee1db929e23fdbac9f4dc39a372bc77956eb92c6765e5fc6b9ac",
+        "frontend/vendor.js": "bbc28f9f707d6d31842cedb1751c9cf9435e08cf3c2a78a237a4daa036131464",
+        "hir/index.js": "a822cbb626043b48d9627a2c71f12eabf03dbe7b6c59eb20873d80ce3d2b3596",
+        "hir/nodes.js": "6a47d787b966301934d61ce8b7972e461a56a455987b9ca05f5d5a955e181a6e",
+        "hir/types.js": "13fa58db64d1a9747b17c09265667ea87a65116b15fe4c8253dfcd78658f03f7",
+        "hir/verify.js": "710d635f4a9c90f03eaec2089554fa2bdb67855a073d9ad885c13d2e765f1a00",
+        "lower/captures.js": "181330db50129d793f4c31459a69216c33469c067d07de76a757fd69650065b3",
+        "lower/index.js": "dadc46af1f4c311bfeff2db633df3053af2561ece4ea69f8f4ec43521fba7046",
+        "lower/scope.js": "c971fac09eca60e261fe42825fd4ad2eb61a6e6caabf53b894c61b836ffbc386",
+        "passes/constfold.js": "41380527cda0b36b07b9ac0a210bd43d8d44a211bdc28a1c04011a5f11ea68c9",
+        "passes/dce.js": "c97606a435d31defc17f583ce15a8137d32f870c5e77dd78a6dc81e44b290807",
+        "passes/index.js": "460a5c687fbe51511f1c4e4fe3fc49ba7fdd5e24228438cc165c9b627c674882",
+        "passes/inline.js": "fc46422d6d0589c89728cd2055e131352e5c2e9f384595bd7bc193aec4864921",
+        "passes/rewrite.js": "cb996b8fad67fdab54305637720d51ff3b6d20ea9a4753377a76c09ea987e40a",
+        "support/diagnostics.js": "2b61ea7c15de3b81df2edf765f6ea4147df31112e1c21502e7ea4985592d8170",
+        "support/features.js": "743d91fe2b6a7e6ad39d2c2e5fe37e84dcbb3742d314fe73abacac99b750a833",
+        "support/index.js": "78396b45ce1d1d25f96505834f02f7d634c40a50f3e8b4fcdbe3e6912350efbe",
+        "support/package-root.js": "c17d3b35030be656529fe8c97684c0063f1e7874b5c05a798d744e6a44cad1c2",
+        "support/phases.js": "4bf4ffd8cc0acb2a66b95a6804f6b36a2b196a1a0be0a63df3d3bd2169747888",
+        "support/sourcemap.js": "90962fb88dd0ffbe97323ca699aff57fc2e8ce0260a7173e9c25f65fd6f191a3",
+        "support/telemetry.js": "14182fc04b54e8a7b4faeb45f01beae802da40d08c21c671c26f1c428019928c",
+        "support/toolchain.js": "cb2b8c968faeeb5c5df3a38c751b5c925eb144f050f718dfaae3bb76daa041d2"
+      }
+    },
+    {
+      "variant": "pgo",
+      "command": [
+        "/Users/listepo/GitHub/_worktrees/stator-ts-t19/zig-out/bin/stator-ts-pgo",
+        "build",
+        "-p",
+        "/Users/listepo/GitHub/listepo/apps/stator/packages/compiler",
+        "--outDir",
+        "/tmp/stator-ts-t19-round5-emission/pgo",
+        "--lib-dir",
+        "tests/node_modules/@typescript/typescript-darwin-arm64/lib",
+        "-j",
+        "16"
+      ],
+      "stdout": "",
+      "stderr": "",
+      "files": {
+        "api.js": "053790f180af79a296e5e7e7cf7e377d7049a46a1c58c58869fbfb578c57beb4",
+        "cli/build.js": "50cb4e143649da484c0157023e87ebee2513e826805d680f9e9603565d9d9b02",
+        "cli/bundler.js": "182474562216a9e0afe336a822817720a70b2d4fa62f1c8e6b90c2c50acc93cd",
+        "cli/compile-jobs.js": "0be6560e720cc97afb3e06746e5e6bafe57417b4a49148e68cf8386888567397",
+        "cli/config.js": "e11bcd4b3ad70e0dd5d589bc465c200805bf0eb744b34c1108549f0997f51dda",
+        "cli/env-file.js": "77e5ceeacdd7bb8af8f80f2eaf318fb65274c028560c0c72db8f8250a3b9c408",
+        "cli/explain.js": "44814ce2fc71b8995761e97d8d412940052f0ef583dcc79630303d168da2f301",
+        "cli/library.js": "625b884758805015a25189f68e2c9ba4f916b6ef66153d12c5dc449801e02b1b",
+        "cli/main.js": "7a036a93a7a2c70c0022528261553dfc5323075de1ce136e636908e7a5311b1b",
+        "cli/outputs.js": "029b6e0c298d13e15e0289e0b6f5361b0b8885433132574de467206114418b21",
+        "cli/render.js": "948942f599681cacb0e7f61f4a1cff843a270d01ae81c1269277712f17941144",
+        "codegen/closures.js": "3dd8ec595e67e686d26dc8cf655e65a36db895ef1d82879488cdc337aa6b8267",
+        "codegen/emitter.js": "71c831df67bd9e59816acafc1cfe5869f978e4768bb4d2de2d5f9ee73645758f",
+        "codegen/expressions.js": "889534e5e3bd243923c411cae2742811278a91e0a12f98e446da297d83b3b6f3",
+        "codegen/helpers.js": "9a3ec42f8fb829d59d09d9c97a88c7b55f25e37982c00e091c5621f627067289",
+        "codegen/index.js": "b5b7a57f39ed38e18f1b7706d70d97ede00d5118503b92e0e2aa23071ed36730",
+        "codegen/install.js": "95cd1c60619902c138ac35b59ff60e81d50a483b514b49988e90c10a0bc61f96",
+        "codegen/module.js": "55c30381d398ea7907653237398ca17850e375827df85eb90a4c34126e50cdbc",
+        "codegen/runtime_calls.js": "4b9300cb55566eb7cce597d02b66b60ce072d50e84f02a245f11f179824170ee",
+        "codegen/slots.js": "2777912b6a7ec918f65a9b52c89ba69a788df401a0ea5216ee85e461df5e22ca",
+        "codegen/statements.js": "3437af1a7ce662725c49d243d703288e86868eeaf6475090f75ca9c9ca592ba8",
+        "codegen/tables.js": "08ae08271099e57fdf90f601615a69ff418998d59a180bdbf50752bf0ad25a2d",
+        "codegen/types.js": "cbf228ea1eea1b5382d98b684cf3323df02306efd51f84040a86c642bfc4948b",
+        "ffi-gen/abi.js": "9f989c31abc0d0fc6ad102de7af0cfc5702dd94f908aab40c9d323171a9938f1",
+        "ffi-gen/ast.js": "5521686331bdb02c2297e2d05eb731bedbc6bee79816f262a74410e5478f7838",
+        "ffi-gen/diff.js": "c7da275e87c0fe545fb2c8488c9c9472644054aaf653a9b32fed2d70012c8542",
+        "ffi-gen/emit.js": "6d00f6e42e2a1ba204c87a7179ea2dbe6b2132338b412896e451444ca86b44e4",
+        "ffi-gen/main.js": "28fd14e8d6514ba6d14fb148287a0b6a4a4e2a73ead3a3c8c820595dacf36f29",
+        "ffi-gen/model.js": "203e13156902e21c16bb8943eb21fddab7be4a24eebc7b444c16b47a232dc55a",
+        "frontend/annotation.js": "8b1769e210267665e1b9508ec963d4d0eb2250e8f4f6c04bf0378cf76c2ab2aa",
+        "frontend/export.js": "41b412d462dee68b774d42f9361cdfcb07c4184fd9958b442ddc9d31fc050e45",
+        "frontend/extern.js": "e23214461ed0634712f9db86614ef5d133175fef96ae68fe0bed68d7e8d4fb4e",
+        "frontend/gate.js": "22f7a8cda8cddca769f54e62c1aa59604bfb92608e318288dcff813b1a6fcfb3",
+        "frontend/generics.js": "e4acf3a593b59a6d9a979445c6609fa4807386a5764c9eec097755ae9caeb8f6",
+        "frontend/graph.js": "e4aab2c316a7d3f30e3501eac35135540b8d98b9eb27dc3eca4da73580683e89",
+        "frontend/index.js": "a21194c8640ce80c1893c20edf82cfc8b27ab4e04d32f8586d9e92c773d4d669",
+        "frontend/location.js": "f8bf45479d0102c0e25e6a6cc57e1f7460774179126079f86169c89cb08b3bd9",
+        "frontend/modules.js": "7aa7c40d77c2e7416e37877f711fb57aa37955e30b193884a8cb49471f0f12f2",
+        "frontend/narrowing.js": "ba9cf1311ec0c948a0605286a3c85d5312a249684549caf57a5658728d253367",
+        "frontend/node.js": "6c6ce133aeeda6fdc70f69aab256cff7f44bbad517259b83c7c5559a19a1d905",
+        "frontend/program.js": "b85affdaf3d8947e72610146a5eedd734ec2aecfc94ad536b4188922a1344969",
+        "frontend/std.js": "8edd931eeace62f52411a77a4b216c2ae2f1da5e2b7af1cd904d624773f58d09",
+        "frontend/types.js": "cac4a91ab33cee1db929e23fdbac9f4dc39a372bc77956eb92c6765e5fc6b9ac",
+        "frontend/vendor.js": "bbc28f9f707d6d31842cedb1751c9cf9435e08cf3c2a78a237a4daa036131464",
+        "hir/index.js": "a822cbb626043b48d9627a2c71f12eabf03dbe7b6c59eb20873d80ce3d2b3596",
+        "hir/nodes.js": "6a47d787b966301934d61ce8b7972e461a56a455987b9ca05f5d5a955e181a6e",
+        "hir/types.js": "13fa58db64d1a9747b17c09265667ea87a65116b15fe4c8253dfcd78658f03f7",
+        "hir/verify.js": "710d635f4a9c90f03eaec2089554fa2bdb67855a073d9ad885c13d2e765f1a00",
+        "lower/captures.js": "181330db50129d793f4c31459a69216c33469c067d07de76a757fd69650065b3",
+        "lower/index.js": "dadc46af1f4c311bfeff2db633df3053af2561ece4ea69f8f4ec43521fba7046",
+        "lower/scope.js": "c971fac09eca60e261fe42825fd4ad2eb61a6e6caabf53b894c61b836ffbc386",
+        "passes/constfold.js": "41380527cda0b36b07b9ac0a210bd43d8d44a211bdc28a1c04011a5f11ea68c9",
+        "passes/dce.js": "c97606a435d31defc17f583ce15a8137d32f870c5e77dd78a6dc81e44b290807",
+        "passes/index.js": "460a5c687fbe51511f1c4e4fe3fc49ba7fdd5e24228438cc165c9b627c674882",
+        "passes/inline.js": "fc46422d6d0589c89728cd2055e131352e5c2e9f384595bd7bc193aec4864921",
+        "passes/rewrite.js": "cb996b8fad67fdab54305637720d51ff3b6d20ea9a4753377a76c09ea987e40a",
+        "support/diagnostics.js": "2b61ea7c15de3b81df2edf765f6ea4147df31112e1c21502e7ea4985592d8170",
+        "support/features.js": "743d91fe2b6a7e6ad39d2c2e5fe37e84dcbb3742d314fe73abacac99b750a833",
+        "support/index.js": "78396b45ce1d1d25f96505834f02f7d634c40a50f3e8b4fcdbe3e6912350efbe",
+        "support/package-root.js": "c17d3b35030be656529fe8c97684c0063f1e7874b5c05a798d744e6a44cad1c2",
+        "support/phases.js": "4bf4ffd8cc0acb2a66b95a6804f6b36a2b196a1a0be0a63df3d3bd2169747888",
+        "support/sourcemap.js": "90962fb88dd0ffbe97323ca699aff57fc2e8ce0260a7173e9c25f65fd6f191a3",
+        "support/telemetry.js": "14182fc04b54e8a7b4faeb45f01beae802da40d08c21c671c26f1c428019928c",
+        "support/toolchain.js": "cb2b8c968faeeb5c5df3a38c751b5c925eb144f050f718dfaae3bb76daa041d2"
+      }
+    }
+  ],
+  "measurements": {
+    "probes": {
+      "binaries": [
+        "/tmp/stator-ts-t19-round5-baseline/bin/stator-ts",
+        "/tmp/stator-ts-t19-round5-probes/bin/stator-ts"
+      ],
+      "args": [
+        "check",
+        "-p",
+        "/Users/listepo/GitHub/listepo/apps/stator/packages/compiler",
+        "--lib-dir",
+        "tests/node_modules/@typescript/typescript-darwin-arm64/lib",
+        "-j",
+        "16"
+      ],
+      "rounds": 30,
+      "warmups": 3,
+      "expected": {
+        "status": 0,
+        "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "medians": [
+        {
+          "wallMs": 420.0058749999989,
+          "cpuMs": 400,
+          "rssBytes": 111599616,
+          "footprintBytes": 102957812,
+          "instructions": 3328109953.5
+        },
+        {
+          "wallMs": 394.90516650000063,
+          "cpuMs": 400,
+          "rssBytes": 111616000,
+          "footprintBytes": 102974196,
+          "instructions": 3314932364.5
+        }
+      ],
+      "reductionPercent": {
+        "wallMs": 5.976275569954437,
+        "cpuMs": 0,
+        "rssBytes": -0.014681054099674462,
+        "footprintBytes": -0.015913314086346553,
+        "instructions": 0.3959481262372888
+      },
+      "samples": [
+        [
+          {
+            "wallMs": 497.1440419999999,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 114475008,
+            "footprintBytes": 105841384,
+            "instructions": 3334676528
+          },
+          {
+            "wallMs": 493.7127909999999,
+            "cpuMs": 400,
+            "rssBytes": 113115136,
+            "footprintBytes": 104465128,
+            "instructions": 3317892045
+          },
+          {
+            "wallMs": 340.59091700000045,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 116228096,
+            "footprintBytes": 107594496,
+            "instructions": 3307057059
+          },
+          {
+            "wallMs": 454.0737079999999,
+            "cpuMs": 420.00000000000006,
+            "rssBytes": 110641152,
+            "footprintBytes": 102007552,
+            "instructions": 3338025228
+          },
+          {
+            "wallMs": 459.12945899999977,
+            "cpuMs": 400,
+            "rssBytes": 107184128,
+            "footprintBytes": 98550528,
+            "instructions": 3326614365
+          },
+          {
+            "wallMs": 541.3655830000007,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 116817920,
+            "footprintBytes": 108184320,
+            "instructions": 3329546131
+          },
+          {
+            "wallMs": 482.17433300000084,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 111099904,
+            "footprintBytes": 102433488,
+            "instructions": 3321173668
+          },
+          {
+            "wallMs": 519.3425829999996,
+            "cpuMs": 400,
+            "rssBytes": 108232704,
+            "footprintBytes": 99582696,
+            "instructions": 3335846593
+          },
+          {
+            "wallMs": 485.3394580000004,
+            "cpuMs": 420.00000000000006,
+            "rssBytes": 112836608,
+            "footprintBytes": 104203008,
+            "instructions": 3322433068
+          },
+          {
+            "wallMs": 722.2074589999993,
+            "cpuMs": 400,
+            "rssBytes": 112066560,
+            "footprintBytes": 103432960,
+            "instructions": 3328827918
+          },
+          {
+            "wallMs": 383.6621249999989,
+            "cpuMs": 380,
+            "rssBytes": 108527616,
+            "footprintBytes": 99877608,
+            "instructions": 3310783058
+          },
+          {
+            "wallMs": 577.1481669999976,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 110444544,
+            "footprintBytes": 101810944,
+            "instructions": 3330115116
+          },
+          {
+            "wallMs": 585.6244999999981,
+            "cpuMs": 400,
+            "rssBytes": 113639424,
+            "footprintBytes": 105005824,
+            "instructions": 3322532098
+          },
+          {
+            "wallMs": 450.74162499999875,
+            "cpuMs": 400,
+            "rssBytes": 108150784,
+            "footprintBytes": 99517184,
+            "instructions": 3313714703
+          },
+          {
+            "wallMs": 536.8563329999997,
+            "cpuMs": 400,
+            "rssBytes": 109101056,
+            "footprintBytes": 100467456,
+            "instructions": 3327818878
+          },
+          {
+            "wallMs": 314.19195799999943,
+            "cpuMs": 390,
+            "rssBytes": 114786304,
+            "footprintBytes": 106152704,
+            "instructions": 3324856318
+          },
+          {
+            "wallMs": 341.88470900000175,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 110903296,
+            "footprintBytes": 102269696,
+            "instructions": 3334446475
+          },
+          {
+            "wallMs": 367.44974999999977,
+            "cpuMs": 400,
+            "rssBytes": 115376128,
+            "footprintBytes": 106726120,
+            "instructions": 3331714007
+          },
+          {
+            "wallMs": 341.008082999997,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 112951296,
+            "footprintBytes": 104317696,
+            "instructions": 3331256679
+          },
+          {
+            "wallMs": 306.8043749999997,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 111411200,
+            "footprintBytes": 102761192,
+            "instructions": 3333611161
+          },
+          {
+            "wallMs": 287.4747499999976,
+            "cpuMs": 420.00000000000006,
+            "rssBytes": 113049600,
+            "footprintBytes": 104416000,
+            "instructions": 3328710774
+          },
+          {
+            "wallMs": 374.5867909999979,
+            "cpuMs": 400,
+            "rssBytes": 110198784,
+            "footprintBytes": 101548776,
+            "instructions": 3332523559
+          },
+          {
+            "wallMs": 373.53633400000035,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 113655808,
+            "footprintBytes": 105022208,
+            "instructions": 3332463754
+          },
+          {
+            "wallMs": 362.3299999999981,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 108462080,
+            "footprintBytes": 99812072,
+            "instructions": 3321996934
+          },
+          {
+            "wallMs": 347.703125,
+            "cpuMs": 400,
+            "rssBytes": 111788032,
+            "footprintBytes": 103154432,
+            "instructions": 3331090214
+          },
+          {
+            "wallMs": 480.9128329999985,
+            "cpuMs": 420.00000000000006,
+            "rssBytes": 116031488,
+            "footprintBytes": 107397888,
+            "instructions": 3328327417
+          },
+          {
+            "wallMs": 460.7465000000011,
+            "cpuMs": 400,
+            "rssBytes": 115179520,
+            "footprintBytes": 106545920,
+            "instructions": 3327819503
+          },
+          {
+            "wallMs": 389.2701249999991,
+            "cpuMs": 400,
+            "rssBytes": 111116288,
+            "footprintBytes": 102449872,
+            "instructions": 3325942820
+          },
+          {
+            "wallMs": 344.9101249999985,
+            "cpuMs": 390,
+            "rssBytes": 111247360,
+            "footprintBytes": 102613760,
+            "instructions": 3305878512
+          },
+          {
+            "wallMs": 335.03745900000285,
+            "cpuMs": 400,
+            "rssBytes": 110608384,
+            "footprintBytes": 101974784,
+            "instructions": 3327892490
+          }
+        ],
+        [
+          {
+            "wallMs": 382.5366670000003,
+            "cpuMs": 400,
+            "rssBytes": 112050176,
+            "footprintBytes": 103416576,
+            "instructions": 3331072837
+          },
+          {
+            "wallMs": 524.066167,
+            "cpuMs": 420.00000000000006,
+            "rssBytes": 118882304,
+            "footprintBytes": 110248704,
+            "instructions": 3323754755
+          },
+          {
+            "wallMs": 406.4571249999999,
+            "cpuMs": 420,
+            "rssBytes": 108118016,
+            "footprintBytes": 99484416,
+            "instructions": 3298115732
+          },
+          {
+            "wallMs": 848.221458,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 115752960,
+            "footprintBytes": 107119360,
+            "instructions": 3321952524
+          },
+          {
+            "wallMs": 326.7852920000005,
+            "cpuMs": 390,
+            "rssBytes": 110362624,
+            "footprintBytes": 101729024,
+            "instructions": 3316059345
+          },
+          {
+            "wallMs": 455.34037499999977,
+            "cpuMs": 400,
+            "rssBytes": 115064832,
+            "footprintBytes": 106431232,
+            "instructions": 3311220895
+          },
+          {
+            "wallMs": 339.4474169999994,
+            "cpuMs": 390,
+            "rssBytes": 114343936,
+            "footprintBytes": 105693928,
+            "instructions": 3315944594
+          },
+          {
+            "wallMs": 620.2021249999998,
+            "cpuMs": 380,
+            "rssBytes": 110018560,
+            "footprintBytes": 101384960,
+            "instructions": 3315196571
+          },
+          {
+            "wallMs": 551.87075,
+            "cpuMs": 400,
+            "rssBytes": 104726528,
+            "footprintBytes": 96076520,
+            "instructions": 3304642353
+          },
+          {
+            "wallMs": 659.1308340000014,
+            "cpuMs": 390,
+            "rssBytes": 113049600,
+            "footprintBytes": 104416000,
+            "instructions": 3308811577
+          },
+          {
+            "wallMs": 714.6006669999988,
+            "cpuMs": 400,
+            "rssBytes": 112033792,
+            "footprintBytes": 103400192,
+            "instructions": 3322472947
+          },
+          {
+            "wallMs": 620.6388329999991,
+            "cpuMs": 400,
+            "rssBytes": 107905024,
+            "footprintBytes": 99238608,
+            "instructions": 3321450467
+          },
+          {
+            "wallMs": 537.3497079999979,
+            "cpuMs": 430,
+            "rssBytes": 113836032,
+            "footprintBytes": 105202432,
+            "instructions": 3309708284
+          },
+          {
+            "wallMs": 392.1927910000013,
+            "cpuMs": 390,
+            "rssBytes": 105824256,
+            "footprintBytes": 97174248,
+            "instructions": 3290547433
+          },
+          {
+            "wallMs": 430.8820830000004,
+            "cpuMs": 390,
+            "rssBytes": 109821952,
+            "footprintBytes": 101188352,
+            "instructions": 3314231806
+          },
+          {
+            "wallMs": 357.1357910000006,
+            "cpuMs": 400,
+            "rssBytes": 107773952,
+            "footprintBytes": 99123944,
+            "instructions": 3316260823
+          },
+          {
+            "wallMs": 397.61754199999996,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 110919680,
+            "footprintBytes": 102286080,
+            "instructions": 3319754599
+          },
+          {
+            "wallMs": 378.3780420000003,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 110166016,
+            "footprintBytes": 101548824,
+            "instructions": 3312404867
+          },
+          {
+            "wallMs": 383.16683399999965,
+            "cpuMs": 400,
+            "rssBytes": 111640576,
+            "footprintBytes": 103006976,
+            "instructions": 3313469751
+          },
+          {
+            "wallMs": 368.6950419999994,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 112279552,
+            "footprintBytes": 103629544,
+            "instructions": 3314262985
+          },
+          {
+            "wallMs": 481.40733399999954,
+            "cpuMs": 400,
+            "rssBytes": 118095872,
+            "footprintBytes": 109462272,
+            "instructions": 3325641458
+          },
+          {
+            "wallMs": 416.51570800000263,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 111296512,
+            "footprintBytes": 102662912,
+            "instructions": 3314668158
+          },
+          {
+            "wallMs": 376.70958299999984,
+            "cpuMs": 400,
+            "rssBytes": 112689152,
+            "footprintBytes": 104039144,
+            "instructions": 3316920709
+          },
+          {
+            "wallMs": 387.24083299999984,
+            "cpuMs": 400,
+            "rssBytes": 113688576,
+            "footprintBytes": 105038568,
+            "instructions": 3312331176
+          },
+          {
+            "wallMs": 345.67375000000175,
+            "cpuMs": 400,
+            "rssBytes": 110460928,
+            "footprintBytes": 101827328,
+            "instructions": 3318877653
+          },
+          {
+            "wallMs": 512.4573749999981,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 111591424,
+            "footprintBytes": 102941416,
+            "instructions": 3321136411
+          },
+          {
+            "wallMs": 343.4343329999974,
+            "cpuMs": 400,
+            "rssBytes": 114966528,
+            "footprintBytes": 106332928,
+            "instructions": 3313095829
+          },
+          {
+            "wallMs": 325.1973340000004,
+            "cpuMs": 420.00000000000006,
+            "rssBytes": 112001024,
+            "footprintBytes": 103367424,
+            "instructions": 3315731505
+          },
+          {
+            "wallMs": 345.1298749999987,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 108953600,
+            "footprintBytes": 100320000,
+            "instructions": 3307722100
+          },
+          {
+            "wallMs": 298.79129199999807,
+            "cpuMs": 420.00000000000006,
+            "rssBytes": 110264320,
+            "footprintBytes": 101614312,
+            "instructions": 3311295175
+          }
+        ]
+      ],
+      "pairedInstructionReductionPercent": {
+        "median": 0.3971263475292641,
+        "percentileBootstrap95": [
+          0.28066669652166976,
+          0.49011844016854655
+        ],
+        "resamples": 10000,
+        "seed": 19
+      }
+    },
+    "pgo-compiler": {
+      "binaries": [
+        "/tmp/stator-ts-t19-round5-baseline/bin/stator-ts",
+        "/Users/listepo/GitHub/_worktrees/stator-ts-t19/zig-out/bin/stator-ts-pgo"
+      ],
+      "args": [
+        "check",
+        "-p",
+        "/Users/listepo/GitHub/listepo/apps/stator/packages/compiler",
+        "--lib-dir",
+        "tests/node_modules/@typescript/typescript-darwin-arm64/lib",
+        "-j",
+        "16"
+      ],
+      "rounds": 30,
+      "warmups": 3,
+      "expected": {
+        "status": 0,
+        "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "medians": [
+        {
+          "wallMs": 131.61158350000028,
+          "cpuMs": 365,
+          "rssBytes": 112664576,
+          "footprintBytes": 104014568,
+          "instructions": 3289981995.5
+        },
+        {
+          "wallMs": 117.94816650000007,
+          "cpuMs": 330,
+          "rssBytes": 114966528,
+          "footprintBytes": 106193676,
+          "instructions": 2678303525.5
+        }
+      ],
+      "reductionPercent": {
+        "wallMs": 10.381621918560214,
+        "cpuMs": 9.589041095890416,
+        "rssBytes": -2.0431905766014724,
+        "footprintBytes": -2.095002692315173,
+        "instructions": 18.592152505291725
+      },
+      "samples": [
+        [
+          {
+            "wallMs": 115.66987500000005,
+            "cpuMs": 380,
+            "rssBytes": 112623616,
+            "footprintBytes": 103973608,
+            "instructions": 3250036367
+          },
+          {
+            "wallMs": 139.40708300000006,
+            "cpuMs": 400,
+            "rssBytes": 110051328,
+            "footprintBytes": 101401320,
+            "instructions": 3327374790
+          },
+          {
+            "wallMs": 118.70079199999986,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 115998720,
+            "footprintBytes": 107348712,
+            "instructions": 3147890125
+          },
+          {
+            "wallMs": 134.2722920000001,
+            "cpuMs": 370,
+            "rssBytes": 111820800,
+            "footprintBytes": 103187200,
+            "instructions": 3303681302
+          },
+          {
+            "wallMs": 132.42020900000034,
+            "cpuMs": 370,
+            "rssBytes": 113115136,
+            "footprintBytes": 104481536,
+            "instructions": 3302227511
+          },
+          {
+            "wallMs": 116.88100000000031,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 113410048,
+            "footprintBytes": 104760040,
+            "instructions": 3131040086
+          },
+          {
+            "wallMs": 120.10054200000013,
+            "cpuMs": 380,
+            "rssBytes": 115048448,
+            "footprintBytes": 106398440,
+            "instructions": 3299885241
+          },
+          {
+            "wallMs": 139.55016700000033,
+            "cpuMs": 360,
+            "rssBytes": 110706688,
+            "footprintBytes": 102056680,
+            "instructions": 3208432492
+          },
+          {
+            "wallMs": 133.29233299999987,
+            "cpuMs": 380,
+            "rssBytes": 112214016,
+            "footprintBytes": 103564008,
+            "instructions": 3303982662
+          },
+          {
+            "wallMs": 120.89816699999983,
+            "cpuMs": 380,
+            "rssBytes": 108838912,
+            "footprintBytes": 100188904,
+            "instructions": 3294255437
+          },
+          {
+            "wallMs": 128.82700000000023,
+            "cpuMs": 370,
+            "rssBytes": 115589120,
+            "footprintBytes": 106939112,
+            "instructions": 3297790048
+          },
+          {
+            "wallMs": 123.49483300000065,
+            "cpuMs": 370,
+            "rssBytes": 112984064,
+            "footprintBytes": 104334056,
+            "instructions": 3285113816
+          },
+          {
+            "wallMs": 113.04883299999983,
+            "cpuMs": 320,
+            "rssBytes": 114704384,
+            "footprintBytes": 106054376,
+            "instructions": 3119042530
+          },
+          {
+            "wallMs": 144.22591600000032,
+            "cpuMs": 360,
+            "rssBytes": 116080640,
+            "footprintBytes": 107447040,
+            "instructions": 3241949091
+          },
+          {
+            "wallMs": 137.99483400000008,
+            "cpuMs": 400,
+            "rssBytes": 111820800,
+            "footprintBytes": 103170792,
+            "instructions": 3313899642
+          },
+          {
+            "wallMs": 128.25508400000035,
+            "cpuMs": 370,
+            "rssBytes": 113721344,
+            "footprintBytes": 105071336,
+            "instructions": 3301873111
+          },
+          {
+            "wallMs": 134.809166,
+            "cpuMs": 380,
+            "rssBytes": 111869952,
+            "footprintBytes": 103219944,
+            "instructions": 3298003424
+          },
+          {
+            "wallMs": 122.24533299999985,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 113688576,
+            "footprintBytes": 105038568,
+            "instructions": 3151790872
+          },
+          {
+            "wallMs": 118.1593329999996,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 112705536,
+            "footprintBytes": 104055528,
+            "instructions": 3133491611
+          },
+          {
+            "wallMs": 141.01829199999975,
+            "cpuMs": 380,
+            "rssBytes": 110657536,
+            "footprintBytes": 102007528,
+            "instructions": 3318339134
+          },
+          {
+            "wallMs": 140.50037499999962,
+            "cpuMs": 360,
+            "rssBytes": 111837184,
+            "footprintBytes": 103203584,
+            "instructions": 3306869780
+          },
+          {
+            "wallMs": 118.95920799999931,
+            "cpuMs": 350,
+            "rssBytes": 109494272,
+            "footprintBytes": 100844264,
+            "instructions": 3222789888
+          },
+          {
+            "wallMs": 121.89987500000007,
+            "cpuMs": 360,
+            "rssBytes": 113295360,
+            "footprintBytes": 104645352,
+            "instructions": 3290078106
+          },
+          {
+            "wallMs": 130.80295800000022,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 112132096,
+            "footprintBytes": 103482088,
+            "instructions": 3163878085
+          },
+          {
+            "wallMs": 146.67308400000002,
+            "cpuMs": 370,
+            "rssBytes": 115474432,
+            "footprintBytes": 106824424,
+            "instructions": 3328092716
+          },
+          {
+            "wallMs": 158.79541600000084,
+            "cpuMs": 350,
+            "rssBytes": 113786880,
+            "footprintBytes": 105136872,
+            "instructions": 3177427789
+          },
+          {
+            "wallMs": 133.37879199999952,
+            "cpuMs": 380,
+            "rssBytes": 109412352,
+            "footprintBytes": 100762344,
+            "instructions": 3303077882
+          },
+          {
+            "wallMs": 159.36291600000004,
+            "cpuMs": 360,
+            "rssBytes": 112607232,
+            "footprintBytes": 103940816,
+            "instructions": 3226488348
+          },
+          {
+            "wallMs": 125.07066600000144,
+            "cpuMs": 350,
+            "rssBytes": 111951872,
+            "footprintBytes": 103301864,
+            "instructions": 3206795472
+          },
+          {
+            "wallMs": 136.91537499999868,
+            "cpuMs": 360,
+            "rssBytes": 114196480,
+            "footprintBytes": 105562880,
+            "instructions": 3289885885
+          }
+        ],
+        [
+          {
+            "wallMs": 123.1697079999999,
+            "cpuMs": 330,
+            "rssBytes": 115572736,
+            "footprintBytes": 106791680,
+            "instructions": 2700814544
+          },
+          {
+            "wallMs": 112.73945800000001,
+            "cpuMs": 320,
+            "rssBytes": 115851264,
+            "footprintBytes": 107070208,
+            "instructions": 2609187222
+          },
+          {
+            "wallMs": 115.14920800000004,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 113524736,
+            "footprintBytes": 104760088,
+            "instructions": 2683484219
+          },
+          {
+            "wallMs": 108.6254170000002,
+            "cpuMs": 340,
+            "rssBytes": 117211136,
+            "footprintBytes": 108430080,
+            "instructions": 2628817696
+          },
+          {
+            "wallMs": 117.63266700000031,
+            "cpuMs": 310,
+            "rssBytes": 116047872,
+            "footprintBytes": 107266816,
+            "instructions": 2570687910
+          },
+          {
+            "wallMs": 107.5702080000001,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 112541696,
+            "footprintBytes": 103760640,
+            "instructions": 2633460678
+          },
+          {
+            "wallMs": 113.0635000000002,
+            "cpuMs": 350,
+            "rssBytes": 112574464,
+            "footprintBytes": 103793408,
+            "instructions": 2688551357
+          },
+          {
+            "wallMs": 133.71879199999967,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 115277824,
+            "footprintBytes": 106496768,
+            "instructions": 2695338356
+          },
+          {
+            "wallMs": 102.35866600000008,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 115359744,
+            "footprintBytes": 106578688,
+            "instructions": 2560929572
+          },
+          {
+            "wallMs": 103.61916700000029,
+            "cpuMs": 330,
+            "rssBytes": 112902144,
+            "footprintBytes": 104137496,
+            "instructions": 2647978787
+          },
+          {
+            "wallMs": 115.92025000000012,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 116129792,
+            "footprintBytes": 107348736,
+            "instructions": 2661594279
+          },
+          {
+            "wallMs": 125.27470799999946,
+            "cpuMs": 320,
+            "rssBytes": 114655232,
+            "footprintBytes": 105890584,
+            "instructions": 2675698522
+          },
+          {
+            "wallMs": 113.16804200000024,
+            "cpuMs": 360,
+            "rssBytes": 113180672,
+            "footprintBytes": 104399616,
+            "instructions": 2687260689
+          },
+          {
+            "wallMs": 120.40979100000004,
+            "cpuMs": 340,
+            "rssBytes": 114311168,
+            "footprintBytes": 105530112,
+            "instructions": 2682799839
+          },
+          {
+            "wallMs": 106.33412500000031,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 115900416,
+            "footprintBytes": 107119360,
+            "instructions": 2514530531
+          },
+          {
+            "wallMs": 101.03587500000049,
+            "cpuMs": 290.00000000000006,
+            "rssBytes": 111116288,
+            "footprintBytes": 102335232,
+            "instructions": 2512605445
+          },
+          {
+            "wallMs": 123.01058299999931,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 110854144,
+            "footprintBytes": 102056680,
+            "instructions": 2680908529
+          },
+          {
+            "wallMs": 118.26366599999983,
+            "cpuMs": 320,
+            "rssBytes": 115441664,
+            "footprintBytes": 106677016,
+            "instructions": 2687522927
+          },
+          {
+            "wallMs": 122.62433400000009,
+            "cpuMs": 350,
+            "rssBytes": 116850688,
+            "footprintBytes": 108086040,
+            "instructions": 2699866669
+          },
+          {
+            "wallMs": 121.36362499999996,
+            "cpuMs": 350,
+            "rssBytes": 114458624,
+            "footprintBytes": 105693976,
+            "instructions": 2687467214
+          },
+          {
+            "wallMs": 112.88495900000089,
+            "cpuMs": 300,
+            "rssBytes": 108642304,
+            "footprintBytes": 99844840,
+            "instructions": 2522847419
+          },
+          {
+            "wallMs": 107.67362500000036,
+            "cpuMs": 360,
+            "rssBytes": 116015104,
+            "footprintBytes": 107234048,
+            "instructions": 2669677851
+          },
+          {
+            "wallMs": 128.53208300000006,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 111116288,
+            "footprintBytes": 102335232,
+            "instructions": 2673607781
+          },
+          {
+            "wallMs": 109.08895800000028,
+            "cpuMs": 290.00000000000006,
+            "rssBytes": 116817920,
+            "footprintBytes": 108053272,
+            "instructions": 2583109683
+          },
+          {
+            "wallMs": 124.57012500000019,
+            "cpuMs": 360,
+            "rssBytes": 114130944,
+            "footprintBytes": 105349888,
+            "instructions": 2692313640
+          },
+          {
+            "wallMs": 165.4052499999998,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 117506048,
+            "footprintBytes": 108741400,
+            "instructions": 2702415924
+          },
+          {
+            "wallMs": 119.54983300000004,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 115359744,
+            "footprintBytes": 106595096,
+            "instructions": 2682445036
+          },
+          {
+            "wallMs": 119.1155830000007,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 115654656,
+            "footprintBytes": 106890008,
+            "instructions": 2681584894
+          },
+          {
+            "wallMs": 118.39033300000119,
+            "cpuMs": 310.00000000000006,
+            "rssBytes": 112607232,
+            "footprintBytes": 103809768,
+            "instructions": 2665545123
+          },
+          {
+            "wallMs": 139.2987920000014,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 111886336,
+            "footprintBytes": 103105280,
+            "instructions": 2684064282
+          }
+        ]
+      ],
+      "pairedInstructionReductionPercent": {
+        "median": 18.538362821031285,
+        "percentileBootstrap95": [
+          17.030733168198736,
+          19.057541717715196
+        ],
+        "resamples": 10000,
+        "seed": 19
+      }
+    },
+    "pgo-function-body": {
+      "binaries": [
+        "/tmp/stator-ts-t19-round5-baseline/bin/stator-ts",
+        "/Users/listepo/GitHub/_worktrees/stator-ts-t19/zig-out/bin/stator-ts-pgo"
+      ],
+      "args": [
+        "check",
+        "-p",
+        "tests/fixtures/function-body-across-files",
+        "--lib-dir",
+        "tests/node_modules/@typescript/typescript-darwin-arm64/lib",
+        "-j",
+        "16"
+      ],
+      "rounds": 30,
+      "warmups": 3,
+      "expected": {
+        "status": 2,
+        "stdoutSha256": "3baadde9baeb0a3b43a73404d9e38758f4504f91f000155fb2c1db095bbc91a4"
+      },
+      "medians": [
+        {
+          "wallMs": 26.263041500000043,
+          "cpuMs": 20,
+          "rssBytes": 22642688,
+          "footprintBytes": 18137568,
+          "instructions": 213698794.5
+        },
+        {
+          "wallMs": 25.338478999999992,
+          "cpuMs": 10,
+          "rssBytes": 22831104,
+          "footprintBytes": 18096608,
+          "instructions": 189136671.5
+        }
+      ],
+      "reductionPercent": {
+        "wallMs": 3.5203938584190575,
+        "cpuMs": 50,
+        "rssBytes": -0.8321273516642469,
+        "footprintBytes": 0.22582961508400556,
+        "instructions": 11.493805127665336
+      },
+      "samples": [
+        [
+          {
+            "wallMs": 26.583,
+            "cpuMs": 20,
+            "rssBytes": 22609920,
+            "footprintBytes": 18104800,
+            "instructions": 212079858
+          },
+          {
+            "wallMs": 25.761082999999985,
+            "cpuMs": 30,
+            "rssBytes": 22593536,
+            "footprintBytes": 18088416,
+            "instructions": 225146963
+          },
+          {
+            "wallMs": 26.09141699999998,
+            "cpuMs": 20,
+            "rssBytes": 22642688,
+            "footprintBytes": 18137568,
+            "instructions": 213868687
+          },
+          {
+            "wallMs": 30.923541999999998,
+            "cpuMs": 20,
+            "rssBytes": 22577152,
+            "footprintBytes": 18072032,
+            "instructions": 221897897
+          },
+          {
+            "wallMs": 36.86845800000003,
+            "cpuMs": 30,
+            "rssBytes": 22642688,
+            "footprintBytes": 18137568,
+            "instructions": 222276868
+          },
+          {
+            "wallMs": 28.254500000000007,
+            "cpuMs": 20,
+            "rssBytes": 22675456,
+            "footprintBytes": 18170336,
+            "instructions": 218318742
+          },
+          {
+            "wallMs": 23.46170900000004,
+            "cpuMs": 20,
+            "rssBytes": 22593536,
+            "footprintBytes": 18088416,
+            "instructions": 215229051
+          },
+          {
+            "wallMs": 26.780666999999994,
+            "cpuMs": 20,
+            "rssBytes": 22708224,
+            "footprintBytes": 18203104,
+            "instructions": 210434379
+          },
+          {
+            "wallMs": 23.808917000000065,
+            "cpuMs": 20,
+            "rssBytes": 22593536,
+            "footprintBytes": 18088416,
+            "instructions": 210743516
+          },
+          {
+            "wallMs": 25.919083,
+            "cpuMs": 20,
+            "rssBytes": 22642688,
+            "footprintBytes": 18137568,
+            "instructions": 213426213
+          },
+          {
+            "wallMs": 30.224040999999943,
+            "cpuMs": 20,
+            "rssBytes": 22609920,
+            "footprintBytes": 18104800,
+            "instructions": 213144782
+          },
+          {
+            "wallMs": 27.483791999999994,
+            "cpuMs": 20,
+            "rssBytes": 22724608,
+            "footprintBytes": 18235896,
+            "instructions": 212356917
+          },
+          {
+            "wallMs": 23.312374999999975,
+            "cpuMs": 20,
+            "rssBytes": 22675456,
+            "footprintBytes": 18170336,
+            "instructions": 210964559
+          },
+          {
+            "wallMs": 24.15300000000002,
+            "cpuMs": 20,
+            "rssBytes": 22659072,
+            "footprintBytes": 18153952,
+            "instructions": 222225610
+          },
+          {
+            "wallMs": 33.58420799999999,
+            "cpuMs": 20,
+            "rssBytes": 22691840,
+            "footprintBytes": 18186720,
+            "instructions": 213652998
+          },
+          {
+            "wallMs": 23.51495799999998,
+            "cpuMs": 20,
+            "rssBytes": 22691840,
+            "footprintBytes": 18186720,
+            "instructions": 212106919
+          },
+          {
+            "wallMs": 24.6421670000002,
+            "cpuMs": 20,
+            "rssBytes": 22609920,
+            "footprintBytes": 18121208,
+            "instructions": 211408941
+          },
+          {
+            "wallMs": 24.800666999999976,
+            "cpuMs": 20,
+            "rssBytes": 22593536,
+            "footprintBytes": 18088416,
+            "instructions": 211566695
+          },
+          {
+            "wallMs": 24.736875000000055,
+            "cpuMs": 20,
+            "rssBytes": 22675456,
+            "footprintBytes": 18170336,
+            "instructions": 222616319
+          },
+          {
+            "wallMs": 27.121582999999873,
+            "cpuMs": 20,
+            "rssBytes": 22609920,
+            "footprintBytes": 18104800,
+            "instructions": 212207653
+          },
+          {
+            "wallMs": 25.58795800000007,
+            "cpuMs": 20,
+            "rssBytes": 22659072,
+            "footprintBytes": 18153952,
+            "instructions": 213744591
+          },
+          {
+            "wallMs": 24.621209000000135,
+            "cpuMs": 20,
+            "rssBytes": 22659072,
+            "footprintBytes": 18153952,
+            "instructions": 213355281
+          },
+          {
+            "wallMs": 27.502042000000074,
+            "cpuMs": 20,
+            "rssBytes": 22609920,
+            "footprintBytes": 18104800,
+            "instructions": 213417624
+          },
+          {
+            "wallMs": 25.38479099999995,
+            "cpuMs": 20,
+            "rssBytes": 22626304,
+            "footprintBytes": 18121184,
+            "instructions": 211634768
+          },
+          {
+            "wallMs": 30.094250000000102,
+            "cpuMs": 30,
+            "rssBytes": 22642688,
+            "footprintBytes": 18137568,
+            "instructions": 223892101
+          },
+          {
+            "wallMs": 26.889666000000034,
+            "cpuMs": 20,
+            "rssBytes": 22626304,
+            "footprintBytes": 18121184,
+            "instructions": 218950371
+          },
+          {
+            "wallMs": 26.434666000000107,
+            "cpuMs": 30,
+            "rssBytes": 22626304,
+            "footprintBytes": 18121184,
+            "instructions": 220529577
+          },
+          {
+            "wallMs": 24.39908300000002,
+            "cpuMs": 20,
+            "rssBytes": 22642688,
+            "footprintBytes": 18137568,
+            "instructions": 214253334
+          },
+          {
+            "wallMs": 33.70074999999997,
+            "cpuMs": 30,
+            "rssBytes": 22642688,
+            "footprintBytes": 18137568,
+            "instructions": 230703973
+          },
+          {
+            "wallMs": 36.65258300000005,
+            "cpuMs": 30,
+            "rssBytes": 22593536,
+            "footprintBytes": 18088416,
+            "instructions": 230185447
+          }
+        ],
+        [
+          {
+            "wallMs": 25.615083,
+            "cpuMs": 10,
+            "rssBytes": 22806528,
+            "footprintBytes": 18072032,
+            "instructions": 189905868
+          },
+          {
+            "wallMs": 26.39575000000002,
+            "cpuMs": 10,
+            "rssBytes": 22839296,
+            "footprintBytes": 18104800,
+            "instructions": 189048347
+          },
+          {
+            "wallMs": 25.672000000000025,
+            "cpuMs": 10,
+            "rssBytes": 22839296,
+            "footprintBytes": 18104800,
+            "instructions": 189593045
+          },
+          {
+            "wallMs": 24.571916999999985,
+            "cpuMs": 10,
+            "rssBytes": 22872064,
+            "footprintBytes": 18137568,
+            "instructions": 187752627
+          },
+          {
+            "wallMs": 25.634040999999968,
+            "cpuMs": 10,
+            "rssBytes": 22872064,
+            "footprintBytes": 18137568,
+            "instructions": 189989916
+          },
+          {
+            "wallMs": 25.061874999999986,
+            "cpuMs": 10,
+            "rssBytes": 22822912,
+            "footprintBytes": 18088416,
+            "instructions": 186825684
+          },
+          {
+            "wallMs": 25.886582999999973,
+            "cpuMs": 10,
+            "rssBytes": 22806528,
+            "footprintBytes": 18072032,
+            "instructions": 186929024
+          },
+          {
+            "wallMs": 25.68662500000005,
+            "cpuMs": 10,
+            "rssBytes": 22773760,
+            "footprintBytes": 18039264,
+            "instructions": 187255439
+          },
+          {
+            "wallMs": 24.498874999999998,
+            "cpuMs": 10,
+            "rssBytes": 22822912,
+            "footprintBytes": 18088416,
+            "instructions": 194758230
+          },
+          {
+            "wallMs": 26.097624999999994,
+            "cpuMs": 10,
+            "rssBytes": 22790144,
+            "footprintBytes": 18055648,
+            "instructions": 198576313
+          },
+          {
+            "wallMs": 23.31554200000005,
+            "cpuMs": 20,
+            "rssBytes": 22855680,
+            "footprintBytes": 18121184,
+            "instructions": 198135647
+          },
+          {
+            "wallMs": 22.770958000000064,
+            "cpuMs": 10,
+            "rssBytes": 22822912,
+            "footprintBytes": 18088416,
+            "instructions": 189083877
+          },
+          {
+            "wallMs": 23.428750000000036,
+            "cpuMs": 10,
+            "rssBytes": 22790144,
+            "footprintBytes": 18055648,
+            "instructions": 187561745
+          },
+          {
+            "wallMs": 21.657916999999998,
+            "cpuMs": 10,
+            "rssBytes": 22839296,
+            "footprintBytes": 18104800,
+            "instructions": 186593414
+          },
+          {
+            "wallMs": 24.989124999999945,
+            "cpuMs": 10,
+            "rssBytes": 22839296,
+            "footprintBytes": 18104800,
+            "instructions": 188831363
+          },
+          {
+            "wallMs": 28.447125000000028,
+            "cpuMs": 20,
+            "rssBytes": 22822912,
+            "footprintBytes": 18088416,
+            "instructions": 200067827
+          },
+          {
+            "wallMs": 22.61520799999994,
+            "cpuMs": 10,
+            "rssBytes": 22839296,
+            "footprintBytes": 18104800,
+            "instructions": 186429321
+          },
+          {
+            "wallMs": 22.606250000000045,
+            "cpuMs": 10,
+            "rssBytes": 22872064,
+            "footprintBytes": 18137568,
+            "instructions": 186628228
+          },
+          {
+            "wallMs": 23.036084000000074,
+            "cpuMs": 10,
+            "rssBytes": 22757376,
+            "footprintBytes": 18022880,
+            "instructions": 188768502
+          },
+          {
+            "wallMs": 24.193083000000115,
+            "cpuMs": 10,
+            "rssBytes": 22806528,
+            "footprintBytes": 18072032,
+            "instructions": 186777824
+          },
+          {
+            "wallMs": 27.125458000000208,
+            "cpuMs": 10,
+            "rssBytes": 22806528,
+            "footprintBytes": 18072032,
+            "instructions": 189189466
+          },
+          {
+            "wallMs": 26.241166999999905,
+            "cpuMs": 10,
+            "rssBytes": 22888448,
+            "footprintBytes": 18170360,
+            "instructions": 197368584
+          },
+          {
+            "wallMs": 22.76408400000014,
+            "cpuMs": 10,
+            "rssBytes": 22872064,
+            "footprintBytes": 18137568,
+            "instructions": 187260650
+          },
+          {
+            "wallMs": 22.753041000000167,
+            "cpuMs": 10,
+            "rssBytes": 22822912,
+            "footprintBytes": 18088416,
+            "instructions": 186158883
+          },
+          {
+            "wallMs": 23.62154099999998,
+            "cpuMs": 10,
+            "rssBytes": 22839296,
+            "footprintBytes": 18104800,
+            "instructions": 189907150
+          },
+          {
+            "wallMs": 30.516458000000057,
+            "cpuMs": 10,
+            "rssBytes": 22839296,
+            "footprintBytes": 18104800,
+            "instructions": 189926159
+          },
+          {
+            "wallMs": 25.74070900000015,
+            "cpuMs": 10,
+            "rssBytes": 22921216,
+            "footprintBytes": 18186720,
+            "instructions": 189613975
+          },
+          {
+            "wallMs": 29.343042000000196,
+            "cpuMs": 20,
+            "rssBytes": 22822912,
+            "footprintBytes": 18088416,
+            "instructions": 189598206
+          },
+          {
+            "wallMs": 29.121416999999838,
+            "cpuMs": 20,
+            "rssBytes": 22790144,
+            "footprintBytes": 18055648,
+            "instructions": 200034900
+          },
+          {
+            "wallMs": 27.950667000000067,
+            "cpuMs": 20,
+            "rssBytes": 22888448,
+            "footprintBytes": 18153952,
+            "instructions": 195498096
+          }
+        ]
+      ],
+      "pairedInstructionReductionPercent": {
+        "median": 11.8996234010114,
+        "percentileBootstrap95": [
+          11.350722885393694,
+          13.274879877640616
+        ],
+        "resamples": 10000,
+        "seed": 19
+      }
+    },
+    "pgo-settled": {
+      "binaries": [
+        "/tmp/stator-ts-t19-round5-baseline/bin/stator-ts",
+        "/Users/listepo/GitHub/_worktrees/stator-ts-t19/zig-out/bin/stator-ts-pgo"
+      ],
+      "args": [
+        "check",
+        "-p",
+        "tests/fixtures/settled-visits",
+        "--lib-dir",
+        "tests/node_modules/@typescript/typescript-darwin-arm64/lib",
+        "-j",
+        "16"
+      ],
+      "rounds": 30,
+      "warmups": 3,
+      "expected": {
+        "status": 2,
+        "stdoutSha256": "0ac6a05fb7fb8218ef540eb17bc41128da4804e088e059e3c8677f657a2a0bc5"
+      },
+      "medians": [
+        {
+          "wallMs": 76.30718750000011,
+          "cpuMs": 30,
+          "rssBytes": 23805952,
+          "footprintBytes": 19382752,
+          "instructions": 404802119
+        },
+        {
+          "wallMs": 68.60583299999985,
+          "cpuMs": 30,
+          "rssBytes": 24346624,
+          "footprintBytes": 19677664,
+          "instructions": 346628544
+        }
+      ],
+      "reductionPercent": {
+        "wallMs": 10.092567623463067,
+        "cpuMs": 0,
+        "rssBytes": -2.271163110805241,
+        "footprintBytes": -1.5215176874780134,
+        "instructions": 14.370867213765749
+      },
+      "samples": [
+        [
+          {
+            "wallMs": 35.841125000000005,
+            "cpuMs": 30,
+            "rssBytes": 23805952,
+            "footprintBytes": 19366344,
+            "instructions": 390848943
+          },
+          {
+            "wallMs": 75.69916599999999,
+            "cpuMs": 30,
+            "rssBytes": 24035328,
+            "footprintBytes": 19628536,
+            "instructions": 395571940
+          },
+          {
+            "wallMs": 43.80891700000001,
+            "cpuMs": 30,
+            "rssBytes": 23805952,
+            "footprintBytes": 19366344,
+            "instructions": 401565823
+          },
+          {
+            "wallMs": 86.58104199999991,
+            "cpuMs": 30,
+            "rssBytes": 23887872,
+            "footprintBytes": 19464672,
+            "instructions": 404934713
+          },
+          {
+            "wallMs": 61.93504200000007,
+            "cpuMs": 30,
+            "rssBytes": 23805952,
+            "footprintBytes": 19399160,
+            "instructions": 402941198
+          },
+          {
+            "wallMs": 83.82279200000005,
+            "cpuMs": 30,
+            "rssBytes": 23789568,
+            "footprintBytes": 19366368,
+            "instructions": 405649280
+          },
+          {
+            "wallMs": 79.32212500000003,
+            "cpuMs": 30,
+            "rssBytes": 23805952,
+            "footprintBytes": 19382752,
+            "instructions": 403371218
+          },
+          {
+            "wallMs": 87.90666699999997,
+            "cpuMs": 30,
+            "rssBytes": 23789568,
+            "footprintBytes": 19349960,
+            "instructions": 405442763
+          },
+          {
+            "wallMs": 109.71237500000007,
+            "cpuMs": 30,
+            "rssBytes": 23740416,
+            "footprintBytes": 19300808,
+            "instructions": 405797713
+          },
+          {
+            "wallMs": 60.40670900000009,
+            "cpuMs": 30,
+            "rssBytes": 23838720,
+            "footprintBytes": 19399112,
+            "instructions": 404551608
+          },
+          {
+            "wallMs": 71.65629100000001,
+            "cpuMs": 30,
+            "rssBytes": 23805952,
+            "footprintBytes": 19382752,
+            "instructions": 402606873
+          },
+          {
+            "wallMs": 89.05541599999992,
+            "cpuMs": 30,
+            "rssBytes": 24051712,
+            "footprintBytes": 19628512,
+            "instructions": 405235080
+          },
+          {
+            "wallMs": 65.0921249999999,
+            "cpuMs": 30,
+            "rssBytes": 23805952,
+            "footprintBytes": 19382752,
+            "instructions": 403001339
+          },
+          {
+            "wallMs": 81.09895800000004,
+            "cpuMs": 30,
+            "rssBytes": 23855104,
+            "footprintBytes": 19431904,
+            "instructions": 407234487
+          },
+          {
+            "wallMs": 60.945500000000266,
+            "cpuMs": 30,
+            "rssBytes": 23838720,
+            "footprintBytes": 19415520,
+            "instructions": 405144735
+          },
+          {
+            "wallMs": 62.91449999999986,
+            "cpuMs": 30,
+            "rssBytes": 23724032,
+            "footprintBytes": 19300832,
+            "instructions": 402916150
+          },
+          {
+            "wallMs": 63.85725000000002,
+            "cpuMs": 30,
+            "rssBytes": 23789568,
+            "footprintBytes": 19366368,
+            "instructions": 403168301
+          },
+          {
+            "wallMs": 83.40316699999994,
+            "cpuMs": 30,
+            "rssBytes": 23871488,
+            "footprintBytes": 19448288,
+            "instructions": 403437632
+          },
+          {
+            "wallMs": 64.15095799999972,
+            "cpuMs": 30,
+            "rssBytes": 23773184,
+            "footprintBytes": 19333576,
+            "instructions": 405475615
+          },
+          {
+            "wallMs": 118.32304199999999,
+            "cpuMs": 30,
+            "rssBytes": 23805952,
+            "footprintBytes": 19382752,
+            "instructions": 402277709
+          },
+          {
+            "wallMs": 63.703791999999794,
+            "cpuMs": 30,
+            "rssBytes": 23920640,
+            "footprintBytes": 19497440,
+            "instructions": 406225821
+          },
+          {
+            "wallMs": 66.30495799999971,
+            "cpuMs": 30,
+            "rssBytes": 23789568,
+            "footprintBytes": 19349960,
+            "instructions": 404630429
+          },
+          {
+            "wallMs": 91.48116699999991,
+            "cpuMs": 30,
+            "rssBytes": 23756800,
+            "footprintBytes": 19317192,
+            "instructions": 405476780
+          },
+          {
+            "wallMs": 77.14908400000013,
+            "cpuMs": 30,
+            "rssBytes": 23887872,
+            "footprintBytes": 19464672,
+            "instructions": 405255866
+          },
+          {
+            "wallMs": 87.02895799999988,
+            "cpuMs": 30,
+            "rssBytes": 23838720,
+            "footprintBytes": 19415520,
+            "instructions": 404769929
+          },
+          {
+            "wallMs": 140.72566700000016,
+            "cpuMs": 30,
+            "rssBytes": 23805952,
+            "footprintBytes": 19382752,
+            "instructions": 405868733
+          },
+          {
+            "wallMs": 76.91520900000023,
+            "cpuMs": 30,
+            "rssBytes": 23805952,
+            "footprintBytes": 19382752,
+            "instructions": 406592017
+          },
+          {
+            "wallMs": 77.70008299999972,
+            "cpuMs": 30,
+            "rssBytes": 23822336,
+            "footprintBytes": 19382728,
+            "instructions": 405115521
+          },
+          {
+            "wallMs": 65.96083399999952,
+            "cpuMs": 30,
+            "rssBytes": 23838720,
+            "footprintBytes": 19415520,
+            "instructions": 403772766
+          },
+          {
+            "wallMs": 68.32291700000042,
+            "cpuMs": 30,
+            "rssBytes": 23756800,
+            "footprintBytes": 19317192,
+            "instructions": 404834309
+          }
+        ],
+        [
+          {
+            "wallMs": 35.93870900000002,
+            "cpuMs": 30,
+            "rssBytes": 24313856,
+            "footprintBytes": 19644896,
+            "instructions": 346285731
+          },
+          {
+            "wallMs": 33.628083000000004,
+            "cpuMs": 20,
+            "rssBytes": 24346624,
+            "footprintBytes": 19661256,
+            "instructions": 335390344
+          },
+          {
+            "wallMs": 58.41558300000003,
+            "cpuMs": 30,
+            "rssBytes": 24313856,
+            "footprintBytes": 19644896,
+            "instructions": 343293018
+          },
+          {
+            "wallMs": 52.27241600000002,
+            "cpuMs": 30,
+            "rssBytes": 24395776,
+            "footprintBytes": 19726816,
+            "instructions": 346055574
+          },
+          {
+            "wallMs": 76.97862500000008,
+            "cpuMs": 30,
+            "rssBytes": 24264704,
+            "footprintBytes": 19595744,
+            "instructions": 348326531
+          },
+          {
+            "wallMs": 75.29266599999994,
+            "cpuMs": 30,
+            "rssBytes": 24428544,
+            "footprintBytes": 19759584,
+            "instructions": 347565244
+          },
+          {
+            "wallMs": 76.27416700000003,
+            "cpuMs": 30,
+            "rssBytes": 24428544,
+            "footprintBytes": 19775992,
+            "instructions": 347624222
+          },
+          {
+            "wallMs": 87.06387499999983,
+            "cpuMs": 30,
+            "rssBytes": 24379392,
+            "footprintBytes": 19710432,
+            "instructions": 349807366
+          },
+          {
+            "wallMs": 65.20079099999998,
+            "cpuMs": 30,
+            "rssBytes": 24281088,
+            "footprintBytes": 19595720,
+            "instructions": 348487255
+          },
+          {
+            "wallMs": 74.64187500000003,
+            "cpuMs": 30,
+            "rssBytes": 24461312,
+            "footprintBytes": 19792352,
+            "instructions": 348624864
+          },
+          {
+            "wallMs": 45.653291999999965,
+            "cpuMs": 30,
+            "rssBytes": 24363008,
+            "footprintBytes": 19710456,
+            "instructions": 345275922
+          },
+          {
+            "wallMs": 48.65479200000004,
+            "cpuMs": 30,
+            "rssBytes": 24346624,
+            "footprintBytes": 19677664,
+            "instructions": 344213224
+          },
+          {
+            "wallMs": 69.463166,
+            "cpuMs": 30,
+            "rssBytes": 24363008,
+            "footprintBytes": 19694048,
+            "instructions": 347412607
+          },
+          {
+            "wallMs": 62.413499999999885,
+            "cpuMs": 30,
+            "rssBytes": 24395776,
+            "footprintBytes": 19726816,
+            "instructions": 345754501
+          },
+          {
+            "wallMs": 67.7484999999997,
+            "cpuMs": 30,
+            "rssBytes": 24346624,
+            "footprintBytes": 19677664,
+            "instructions": 346029246
+          },
+          {
+            "wallMs": 86.99450000000024,
+            "cpuMs": 30,
+            "rssBytes": 24297472,
+            "footprintBytes": 19628512,
+            "instructions": 345817593
+          },
+          {
+            "wallMs": 60.47716700000001,
+            "cpuMs": 30,
+            "rssBytes": 24428544,
+            "footprintBytes": 19759584,
+            "instructions": 345260108
+          },
+          {
+            "wallMs": 71.11870799999997,
+            "cpuMs": 30,
+            "rssBytes": 24477696,
+            "footprintBytes": 19808736,
+            "instructions": 344954460
+          },
+          {
+            "wallMs": 59.27137500000026,
+            "cpuMs": 30,
+            "rssBytes": 24379392,
+            "footprintBytes": 19694024,
+            "instructions": 346124721
+          },
+          {
+            "wallMs": 78.22637500000019,
+            "cpuMs": 30,
+            "rssBytes": 24313856,
+            "footprintBytes": 19644896,
+            "instructions": 346647891
+          },
+          {
+            "wallMs": 67.222084,
+            "cpuMs": 30,
+            "rssBytes": 24199168,
+            "footprintBytes": 19513800,
+            "instructions": 348097624
+          },
+          {
+            "wallMs": 67.29545899999994,
+            "cpuMs": 30,
+            "rssBytes": 24346624,
+            "footprintBytes": 19661256,
+            "instructions": 346987421
+          },
+          {
+            "wallMs": 81.41983399999981,
+            "cpuMs": 30,
+            "rssBytes": 24313856,
+            "footprintBytes": 19628488,
+            "instructions": 345439928
+          },
+          {
+            "wallMs": 82.29500000000007,
+            "cpuMs": 30,
+            "rssBytes": 24313856,
+            "footprintBytes": 19644896,
+            "instructions": 346609197
+          },
+          {
+            "wallMs": 79.09754199999998,
+            "cpuMs": 30,
+            "rssBytes": 24363008,
+            "footprintBytes": 19694048,
+            "instructions": 347755363
+          },
+          {
+            "wallMs": 73.22158300000001,
+            "cpuMs": 30,
+            "rssBytes": 24346624,
+            "footprintBytes": 19677664,
+            "instructions": 346787295
+          },
+          {
+            "wallMs": 85.63549999999987,
+            "cpuMs": 30,
+            "rssBytes": 24313856,
+            "footprintBytes": 19644896,
+            "instructions": 348314460
+          },
+          {
+            "wallMs": 66.77016600000024,
+            "cpuMs": 30,
+            "rssBytes": 24281088,
+            "footprintBytes": 19595720,
+            "instructions": 347160326
+          },
+          {
+            "wallMs": 51.69262499999968,
+            "cpuMs": 30,
+            "rssBytes": 24395776,
+            "footprintBytes": 19710408,
+            "instructions": 346334210
+          },
+          {
+            "wallMs": 70.41437500000029,
+            "cpuMs": 30,
+            "rssBytes": 24346624,
+            "footprintBytes": 19677664,
+            "instructions": 346778944
+          }
+        ]
+      ],
+      "pairedInstructionReductionPercent": {
+        "median": 14.314056448027447,
+        "percentileBootstrap95": [
+          14.198395297066934,
+          14.483863886177307
+        ],
+        "resamples": 10000,
+        "seed": 19
+      }
+    },
+    "build": {
+      "binaries": [
+        "/tmp/stator-ts-t19-round5-baseline/bin/stator-ts",
+        "/Users/listepo/GitHub/_worktrees/stator-ts-t19/zig-out/bin/stator-ts-pgo"
+      ],
+      "args": [
+        "build",
+        "-p",
+        "/Users/listepo/GitHub/listepo/apps/stator/packages/compiler",
+        "--lib-dir",
+        "tests/node_modules/@typescript/typescript-darwin-arm64/lib",
+        "-j",
+        "16",
+        "--outDir",
+        "/tmp/stator-ts-t19-round5-build-output"
+      ],
+      "rounds": 30,
+      "warmups": 3,
+      "expected": {
+        "status": 0,
+        "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "medians": [
+        {
+          "wallMs": 135.1028539999993,
+          "cpuMs": 380,
+          "rssBytes": 112705536,
+          "footprintBytes": 104055528,
+          "instructions": 3165685133
+        },
+        {
+          "wallMs": 116.3890835000002,
+          "cpuMs": 339.99999999999994,
+          "rssBytes": 115195904,
+          "footprintBytes": 106414848,
+          "instructions": 2570366354.5
+        }
+      ],
+      "reductionPercent": {
+        "wallMs": 13.85149902162629,
+        "cpuMs": 10.526315789473696,
+        "rssBytes": -2.2096234917865942,
+        "footprintBytes": -2.267366323872766,
+        "instructions": 18.805369248325686
+      },
+      "samples": [
+        [
+          {
+            "wallMs": 154.90899999999988,
+            "cpuMs": 390,
+            "rssBytes": 112361472,
+            "footprintBytes": 103711464,
+            "instructions": 3149843237
+          },
+          {
+            "wallMs": 177.90187500000002,
+            "cpuMs": 450,
+            "rssBytes": 113016832,
+            "footprintBytes": 104383232,
+            "instructions": 3341803731
+          },
+          {
+            "wallMs": 182.810792,
+            "cpuMs": 420.00000000000006,
+            "rssBytes": 113377280,
+            "footprintBytes": 104743680,
+            "instructions": 3248851754
+          },
+          {
+            "wallMs": 163.0965839999999,
+            "cpuMs": 410.00000000000006,
+            "rssBytes": 112115712,
+            "footprintBytes": 103465704,
+            "instructions": 3167284191
+          },
+          {
+            "wallMs": 144.43216600000005,
+            "cpuMs": 390,
+            "rssBytes": 115654656,
+            "footprintBytes": 107021056,
+            "instructions": 3149240973
+          },
+          {
+            "wallMs": 206.59504199999992,
+            "cpuMs": 430,
+            "rssBytes": 113278976,
+            "footprintBytes": 104628968,
+            "instructions": 3334966343
+          },
+          {
+            "wallMs": 154.71191700000008,
+            "cpuMs": 390,
+            "rssBytes": 113344512,
+            "footprintBytes": 104710912,
+            "instructions": 3154856642
+          },
+          {
+            "wallMs": 146.54050000000007,
+            "cpuMs": 390,
+            "rssBytes": 113115136,
+            "footprintBytes": 104465128,
+            "instructions": 3181157580
+          },
+          {
+            "wallMs": 149.26479199999994,
+            "cpuMs": 430.00000000000006,
+            "rssBytes": 110247936,
+            "footprintBytes": 101597928,
+            "instructions": 3340715699
+          },
+          {
+            "wallMs": 132.47870899999998,
+            "cpuMs": 380,
+            "rssBytes": 111099904,
+            "footprintBytes": 102449896,
+            "instructions": 3162122580
+          },
+          {
+            "wallMs": 138.63991600000008,
+            "cpuMs": 380,
+            "rssBytes": 110346240,
+            "footprintBytes": 101679824,
+            "instructions": 3165179999
+          },
+          {
+            "wallMs": 135.39174999999977,
+            "cpuMs": 400,
+            "rssBytes": 111853568,
+            "footprintBytes": 103203560,
+            "instructions": 3169238996
+          },
+          {
+            "wallMs": 132.48904099999982,
+            "cpuMs": 380,
+            "rssBytes": 110264320,
+            "footprintBytes": 101614312,
+            "instructions": 3164834239
+          },
+          {
+            "wallMs": 156.3735829999996,
+            "cpuMs": 459.99999999999994,
+            "rssBytes": 113164288,
+            "footprintBytes": 104514280,
+            "instructions": 3350890448
+          },
+          {
+            "wallMs": 145.20958299999984,
+            "cpuMs": 400,
+            "rssBytes": 112934912,
+            "footprintBytes": 104268544,
+            "instructions": 3164513992
+          },
+          {
+            "wallMs": 120.23133299999972,
+            "cpuMs": 360,
+            "rssBytes": 114360320,
+            "footprintBytes": 105710312,
+            "instructions": 3168312444
+          },
+          {
+            "wallMs": 126.28908300000057,
+            "cpuMs": 370,
+            "rssBytes": 113147904,
+            "footprintBytes": 104497896,
+            "instructions": 3166038847
+          },
+          {
+            "wallMs": 120.9541250000002,
+            "cpuMs": 380,
+            "rssBytes": 111624192,
+            "footprintBytes": 102974184,
+            "instructions": 3167697460
+          },
+          {
+            "wallMs": 119.83233400000063,
+            "cpuMs": 370,
+            "rssBytes": 114262016,
+            "footprintBytes": 105612008,
+            "instructions": 3164281893
+          },
+          {
+            "wallMs": 123.8657919999996,
+            "cpuMs": 380,
+            "rssBytes": 115081216,
+            "footprintBytes": 106431208,
+            "instructions": 3195037807
+          },
+          {
+            "wallMs": 120.55849999999919,
+            "cpuMs": 360,
+            "rssBytes": 113770496,
+            "footprintBytes": 105136896,
+            "instructions": 3168626912
+          },
+          {
+            "wallMs": 135.8420839999999,
+            "cpuMs": 360,
+            "rssBytes": 112541696,
+            "footprintBytes": 103891688,
+            "instructions": 3158014630
+          },
+          {
+            "wallMs": 130.51699999999983,
+            "cpuMs": 360,
+            "rssBytes": 111575040,
+            "footprintBytes": 102941440,
+            "instructions": 3146975397
+          },
+          {
+            "wallMs": 124.91849999999977,
+            "cpuMs": 360,
+            "rssBytes": 113639424,
+            "footprintBytes": 104989416,
+            "instructions": 3153958049
+          },
+          {
+            "wallMs": 184.64404099999956,
+            "cpuMs": 370,
+            "rssBytes": 112869376,
+            "footprintBytes": 104219368,
+            "instructions": 3171461674
+          },
+          {
+            "wallMs": 115.21154099999967,
+            "cpuMs": 350,
+            "rssBytes": 112377856,
+            "footprintBytes": 103744256,
+            "instructions": 3165331419
+          },
+          {
+            "wallMs": 114.87583300000006,
+            "cpuMs": 360,
+            "rssBytes": 112164864,
+            "footprintBytes": 103514856,
+            "instructions": 3157698956
+          },
+          {
+            "wallMs": 122.0401669999992,
+            "cpuMs": 380,
+            "rssBytes": 112427008,
+            "footprintBytes": 103777000,
+            "instructions": 3168013965
+          },
+          {
+            "wallMs": 134.81395799999882,
+            "cpuMs": 360,
+            "rssBytes": 112427008,
+            "footprintBytes": 103793408,
+            "instructions": 3164717682
+          },
+          {
+            "wallMs": 119.07095900000058,
+            "cpuMs": 360,
+            "rssBytes": 112148480,
+            "footprintBytes": 103498472,
+            "instructions": 3146568081
+          }
+        ],
+        [
+          {
+            "wallMs": 153.95287499999995,
+            "cpuMs": 370,
+            "rssBytes": 115212288,
+            "footprintBytes": 106431232,
+            "instructions": 2707999851
+          },
+          {
+            "wallMs": 165.959875,
+            "cpuMs": 380,
+            "rssBytes": 108822528,
+            "footprintBytes": 100025064,
+            "instructions": 2678283187
+          },
+          {
+            "wallMs": 153.0283340000001,
+            "cpuMs": 380,
+            "rssBytes": 115867648,
+            "footprintBytes": 107086592,
+            "instructions": 2578577804
+          },
+          {
+            "wallMs": 156.2303750000001,
+            "cpuMs": 370,
+            "rssBytes": 113213440,
+            "footprintBytes": 104432384,
+            "instructions": 2578008607
+          },
+          {
+            "wallMs": 132.00583300000017,
+            "cpuMs": 350,
+            "rssBytes": 114032640,
+            "footprintBytes": 105251584,
+            "instructions": 2563714086
+          },
+          {
+            "wallMs": 145.0490420000001,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 116310016,
+            "footprintBytes": 107512552,
+            "instructions": 2558846935
+          },
+          {
+            "wallMs": 150.18604199999982,
+            "cpuMs": 350,
+            "rssBytes": 116031488,
+            "footprintBytes": 107234024,
+            "instructions": 2560909527
+          },
+          {
+            "wallMs": 136.721,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 116916224,
+            "footprintBytes": 108135168,
+            "instructions": 2563107408
+          },
+          {
+            "wallMs": 118.85449999999992,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 116391936,
+            "footprintBytes": 107610880,
+            "instructions": 2572912509
+          },
+          {
+            "wallMs": 116.63516700000037,
+            "cpuMs": 350,
+            "rssBytes": 113590272,
+            "footprintBytes": 104809216,
+            "instructions": 2561655135
+          },
+          {
+            "wallMs": 122.32483299999967,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 113672192,
+            "footprintBytes": 104891136,
+            "instructions": 2569943117
+          },
+          {
+            "wallMs": 142.2926669999997,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 114606080,
+            "footprintBytes": 105808616,
+            "instructions": 2553203107
+          },
+          {
+            "wallMs": 141.80695800000012,
+            "cpuMs": 350,
+            "rssBytes": 113410048,
+            "footprintBytes": 104628992,
+            "instructions": 2573945022
+          },
+          {
+            "wallMs": 154.4643329999999,
+            "cpuMs": 370,
+            "rssBytes": 115490816,
+            "footprintBytes": 106726168,
+            "instructions": 2581233852
+          },
+          {
+            "wallMs": 139.84312499999942,
+            "cpuMs": 360,
+            "rssBytes": 116211712,
+            "footprintBytes": 107430656,
+            "instructions": 2572051605
+          },
+          {
+            "wallMs": 111.85816699999941,
+            "cpuMs": 320,
+            "rssBytes": 114130944,
+            "footprintBytes": 105349888,
+            "instructions": 2562095406
+          },
+          {
+            "wallMs": 112.15979200000038,
+            "cpuMs": 330,
+            "rssBytes": 114491392,
+            "footprintBytes": 105710336,
+            "instructions": 2567054356
+          },
+          {
+            "wallMs": 114.12595799999963,
+            "cpuMs": 320,
+            "rssBytes": 114900992,
+            "footprintBytes": 106136344,
+            "instructions": 2562261890
+          },
+          {
+            "wallMs": 115.66212499999983,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 115261440,
+            "footprintBytes": 106480384,
+            "instructions": 2584295322
+          },
+          {
+            "wallMs": 109.52208299999984,
+            "cpuMs": 330,
+            "rssBytes": 115146752,
+            "footprintBytes": 106365696,
+            "instructions": 2587011765
+          },
+          {
+            "wallMs": 101.05354100000022,
+            "cpuMs": 330,
+            "rssBytes": 116277248,
+            "footprintBytes": 107496192,
+            "instructions": 2562213448
+          },
+          {
+            "wallMs": 101.98729100000037,
+            "cpuMs": 310.00000000000006,
+            "rssBytes": 113655808,
+            "footprintBytes": 104874752,
+            "instructions": 2556515849
+          },
+          {
+            "wallMs": 116.14300000000003,
+            "cpuMs": 340,
+            "rssBytes": 115064832,
+            "footprintBytes": 106283776,
+            "instructions": 2570789592
+          },
+          {
+            "wallMs": 108.02266599999984,
+            "cpuMs": 320,
+            "rssBytes": 114753536,
+            "footprintBytes": 105972480,
+            "instructions": 2558947005
+          },
+          {
+            "wallMs": 111.523459,
+            "cpuMs": 320,
+            "rssBytes": 117424128,
+            "footprintBytes": 108643072,
+            "instructions": 2580729507
+          },
+          {
+            "wallMs": 109.91558299999997,
+            "cpuMs": 330,
+            "rssBytes": 115179520,
+            "footprintBytes": 106398464,
+            "instructions": 2577673517
+          },
+          {
+            "wallMs": 105.78408299999955,
+            "cpuMs": 340,
+            "rssBytes": 115736576,
+            "footprintBytes": 106955520,
+            "instructions": 2575171844
+          },
+          {
+            "wallMs": 110.54770800000006,
+            "cpuMs": 320,
+            "rssBytes": 115589120,
+            "footprintBytes": 106824472,
+            "instructions": 2555287011
+          },
+          {
+            "wallMs": 107.44929200000115,
+            "cpuMs": 330,
+            "rssBytes": 115441664,
+            "footprintBytes": 106660608,
+            "instructions": 2573379402
+          },
+          {
+            "wallMs": 105.68595800000003,
+            "cpuMs": 310.00000000000006,
+            "rssBytes": 115769344,
+            "footprintBytes": 106988288,
+            "instructions": 2552114430
+          }
+        ]
+      ],
+      "pairedInstructionReductionPercent": {
+        "median": 18.905588998937063,
+        "percentileBootstrap95": [
+          18.703703156664652,
+          19.12327414133923
+        ],
+        "resamples": 10000,
+        "seed": 19
+      }
+    },
+    "pgo-only": {
+      "binaries": [
+        "/tmp/stator-ts-t19-round5-probes/bin/stator-ts",
+        "/Users/listepo/GitHub/_worktrees/stator-ts-t19/zig-out/bin/stator-ts-pgo"
+      ],
+      "args": [
+        "check",
+        "-p",
+        "/Users/listepo/GitHub/listepo/apps/stator/packages/compiler",
+        "--lib-dir",
+        "tests/node_modules/@typescript/typescript-darwin-arm64/lib",
+        "-j",
+        "16"
+      ],
+      "rounds": 30,
+      "warmups": 3,
+      "expected": {
+        "status": 0,
+        "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "medians": [
+        {
+          "wallMs": 117.68687550000004,
+          "cpuMs": 339.99999999999994,
+          "rssBytes": 113123328,
+          "footprintBytes": 104473320,
+          "instructions": 3120794561
+        },
+        {
+          "wallMs": 103.90741699999995,
+          "cpuMs": 300.00000000000006,
+          "rssBytes": 116318208,
+          "footprintBytes": 107537152,
+          "instructions": 2512717585
+        }
+      ],
+      "reductionPercent": {
+        "wallMs": 11.708577053692014,
+        "cpuMs": 11.76470588235291,
+        "rssBytes": -2.824245057571151,
+        "footprintBytes": -2.9326453873582237,
+        "instructions": 19.48468456075344
+      },
+      "samples": [
+        [
+          {
+            "wallMs": 111.28087500000004,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 113803264,
+            "footprintBytes": 105153256,
+            "instructions": 3105112181
+          },
+          {
+            "wallMs": 114.455375,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 110772224,
+            "footprintBytes": 102122216,
+            "instructions": 3105761199
+          },
+          {
+            "wallMs": 117.89137499999993,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 113573888,
+            "footprintBytes": 104923880,
+            "instructions": 3120995484
+          },
+          {
+            "wallMs": 116.72816699999998,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 114098176,
+            "footprintBytes": 105448168,
+            "instructions": 3138175938
+          },
+          {
+            "wallMs": 117.30062500000008,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 113049600,
+            "footprintBytes": 104399592,
+            "instructions": 3137288520
+          },
+          {
+            "wallMs": 109.85362499999997,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 113197056,
+            "footprintBytes": 104547048,
+            "instructions": 3106720098
+          },
+          {
+            "wallMs": 116.2648750000003,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 114360320,
+            "footprintBytes": 105726720,
+            "instructions": 3102721391
+          },
+          {
+            "wallMs": 117.45504100000016,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 113246208,
+            "footprintBytes": 104612608,
+            "instructions": 3109894050
+          },
+          {
+            "wallMs": 115.71070800000007,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 113967104,
+            "footprintBytes": 105317096,
+            "instructions": 3103499584
+          },
+          {
+            "wallMs": 121.84987499999988,
+            "cpuMs": 350,
+            "rssBytes": 112656384,
+            "footprintBytes": 104006376,
+            "instructions": 3126494308
+          },
+          {
+            "wallMs": 118.06841699999995,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 110854144,
+            "footprintBytes": 102204136,
+            "instructions": 3131496737
+          },
+          {
+            "wallMs": 115.35674999999992,
+            "cpuMs": 320,
+            "rssBytes": 111411200,
+            "footprintBytes": 102761192,
+            "instructions": 3107544781
+          },
+          {
+            "wallMs": 110.64383299999963,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 113442816,
+            "footprintBytes": 104792808,
+            "instructions": 3103204254
+          },
+          {
+            "wallMs": 119.81475,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 109756416,
+            "footprintBytes": 101106408,
+            "instructions": 3118980561
+          },
+          {
+            "wallMs": 120.98070800000005,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 114425856,
+            "footprintBytes": 105792256,
+            "instructions": 3107095240
+          },
+          {
+            "wallMs": 124.41095799999948,
+            "cpuMs": 350,
+            "rssBytes": 113950720,
+            "footprintBytes": 105317120,
+            "instructions": 3124316793
+          },
+          {
+            "wallMs": 122.1137920000001,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 110657536,
+            "footprintBytes": 102122216,
+            "instructions": 3124639168
+          },
+          {
+            "wallMs": 124.34991599999921,
+            "cpuMs": 350,
+            "rssBytes": 111345664,
+            "footprintBytes": 102712064,
+            "instructions": 3124676208
+          },
+          {
+            "wallMs": 111.83637499999986,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 110411776,
+            "footprintBytes": 101761768,
+            "instructions": 3102007093
+          },
+          {
+            "wallMs": 117.49929199999951,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 112951296,
+            "footprintBytes": 104301288,
+            "instructions": 3146748613
+          },
+          {
+            "wallMs": 120.70066700000007,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 114720768,
+            "footprintBytes": 106087168,
+            "instructions": 3116284905
+          },
+          {
+            "wallMs": 119.2032079999999,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 114180096,
+            "footprintBytes": 105530088,
+            "instructions": 3129055289
+          },
+          {
+            "wallMs": 118.39970800000083,
+            "cpuMs": 350,
+            "rssBytes": 112656384,
+            "footprintBytes": 104006376,
+            "instructions": 3129836242
+          },
+          {
+            "wallMs": 115.77158299999974,
+            "cpuMs": 339.99999999999994,
+            "rssBytes": 111394816,
+            "footprintBytes": 102744808,
+            "instructions": 3125361722
+          },
+          {
+            "wallMs": 116.29383400000006,
+            "cpuMs": 350,
+            "rssBytes": 111853568,
+            "footprintBytes": 103203560,
+            "instructions": 3119668972
+          },
+          {
+            "wallMs": 112.20920799999931,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 113442816,
+            "footprintBytes": 104792808,
+            "instructions": 3113630455
+          },
+          {
+            "wallMs": 117.87445900000057,
+            "cpuMs": 329.99999999999994,
+            "rssBytes": 114294784,
+            "footprintBytes": 105661184,
+            "instructions": 3120593638
+          },
+          {
+            "wallMs": 399.8817909999998,
+            "cpuMs": 390,
+            "rssBytes": 111116288,
+            "footprintBytes": 102482688,
+            "instructions": 3219252581
+          },
+          {
+            "wallMs": 611.76325,
+            "cpuMs": 440,
+            "rssBytes": 110919680,
+            "footprintBytes": 102286080,
+            "instructions": 3234924123
+          },
+          {
+            "wallMs": 612.5115000000005,
+            "cpuMs": 440,
+            "rssBytes": 114835456,
+            "footprintBytes": 106185448,
+            "instructions": 3224808732
+          }
+        ],
+        [
+          {
+            "wallMs": 97.26766600000008,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 116342784,
+            "footprintBytes": 107561728,
+            "instructions": 2505508859
+          },
+          {
+            "wallMs": 103.84445900000003,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 115785728,
+            "footprintBytes": 107004672,
+            "instructions": 2502400078
+          },
+          {
+            "wallMs": 114.74725000000012,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 118145024,
+            "footprintBytes": 109363968,
+            "instructions": 2518260676
+          },
+          {
+            "wallMs": 107.31037500000002,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 117260288,
+            "footprintBytes": 108479232,
+            "instructions": 2517865862
+          },
+          {
+            "wallMs": 97.91287499999999,
+            "cpuMs": 290.00000000000006,
+            "rssBytes": 116948992,
+            "footprintBytes": 108167936,
+            "instructions": 2507211929
+          },
+          {
+            "wallMs": 97.50800000000004,
+            "cpuMs": 290.00000000000006,
+            "rssBytes": 117555200,
+            "footprintBytes": 108774144,
+            "instructions": 2498137412
+          },
+          {
+            "wallMs": 103.97037499999988,
+            "cpuMs": 290.00000000000006,
+            "rssBytes": 115998720,
+            "footprintBytes": 107217664,
+            "instructions": 2507792599
+          },
+          {
+            "wallMs": 104.67904199999975,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 118177792,
+            "footprintBytes": 109413144,
+            "instructions": 2504559735
+          },
+          {
+            "wallMs": 102.46295800000007,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 116293632,
+            "footprintBytes": 107512576,
+            "instructions": 2506778289
+          },
+          {
+            "wallMs": 101.81366600000001,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 116752384,
+            "footprintBytes": 107971328,
+            "instructions": 2510587588
+          },
+          {
+            "wallMs": 104.4424170000002,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 116998144,
+            "footprintBytes": 108217088,
+            "instructions": 2522138406
+          },
+          {
+            "wallMs": 100.79491700000017,
+            "cpuMs": 280,
+            "rssBytes": 117342208,
+            "footprintBytes": 108561152,
+            "instructions": 2503653040
+          },
+          {
+            "wallMs": 98.5024999999996,
+            "cpuMs": 290.00000000000006,
+            "rssBytes": 115638272,
+            "footprintBytes": 106857216,
+            "instructions": 2505990650
+          },
+          {
+            "wallMs": 113.64841699999988,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 115671040,
+            "footprintBytes": 106906392,
+            "instructions": 2507791363
+          },
+          {
+            "wallMs": 101.949208,
+            "cpuMs": 290.00000000000006,
+            "rssBytes": 116850688,
+            "footprintBytes": 108069632,
+            "instructions": 2506988598
+          },
+          {
+            "wallMs": 102.97729200000003,
+            "cpuMs": 290.00000000000006,
+            "rssBytes": 117964800,
+            "footprintBytes": 109200152,
+            "instructions": 2499891012
+          },
+          {
+            "wallMs": 106.19675000000007,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 114982912,
+            "footprintBytes": 106201856,
+            "instructions": 2531337806
+          },
+          {
+            "wallMs": 103.52924999999959,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 114655232,
+            "footprintBytes": 105874176,
+            "instructions": 2526925109
+          },
+          {
+            "wallMs": 100.38508400000046,
+            "cpuMs": 290.00000000000006,
+            "rssBytes": 115703808,
+            "footprintBytes": 106922752,
+            "instructions": 2506473290
+          },
+          {
+            "wallMs": 113.22404199999983,
+            "cpuMs": 340,
+            "rssBytes": 114737152,
+            "footprintBytes": 105972504,
+            "instructions": 2641252021
+          },
+          {
+            "wallMs": 121.47616700000071,
+            "cpuMs": 310,
+            "rssBytes": 113623040,
+            "footprintBytes": 104841984,
+            "instructions": 2523788127
+          },
+          {
+            "wallMs": 112.34049999999934,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 112394240,
+            "footprintBytes": 103613184,
+            "instructions": 2519477815
+          },
+          {
+            "wallMs": 113.0478749999993,
+            "cpuMs": 310.00000000000006,
+            "rssBytes": 114982912,
+            "footprintBytes": 106201856,
+            "instructions": 2536054512
+          },
+          {
+            "wallMs": 104.52550000000065,
+            "cpuMs": 300.00000000000006,
+            "rssBytes": 116736000,
+            "footprintBytes": 107954944,
+            "instructions": 2527151355
+          },
+          {
+            "wallMs": 102.53741600000012,
+            "cpuMs": 330,
+            "rssBytes": 117768192,
+            "footprintBytes": 108987136,
+            "instructions": 2521165431
+          },
+          {
+            "wallMs": 95.33416699999998,
+            "cpuMs": 310.00000000000006,
+            "rssBytes": 117522432,
+            "footprintBytes": 108757784,
+            "instructions": 2508386613
+          },
+          {
+            "wallMs": 98.50295800000004,
+            "cpuMs": 290.00000000000006,
+            "rssBytes": 116686848,
+            "footprintBytes": 107905792,
+            "instructions": 2514847582
+          },
+          {
+            "wallMs": 104.63433400000031,
+            "cpuMs": 280,
+            "rssBytes": 111329280,
+            "footprintBytes": 102531816,
+            "instructions": 2515142050
+          },
+          {
+            "wallMs": 543.5508750000008,
+            "cpuMs": 380,
+            "rssBytes": 111116288,
+            "footprintBytes": 102351640,
+            "instructions": 2608495887
+          },
+          {
+            "wallMs": 600.1428749999995,
+            "cpuMs": 380,
+            "rssBytes": 112590848,
+            "footprintBytes": 103826200,
+            "instructions": 2603256590
+          }
+        ]
+      ],
+      "pairedInstructionReductionPercent": {
+        "median": 19.339307417558075,
+        "percentileBootstrap95": [
+          19.23621549039709,
+          19.448768704508694
+        ],
+        "resamples": 10000,
+        "seed": 19
+      }
+    }
+  },
+  "notes": [
+    "Every series used three warmup pairs and 30 alternating measured pairs with unchanged stdout hash and exit status.",
+    "No task-owned builds or tests ran during measurements. Unrelated host load varied between series.",
+    "PGO compilation is an explicit one-time build stage; ordinary ReleaseFast is retained as the baseline.",
+    "The source-only probe optimization and the same-source PGO control are recorded separately to distinguish their contributions.",
+    "Peak RSS increased with PGO; the historical 30% RAM/time target is not achieved."
+  ]
+}
