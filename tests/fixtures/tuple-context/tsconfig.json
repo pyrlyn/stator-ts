@@ -1,13 +1,1 @@
-{
-  "compilerOptions": {
-    "strict": true,
-    "target": "es2022",
-    "module": "esnext",
-    "noEmit": true,
-    "noUncheckedIndexedAccess": false,
-    "types": []
-  },
-  "include": [
-    "*.ts"
-  ]
-}
+{ "compilerOptions": { "strict": true, "noEmit": true, "target": "esnext", "module": "esnext", "types": [] }, "files": ["a.ts"] }

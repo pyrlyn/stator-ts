@@ -22,9 +22,13 @@ fn oom() noreturn {
 pub const Options = struct {
     strict: ?bool = null,
     noImplicitAny: ?bool = null,
+    /// tsc 6 flow-typed `let x;` in JavaScript with `noImplicitAny` off and tsc 7 does not, and a
+    /// caller that still compares itself with tsc 6 needs the older answer.
+    jsVariablesFollowFlow: ?bool = null,
     strictNullChecks: ?bool = null,
     strictFunctionTypes: ?bool = null,
     strictBindCallApply: ?bool = null,
+    strictBuiltinIteratorReturn: ?bool = null,
     strictPropertyInitialization: ?bool = null,
     noImplicitThis: ?bool = null,
     useUnknownInCatchVariables: ?bool = null,
@@ -47,6 +51,7 @@ pub const Options = struct {
     allowImportingTsExtensions: ?bool = null,
     rewriteRelativeImportExtensions: ?bool = null,
     allowJs: ?bool = null,
+    checkJs: ?bool = null,
     target: ?[]const u8 = null,
     module: ?[]const u8 = null,
     moduleResolution: ?[]const u8 = null,
@@ -338,6 +343,8 @@ pub fn isSourceFile(name: []const u8) bool {
     return false;
 }
 
+pub const isJsFile = ast.isJsFile;
+
 const WalkItem = struct { dirs: std.ArrayList([]const u8) = .empty, files: std.ArrayList([]const u8) = .empty, arena: std.heap.ArenaAllocator };
 
 const Walk = struct {
@@ -563,26 +570,47 @@ const Resolver = struct {
     a: Allocator,
     fs: *FsCache,
     cfg: *const Config,
+    /// JavaScript is the second search of a name: tsc walks every condition and directory for
+    /// TypeScript first, so a `types` condition behind a `.js` one still wins.
+    js: bool = false,
 
     fn jsonModules(r: Resolver) bool {
         const bundler = if (r.cfg.options.moduleResolution) |m| std.ascii.eqlIgnoreCase(m, "bundler") else false;
         return r.cfg.options.resolveJsonModule orelse bundler;
     }
 
+    /// A linked workspace package is reached through `node_modules` and lives outside it, which
+    /// makes it the project's own source to tsc.
+    fn isPackageJs(r: Resolver, path: []const u8) bool {
+        const marker = "/node_modules/";
+        if (!isJsFile(path) or std.mem.indexOf(u8, path, marker) == null) return false;
+        const real = Io.Dir.cwd().realPathFileAlloc(r.io, path, r.a) catch return true;
+        return std.mem.indexOf(u8, real, marker) != null;
+    }
+
     fn tryFile(r: Resolver, base: []const u8) ?[]const u8 {
         const suffixes = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".d.mts", ".d.cts" };
         if (isSourceFile(base) and r.fs.isFile(base)) return base;
+        if (std.mem.endsWith(u8, base, ".json")) {
+            const p = std.mem.concat(r.a, u8, &.{ base[0 .. base.len - ".json".len], ".d.json.ts" }) catch oom();
+            if (r.fs.isFile(p)) return p;
+        }
         if (r.jsonModules() and std.mem.endsWith(u8, base, ".json") and r.fs.isFile(base)) return base;
         for (suffixes) |s| {
             const p = std.mem.concat(r.a, u8, &.{ base, s }) catch oom();
             if (r.fs.isFile(p)) return p;
         }
-        // Source written for ESM imports `./a.js` while `./a.ts` is on disk.
+        // Source written for ESM imports `./a.js` while `./a.ts` is on disk, and a package's
+        // declarations import `./a.ts` while only `./a.d.ts` shipped.
         const maps = [_]struct { []const u8, []const []const u8 }{
             .{ ".js", &.{ ".ts", ".tsx", ".d.ts" } },
             .{ ".jsx", &.{ ".tsx", ".d.ts" } },
             .{ ".mjs", &.{ ".mts", ".d.mts" } },
             .{ ".cjs", &.{ ".cts", ".d.cts" } },
+            .{ ".ts", &.{".d.ts"} },
+            .{ ".tsx", &.{".d.ts"} },
+            .{ ".mts", &.{".d.mts"} },
+            .{ ".cts", &.{".d.cts"} },
         };
         for (maps) |m| if (std.mem.endsWith(u8, base, m[0])) {
             const stem = base[0 .. base.len - m[0].len];
@@ -591,6 +619,13 @@ const Resolver = struct {
                 if (r.fs.isFile(p)) return p;
             }
         };
+        if (r.js) {
+            if (isJsFile(base) and r.fs.isFile(base)) return base;
+            for ([_][]const u8{ ".js", ".jsx" }) |s| {
+                const p = std.mem.concat(r.a, u8, &.{ base, s }) catch oom();
+                if (r.fs.isFile(p)) return p;
+            }
+        }
         return null;
     }
 
@@ -598,6 +633,12 @@ const Resolver = struct {
         for ([_][]const u8{ "index.ts", "index.tsx", "index.d.ts" }) |x| {
             const p = fspath.join(r.a, &.{ dir, x }) catch oom();
             if (r.fs.isFile(p)) return p;
+        }
+        if (r.js) {
+            for ([_][]const u8{ "index.js", "index.jsx" }) |x| {
+                const p = fspath.join(r.a, &.{ dir, x }) catch oom();
+                if (r.fs.isFile(p)) return p;
+            }
         }
         return null;
     }
@@ -663,11 +704,16 @@ const Resolver = struct {
             has_sub = true;
         };
         if (!has_sub) return if (sub.len == 0) r.tryTarget(dir, exp, null) else null;
-        if (exp.object.get(key)) |v| return r.tryTarget(dir, v, null);
+        return r.tryMap(dir, exp.object, key);
+    }
+
+    /// An exact key wins, then the pattern with the longest prefix.
+    fn tryMap(r: Resolver, dir: []const u8, map: json.ObjectMap, key: []const u8) ?[]const u8 {
+        if (map.get(key)) |v| return r.tryTarget(dir, v, null);
         var best: ?json.Value = null;
         var best_pre: usize = 0;
         var stem: []const u8 = "";
-        var it = exp.object.iterator();
+        var it = map.iterator();
         while (it.next()) |e| {
             const star = std.mem.indexOfScalar(u8, e.key_ptr.*, '*') orelse continue;
             const pre = e.key_ptr.*[0..star];
@@ -727,7 +773,9 @@ const Resolver = struct {
     }
 
     /// A package can import itself by name, and only through its own exports map.
-    fn trySelfName(r: Resolver, from: []const u8, spec: []const u8) ?[]const u8 {
+    /// The nearest package.json at or above `from`, which is the scope `#` imports and self-name
+    /// imports answer in.
+    fn packageScope(r: Resolver, from: []const u8) ?struct { dir: []const u8, value: json.ObjectMap } {
         var dir: ?[]const u8 = from;
         const scope = while (dir) |d| : (dir = fspath.dirname(d)) {
             const pkg = fspath.join(r.a, &.{ d, "package.json" }) catch oom();
@@ -735,13 +783,38 @@ const Resolver = struct {
         } else return null;
         const text = readFile(r.a, r.io, scope) catch return null;
         const v = json.parseFromSliceLeaky(json.Value, r.a, text, .{}) catch return null;
-        if (v != .object) return null;
-        const exports = v.object.get("exports") orelse return null;
-        const name = v.object.get("name") orelse return null;
+        return if (v == .object) .{ .dir = dir.?, .value = v.object } else null;
+    }
+
+    /// `#/x` takes a resolver that knows a root pattern, and node16's does not.
+    fn allowsImportsRoot(r: Resolver) bool {
+        const o = r.cfg.options;
+        const kind = o.moduleResolution orelse o.module orelse return true;
+        for ([_][]const u8{ "node16", "node18", "node20" }) |m| if (std.ascii.eqlIgnoreCase(kind, m)) return false;
+        return true;
+    }
+
+    fn tryImports(r: Resolver, from: []const u8, spec: []const u8) ?[]const u8 {
+        if (spec.len == 1 or (spec[1] == '/' and !r.allowsImportsRoot())) return null;
+        // As for self-names below: the map names an output that only a project root can map back.
+        if (r.js and r.cfg.options.outDir != null) return null;
+        const scope = r.packageScope(from) orelse return null;
+        const imports = scope.value.get("imports") orelse return null;
+        return if (imports == .object) r.tryMap(scope.dir, imports.object, spec) else null;
+    }
+
+    fn trySelfName(r: Resolver, from: []const u8, spec: []const u8) ?[]const u8 {
+        // Under `outDir` the exports map names an output, and tsc must map it back to its input.
+        // Finding that JavaScript takes the project root, which only a config file settles there
+        // (TS2209 without one); this keeps to the run with no config, as tests/ts7 expects.
+        if (r.js and r.cfg.options.outDir != null) return null;
+        const scope = r.packageScope(from) orelse return null;
+        const exports = scope.value.get("exports") orelse return null;
+        const name = scope.value.get("name") orelse return null;
         if (name != .string or !std.mem.startsWith(u8, spec, name.string)) return null;
         const sub = spec[name.string.len..];
         if (sub.len > 0 and sub[0] != '/') return null;
-        return r.tryExports(dir.?, exports, sub);
+        return r.tryExports(scope.dir, exports, sub);
     }
 
     fn tryNodeModules(r: Resolver, from: []const u8, spec: []const u8) ?[]const u8 {
@@ -781,13 +854,21 @@ const Resolver = struct {
     }
 
     pub fn resolve(r: Resolver, from_file: []const u8, spec: []const u8) ?[]const u8 {
+        if (r.resolveFrom(from_file, spec)) |p| return p;
+        if (!(r.cfg.options.allowJs orelse false)) return null;
+        var js = r;
+        js.js = true;
+        return js.resolveFrom(from_file, spec);
+    }
+
+    fn resolveFrom(r: Resolver, from_file: []const u8, spec: []const u8) ?[]const u8 {
         if (spec.len == 0) return null;
         const dir = fspath.dirname(from_file) orelse ".";
         if (spec[0] == '.' or spec[0] == '/') {
             return r.tryPath(fspath.resolve(r.a, &.{ dir, spec }) catch oom());
         }
         // A package is imported from thousands of files, and each probe rereads its package.json.
-        const key = std.mem.concat(r.a, u8, &.{ dir, "\x00", spec }) catch oom();
+        const key = std.mem.concat(r.a, u8, &.{ dir, if (r.js) "\x01" else "\x00", spec }) catch oom();
         if (r.fs.resolved(key)) |known| return known;
         const found = r.resolveBare(dir, spec);
         r.fs.remember(key, found);
@@ -795,8 +876,9 @@ const Resolver = struct {
     }
 
     fn resolveBare(r: Resolver, dir: []const u8, spec: []const u8) ?[]const u8 {
-        if (std.mem.startsWith(u8, spec, "node:")) return r.tryNodeModules(dir, spec[5..]) orelse r.tryNodeModules(dir, spec);
         if (r.tryPaths(spec)) |p| return p;
+        if (spec[0] == '#') return r.tryImports(dir, spec);
+        if (std.mem.startsWith(u8, spec, "node:")) return r.tryNodeModules(dir, spec[5..]) orelse r.tryNodeModules(dir, spec);
         if (r.cfg.options.baseUrl) |b| {
             if (r.tryPath(fspath.resolve(r.a, &.{ b, spec }) catch oom())) |p| return p;
         }
@@ -810,6 +892,8 @@ pub const SourceFile = struct {
     resolved: []?*SourceFile = &.{},
     /// Paths found this round, before the owning file exists.
     pending: []?[]const u8 = &.{},
+    /// Parallel to `file.module_specs`: resolved to a package's JavaScript, which is left out.
+    untyped: []bool = &.{},
     is_lib: bool = false,
     is_root: bool = false,
     /// `/// <reference>` targets and lib names, resolved to paths.
@@ -825,6 +909,7 @@ const Loading = struct {
     list: []*SourceFile,
     lib_dir: ?[]const u8,
     lazy_bodies: bool,
+    overlay: ?*const Overlay = null,
     /// Per worker: what a file keeps lasts as long as the program, and one arena a file wastes its tail.
     keeps: []Bump,
     scratch: []Bump,
@@ -870,7 +955,8 @@ fn loadOne(l: *const Loading, worker: usize, i: usize) void {
     const sf = l.list[i];
     const a = l.keeps[worker].allocator();
     const path = sf.file.path;
-    var src = readSource(a, l.io, path) catch {
+    var src: []const u8 = if (l.overlay) |o| o.get(path) orelse "" else "";
+    if (l.overlay == null or !l.overlay.?.contains(path)) src = readSource(a, l.io, path) catch {
         sf.read_failed = true;
         return;
     };
@@ -878,6 +964,10 @@ fn loadOne(l: *const Loading, worker: usize, i: usize) void {
     if (std.mem.endsWith(u8, path, ".json")) src = std.mem.concat(a, u8, &.{ "export = ", src, ";" }) catch oom();
     const f = if (l.lazy_bodies) parser.parseLazily(a, path, src) else parser.parse(a, path, src);
     if (!f.is_dts and l.cfg.options.forcesModule(path)) f.is_module = true;
+    if (isJsFile(path) and !f.is_module and binder.isCommonJs(f)) {
+        f.is_module = true;
+        f.is_commonjs = true;
+    }
     binder.bindFile(a, f);
     sf.file = f;
     sf.pending = a.alloc(?[]const u8, f.module_specs.len) catch oom();
@@ -885,7 +975,15 @@ fn loadOne(l: *const Loading, worker: usize, i: usize) void {
     const scratch = &l.scratch[worker];
     defer scratch.reset();
     const r = Resolver{ .io = l.io, .a = scratch.allocator(), .fs = l.fs, .cfg = l.cfg };
-    for (f.module_specs, 0..) |s, n| sf.pending[n] = if (r.resolve(path, s.data.string_lit)) |p| a.dupe(u8, p) catch oom() else null;
+    sf.untyped = a.alloc(bool, f.module_specs.len) catch oom();
+    for (f.module_specs, 0..) |s, n| {
+        const found = r.resolve(path, s.data.string_lit);
+        // tsc stops at `maxNodeModuleJsDepth`, 0 by default: a package's JavaScript stays out of
+        // the program, and importing it gives `any` rather than an error.
+        const elided = if (found) |p| r.isPackageJs(p) else false;
+        sf.untyped[n] = elided;
+        sf.pending[n] = if (found != null and !elided) a.dupe(u8, found.?) catch oom() else null;
+    }
     var extra: std.ArrayList([]const u8) = .empty;
     for (f.references) |ref| switch (ref.kind) {
         .path => extra.append(a, fspath.resolve(a, &.{ fspath.dirname(path) orelse ".", ref.value }) catch oom()) catch oom(),
@@ -919,6 +1017,7 @@ pub const Program = struct {
     /// Roots that could not be read: tsc's TS6053, which has no position and is reported by the caller.
     missing_roots: std.ArrayList([]const u8) = .empty,
     lazy_bodies: bool = false,
+    overlay: ?*const Overlay = null,
     /// A body left for later has a syntax error, which needs every other one reported with it.
     body_failed: std.atomic.Value(bool) = .init(false),
 
@@ -1005,7 +1104,7 @@ pub const Program = struct {
         for (roots) |r| _ = p.add(r, &level, false, true);
         p.addTypeRoots(&level);
         while (level.items.len > 0) {
-            const l = Loading{ .io = p.io, .fs = p.fs, .cfg = p.cfg, .list = level.items, .lib_dir = p.lib_dir, .lazy_bodies = p.lazy_bodies, .keeps = keeps, .scratch = scratch };
+            const l = Loading{ .io = p.io, .fs = p.fs, .cfg = p.cfg, .list = level.items, .lib_dir = p.lib_dir, .lazy_bodies = p.lazy_bodies, .keeps = keeps, .scratch = scratch, .overlay = p.overlay };
             pool.parallelFor(p.tp, level.items.len, &l, loadOne);
             var next: std.ArrayList(*SourceFile) = .empty;
             for (level.items) |sf| {
@@ -1051,6 +1150,7 @@ pub const Program = struct {
         }.less);
         libs.appendSlice(p.a, rest.items) catch oom();
         p.files = libs;
+        for (p.files.items, 0..) |sf, i| sf.file.order = @intCast(i);
     }
 
     /// Since TS 6 `@types` packages are opt-in: a project gets what `types` names, and `"*"` asks
@@ -1171,13 +1271,37 @@ pub const Program = struct {
     /// What an import or export alias finally names; null when it leads nowhere.
     pub fn resolveAlias(p: *const Program, s: *Symbol, depth: u32) ?*Symbol {
         if (s.flags & F.alias == 0) return s;
-        if (depth > 32 or s.decls.len == 0) return null;
+        if (depth > 32) return null;
+        const t = p.aliasStep(s, depth) orelse return null;
+        return p.resolveAlias(t.resolve(), depth + 1);
+    }
+
+    /// The one thing an alias names, which may be an alias itself.
+    /// Under Node's module modes an ES module sees `module.exports` as the default of a CommonJS
+    /// one, whatever that module calls `default`.
+    pub fn isCommonJsFromEsm(p: *const Program, usage: ?*ast.File, m: *Symbol) bool {
+        const kind = p.cfg.options.module orelse return false;
+        if (!std.ascii.startsWithIgnoreCase(kind, "node")) return false;
+        const target = m.file orelse return false;
+        const from = usage orelse return false;
+        for ([_][]const u8{ ".cts", ".cjs" }) |ext| {
+            if (std.mem.endsWith(u8, target.path, ext)) return std.mem.endsWith(u8, from.path, ".mts") or std.mem.endsWith(u8, from.path, ".mjs");
+        }
+        return false;
+    }
+
+    pub fn aliasStep(p: *const Program, s: *Symbol, depth: u32) ?*Symbol {
+        if (s.decls.len == 0) return null;
         const d = s.decls[0];
         const sf = p.sourceOf(s.file) orelse return null;
-        const next: ?*Symbol = switch (d.data) {
+        return switch (d.data) {
             .import_clause => blk: {
                 const m = p.moduleOfDecl(sf, d) orelse break :blk null;
-                break :blk p.exportOf(m, "default") orelse p.exportOf(m, "export=") orelse m;
+                if (p.isCommonJsFromEsm(s.file, m) and p.exportOf(m, "export=") == null) break :blk m;
+                if (p.exportOf(m, "default") orelse p.exportOf(m, "export=")) |e| break :blk e;
+                // Only a module that cannot say what it exports has a default made up for it.
+                if (m.file) |f| if (!f.is_dts and !f.is_commonjs) break :blk null;
+                break :blk m;
             },
             .namespace_import, .namespace_export => blk: {
                 const m = p.moduleOfDecl(sf, d) orelse break :blk null;
@@ -1205,8 +1329,6 @@ pub const Program = struct {
             .export_assign => |x| p.resolveEntity(binder.stripParens(x.expr), depth),
             else => null,
         };
-        const t = next orelse return null;
-        return p.resolveAlias(t.resolve(), depth + 1);
     }
 
     fn resolveEntity(p: *const Program, n: *ast.Node, depth: u32) ?*Symbol {
@@ -1314,7 +1436,18 @@ pub const Program = struct {
     }
 };
 
-pub const LoadOptions = struct { fs: ?*FsCache = null, lib_dir_flag: ?[]const u8 = null, lib_dir_env: ?[]const u8 = null, want_libs: bool = true, lazy_bodies: bool = false };
+/// `spec` resolved to a package's JavaScript, which tsc types as `any` when that is allowed.
+pub fn isUntypedImport(sf: *const SourceFile, spec: *const ast.Node) bool {
+    for (sf.file.module_specs, 0..) |n, i| {
+        if (i < sf.untyped.len and sf.untyped[i] and std.mem.eql(u8, n.data.string_lit, spec.data.string_lit)) return true;
+    }
+    return false;
+}
+
+/// Text to read instead of a file's bytes, keyed by absolute path. Resolution still asks the disk.
+pub const Overlay = std.StringHashMapUnmanaged([]const u8);
+
+pub const LoadOptions = struct { fs: ?*FsCache = null, lib_dir_flag: ?[]const u8 = null, lib_dir_env: ?[]const u8 = null, want_libs: bool = true, lazy_bodies: bool = false, overlay: ?*const Overlay = null };
 
 fn findLibDir(a: Allocator, io: Io, root: []const u8, o: LoadOptions) ?[]const u8 {
     if (o.lib_dir_flag) |d| return d;
@@ -1360,7 +1493,7 @@ pub fn loadProgram(a: Allocator, io: Io, tp: *pool.ThreadPool, cfg: *const Confi
     const p = a.create(Program) catch oom();
     const g = a.create(SymbolTable) catch oom();
     g.* = .{};
-    p.* = .{ .a = a, .io = io, .fs = o.fs orelse FsCache.create(a, io), .cfg = cfg, .tp = tp, .globals = g, .lazy_bodies = o.lazy_bodies };
+    p.* = .{ .a = a, .io = io, .fs = o.fs orelse FsCache.create(a, io), .cfg = cfg, .tp = tp, .globals = g, .lazy_bodies = o.lazy_bodies, .overlay = o.overlay };
     p.lib_dir = findLibDir(a, io, cfg.root, o);
     if (p.lib_dir) |d| p.lib_dir_real = Io.Dir.cwd().realPathFileAlloc(io, d, a) catch d;
     var libs: std.ArrayList([]const u8) = .empty;
@@ -1380,6 +1513,41 @@ pub fn loadProgram(a: Allocator, io: Io, tp: *pool.ThreadPool, cfg: *const Confi
     p.load(roots, libs.items);
     p.mergeGlobals();
     return p;
+}
+
+test "an overlay replaces a file's text and its imports" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a.ts", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "b.ts", .data = "" });
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    const entry = try fspath.join(a, &.{ dir, "a.ts" });
+    var overlay: Overlay = .empty;
+    try overlay.put(a, entry, "import './b.ts';");
+    var tp = pool.ThreadPool.init(1);
+    const cfg = Config{ .root = dir };
+    const p = loadProgram(a, std.testing.io, &tp, &cfg, &.{entry}, .{ .want_libs = false, .overlay = &overlay });
+    try std.testing.expectEqual(@as(usize, 2), p.files.items.len);
+}
+
+test "a `#` import answers from the nearest package's imports map" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "package.json", .data = "{\"imports\":{\"#t/*\":\"./types/*.d.ts\"}}" });
+    try tmp.dir.createDirPath(std.testing.io, "types");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "types/x.d.ts", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a.ts", .data = "import '#t/x';" });
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var tp = pool.ThreadPool.init(1);
+    const cfg = Config{ .root = dir };
+    const p = loadProgram(a, std.testing.io, &tp, &cfg, &.{try fspath.join(a, &.{ dir, "a.ts" })}, .{ .want_libs = false });
+    try std.testing.expectEqual(@as(usize, 2), p.files.items.len);
 }
 
 test "a root that cannot be read is reported, not dropped" {

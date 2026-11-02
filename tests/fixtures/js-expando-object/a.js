@@ -1,0 +1,31 @@
+let o = {};
+o.x = 1;
+o['y'] = 2;
+o['y'].nothing;
+o.y.nothing;
+o.x.nothing;
+var ghost = {};
+ghost["kind"] = "unlisted";
+ghost.kind.nothing;
+ghost["kind"].nothing;
+ghost[1] = 2;
+ghost[1].nothing;
+ghost['a-b'] = true;
+ghost['a-b'].nothing;
+const q = {a: 1};
+q['b'] = 2;
+q.c = 3;
+const r = {};
+r.a = 1;
+r.a = 'x';
+r.a.nothing;
+const s = [];
+s.a = 1;
+function f() {
+  const inner = {};
+  inner.m = 1;
+  inner['n'] = 'n';
+  return inner.m + inner.n.nothing;
+}
+ghost.missing;
+ghost['missing'];

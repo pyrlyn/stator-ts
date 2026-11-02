@@ -43,6 +43,9 @@ fn drainDeferred(c: *Checker) void {
 fn implicitAny(c: *Checker, p: *Node, fnode: ?*Node) void {
     if (!c.no_implicit_any) return;
     const x = p.data.param;
+    if (x.type == null and x.name.data == .identifier and x.init != null and d.isEmptyArrayLit(x.init.?) and expr.inJs(c, p)) {
+        err(c, p, 7006, c.fmt("Parameter '{s}' implicitly has an 'any[]' type.", .{x.name.data.identifier}));
+    }
     if (x.type != null or x.init != null) return;
     if (c.param_types.contains(p)) return;
     if (fnode) |f| if (f.data == .func and d.setterGetter(f) != null) return;
@@ -210,7 +213,14 @@ fn checkReturn(c: *Checker, n: *Node) void {
     const v: ?*Type = if (e) |i| expr.checkExpression(c, i) else null;
     const fun = fnode orelse return;
     const f = fun.data.func;
-    if (f.kind == .setter or f.kind == .ctor) return;
+    if (f.kind == .setter) return;
+    if (f.kind == .ctor) {
+        const t = v orelse return;
+        const want = d.declaredType(c, (fun.parent orelse return).symbol() orelse return);
+        if (relate.isAssignable(c, t, want)) return;
+        expr.checkAssignable(c, t, want, e, n);
+        return err(c, n, 2409, "Return type of constructor signature must be assignable to the instance type of the class.");
+    }
     if (f.ret) |rn| if (rn.data == .type_predicate) {
         if (v) |t| expr.checkAssignable(c, t, c.t_boolean, e, n);
         return;
@@ -264,8 +274,7 @@ fn checkVarDecl(c: *Checker, n: *Node) void {
 fn checkRedeclared(c: *Checker, n: *Node, s0: *Symbol, name: *Node) void {
     const s = s0.resolve();
     const first = s.value_decl orelse return;
-    // Without a type for a missing property, `exactOptionalPropertyTypes` could not be told apart.
-    if (first == n or s.flags & F.assignment != 0 or expr.inJs(c, n) or c.exact_optional) return;
+    if (first == n or s.flags & F.assignment != 0) return;
     const want = declaredAsAny(c, first, d.typeOfSymbol(c, s));
     const got = declaredAsAny(c, n, d.typeOfDeclaration(c, n));
     if (want.data == .err or got.data == .err or relate.isIdentical(c, want, got)) return;
@@ -365,6 +374,7 @@ pub fn checkModuleRef(c: *Checker, n: *Node, spec: *Node) void {
     const name = spec.data.string_lit;
     if (c.prog.resolveModuleName(sf, name) != null) return;
     if (isSideEffectImport(n)) return;
+    if (project.isUntypedImport(sf, spec) and !c.prog.cfg.options.flag("noImplicitAny")) return;
     // Whichever pass asks first is the only one: a type is read once, and silently or not.
     const silent = c.silent;
     c.silent = 0;
@@ -457,7 +467,7 @@ fn checkImport(c: *Checker, n: *Node) void {
         if (m.exports != null and c.prog.exportOf(m, "default") == null and c.prog.exportOf(m, "export=") == null) {
             if (!(c.prog.cfg.options.flag("esModuleInterop") or c.prog.cfg.options.flag("allowSyntheticDefaultImports"))) {
                 err(c, cl.name.?, 1192, c.fmt("Module '\"{s}\"' has no default export.", .{moduleName(m)}));
-            } else if (m.file) |f| if (!f.is_dts) {
+            } else if (m.file) |f| if (!f.is_dts and !f.is_commonjs) {
                 err(c, cl.name.?, 1192, c.fmt("Module '\"{s}\"' has no default export.", .{moduleName(m)}));
             };
         }
@@ -899,8 +909,20 @@ fn hasUndefinedType(c: *Checker, t: *Type) bool {
     return relate.isAssignable(c, c.t_undefined, t);
 }
 
+fn checkConstructors(c: *Checker, members: []*Node) void {
+    var bodies: usize = 0;
+    for (members) |m| {
+        if (m.data == .func and m.data.func.kind == .ctor and m.data.func.body != null) bodies += 1;
+    }
+    if (bodies < 2) return;
+    for (members) |m| {
+        if (m.data == .func and m.data.func.kind == .ctor) err(c, m, 2392, "Multiple constructor implementations are not allowed.");
+    }
+}
+
 fn checkMembers(c: *Checker, cls: *Node, members: []*Node) void {
     _ = cls;
+    checkConstructors(c, members);
     for (members) |m| {
         switch (m.data) {
             .func => checkFuncBody(c, m),
@@ -978,7 +1000,7 @@ fn isAsConst(n: *Node) bool {
     return t == n and n.data.type_ref.name.data == .identifier and std.mem.eql(u8, n.data.type_ref.name.data.identifier, "const");
 }
 
-fn checkFile(c: *Checker, f: *ast.File) void {
+pub fn checkFile(c: *Checker, f: *ast.File) void {
     checkBlock(c, f.root.data.source_file.stmts);
     drainDeferred(c);
     walkTypes(c, f.root);

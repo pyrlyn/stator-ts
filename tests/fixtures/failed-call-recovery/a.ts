@@ -1,0 +1,13 @@
+declare function one(a: number): string;
+declare function two(a: number, b: string): boolean;
+declare function over(a: number): string;
+declare function over(a: string, b: number): number;
+const r1: number = one("x");
+const r2: number = two(1);
+const r3 = over(true);
+const n: number = r3;
+declare function gen<T>(a: T, b: T): T;
+const r4: string = gen(1, "a");
+declare const cb: (f: (x: number) => void) => number;
+const r5: string = cb((x: string) => {});
+new Date(1, 2).nope(3);
