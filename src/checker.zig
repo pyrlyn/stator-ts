@@ -417,14 +417,16 @@ fn checkVarDecl(c: *Checker, n: *Node) void {
         if (v.init) |i| {
             const t = expr.checkExpression(c, i);
             if (v.type) |ann| expr.checkAssignable(c, t, d.typeFromNode(c, ann), i, v.name);
-        }
+        } else if (c.no_implicit_any and v.type == null and inVarStmt(n) and !expr.inJs(c, n)) checkPatternAny(c, v.name);
         checkBindings(c, v.name);
         return;
     }
     if (n.symbol()) |s| {
         const declared = d.typeOfSymbol(c, s);
-        // Exported and ambient variables are read from elsewhere, so no flow can type them.
-        if (c.no_implicit_any and v.type == null and v.init == null and declared.data == .err and isPlainDeclaration(n) and !expr.inJs(c, n) and d.isReadElsewhere(c, n.parent.?, n)) {
+        // Exported and ambient variables are read from elsewhere, and a `const` or `using` is never
+        // assigned, so no flow can type them.
+        const unflowed = (isPlainDeclaration(n) and d.isReadElsewhere(c, n.parent.?, n)) or (inVarStmt(n) and n.parent.?.data.var_list.kind != .@"var" and n.parent.?.data.var_list.kind != .let);
+        if (c.no_implicit_any and v.type == null and v.init == null and declared.data == .err and unflowed and !expr.inJs(c, n)) {
             expr.err(c, v.name, 7005, c.fmt("Variable '{s}' implicitly has an 'any' type.", .{s.name}));
         }
         checkRedeclared(c, n, s, v.name);
@@ -528,6 +530,12 @@ fn isNodeCoreModule(name: []const u8) bool {
     return node_core.has(if (std.mem.startsWith(u8, name, "node:")) name[5..] else name);
 }
 
+fn inVarStmt(n: *Node) bool {
+    const list = n.parent orelse return false;
+    const st = list.parent orelse return false;
+    return list.data == .var_list and st.data == .var_stmt;
+}
+
 fn isPlainDeclaration(n: *Node) bool {
     const list = n.parent orelse return false;
     if (list.data != .var_list or list.data.var_list.kind == .@"const") return false;
@@ -596,6 +604,51 @@ fn statementInAmbient(c: *Checker, n: *Node) bool {
     if (!grammarErrFirstToken(c, n, code, msg)) return false;
     c.ambient_reported.put(c.a, owner, {}) catch oom();
     return true;
+}
+
+/// tsc's `checkGrammarVariableDeclaration`.
+fn varDeclGrammar(c: *Checker, n: *Node) void {
+    const v = n.data.var_decl;
+    const list = n.parent orelse return;
+    if (list.data != .var_list) return;
+    const kind = list.data.var_list.kind;
+    const pattern = v.name.data != .identifier;
+    const using: ?[]const u8 = switch (kind) {
+        .using => "using",
+        .await_using => "await using",
+        else => null,
+    };
+    if (pattern) if (using) |k| return grammarErr(c, n, 1492, c.fmt("'{s}' declarations may not have binding patterns.", .{k}));
+    const stmt = list.parent orelse return;
+    const ambient = isAmbient(c, n);
+    if (stmt.data != .for_in and stmt.data != .for_of and !ambient and v.init == null) {
+        if (pattern) return grammarErr(c, n, 1182, "A destructuring declaration must have an initializer.");
+        const k: ?[]const u8 = using orelse if (kind == .@"const") @as([]const u8, "const") else null;
+        if (k) |x| return grammarErr(c, n, 1155, c.fmt("'{s}' declarations must be initialized.", .{x}));
+    }
+    if (v.excl and (stmt.data != .var_stmt or v.type == null or v.init != null or ambient)) {
+        exclGrammar(c, n, v.ann_span.start, v.init != null, v.type == null);
+    }
+}
+
+/// The `!` half of tsc's `checkGrammarProperty`.
+fn propertyExclGrammar(c: *Checker, n: *Node) void {
+    const p = n.data.property_decl;
+    if (!p.excl) return;
+    const cls = n.parent orelse return;
+    if (p.init != null or p.type == null or cls.data != .class or isAmbient(c, n) or n.mods.static or n.mods.abstract) {
+        exclGrammar(c, n, p.ann_span.start, p.init != null, p.type == null);
+    }
+}
+
+fn exclGrammar(c: *Checker, n: *Node, at: u32, has_init: bool, untyped: bool) void {
+    const code: u32, const msg: []const u8 = if (has_init)
+        .{ 1263, "Declarations with initializers cannot also have definite assignment assertions." }
+    else if (untyped)
+        .{ 1264, "Declarations with definite assignment assertions must also have type annotations." }
+    else
+        .{ 1255, "A definite assignment assertion '!' is not permitted in this context." };
+    grammarErrSpan(c, n, at, at + 1, code, msg);
 }
 
 fn isIteration(n: *Node, through_labels: bool) bool {
@@ -1533,6 +1586,8 @@ fn walkTypesIn(c: *Checker, n: *Node) void {
     }
     modifiers.check(c, n);
     if (!statementInAmbient(c, n)) jumpGrammar(c, n);
+    if (n.data == .var_decl) varDeclGrammar(c, n);
+    if (n.data == .property_decl) propertyExclGrammar(c, n);
     if (n.data == .computed_name) checkComputedNameType(c, n);
     ambientInitializer(c, n);
     if (n.data == .param) checkParameter(c, n);

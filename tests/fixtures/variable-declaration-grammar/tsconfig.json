@@ -1,0 +1,1 @@
+{ "compilerOptions": { "strict": true, "target": "esnext", "noEmit": true, "lib": ["esnext", "esnext.disposable"] } }
