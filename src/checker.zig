@@ -1330,6 +1330,7 @@ fn walkTypes(c: *Checker, n: *Node) void {
     }
     modifiers.check(c, n);
     statementInAmbient(c, n);
+    if (n.data == .computed_name) checkComputedNameType(c, n);
     ambientInitializer(c, n);
     if (n.data == .param) checkParameter(c, n);
     if (n.data == .index_sig) checkIndexSignatureGrammar(c, n);
@@ -1349,6 +1350,31 @@ fn walkStrictMode(c: *Checker, n: *Node) void {
     }
     checkStrictMode(c, n);
     ast.forEachChild(n, c, walkStrictMode);
+}
+
+/// tsc's `checkComputedPropertyName`: the key must be a string, number or symbol, never nullable.
+fn checkComputedNameType(c: *Checker, n: *Node) void {
+    // An enum member's computed name is its own grammar error, and tsc checks no type there.
+    if (n.parent) |m| if (m.data == .enum_member) return;
+    const e = n.data.computed_name.expr;
+    if (e.data == .binary and e.data.binary.op == .kw_in) if (n.parent) |m| if (m.parent) |owner| switch (owner.data) {
+        // `[k in K]` there is a mapped type gone wrong, which the grammar check reports.
+        .type_literal, .class, .interface => if (!isAccessor(m)) return,
+        else => {},
+    };
+    const t = expr.checkSilent(c, e);
+    if (t.data == .err) return;
+    if (t.data == .null or t.data == .undefined or !relate.isAssignable(c, t, c.t_key)) {
+        err(c, n, 2464, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
+    }
+}
+
+fn isAccessor(n: *Node) bool {
+    if (n.data != .func) return false;
+    return switch (n.data.func.kind) {
+        .getter, .setter, .getter_sig, .setter_sig => true,
+        else => false,
+    };
 }
 
 /// tsc's `checkGrammarIndexSignatureParameters`: the first problem only.
