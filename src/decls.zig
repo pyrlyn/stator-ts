@@ -1781,12 +1781,101 @@ fn typeOfSymbolWorker(c: *Checker, s: *Symbol) *Type {
 
 /// `f.x = 1; f.x = 'a'` declares one property that holds either.
 fn expandoType(c: *Checker, s: *Symbol) *Type {
+    if (binder.isThisProperty(s)) return thisPropertyType(c, s);
+    return c.getUnion(assignedTypes(c, s, false).items);
+}
+
+fn assignedTypes(c: *Checker, s: *Symbol, this_property: bool) std.ArrayList(*Type) {
     var parts = c.newList(*Type);
     for (s.decls) |left| {
         const value = left.parent.?.data.binary.right;
+        // `this.x = this.x + 1` says nothing about `x` that the other assignments do not.
+        if (this_property and readsThisProperty(value, s.name)) continue;
+        if (this_property and value.data == .array_lit and value.data.array_lit.elems.len == 0) {
+            implicitMember(c, s, left, "any[]");
+            parts.append(c.a, arrayOf(c, c.t_any)) catch oom();
+            continue;
+        }
         parts.append(c.a, expr.widenInit(c, value, expr.checkSilent(c, value), false)) catch oom();
     }
-    return c.getUnion(parts.items);
+    return parts;
+}
+
+const ThisRead = struct { name: []const u8, found: bool = false };
+
+fn readsThisProperty(value: *Node, name: []const u8) bool {
+    var ctx = ThisRead{ .name = name };
+    findThisRead(&ctx, value);
+    return ctx.found;
+}
+
+fn findThisRead(ctx: *ThisRead, n: *Node) void {
+    if (ctx.found) return;
+    switch (n.data) {
+        .prop_access => |x| if (x.expr.data == .this_expr and std.mem.eql(u8, ast.memberText(x.name), ctx.name)) {
+            ctx.found = true;
+            return;
+        },
+        .func => return,
+        else => {},
+    }
+    ast.forEachChild(n, ctx, findThisRead);
+}
+
+/// tsc's `getWidenedTypeForAssignmentDeclaration` for a JavaScript class's `this.x = ...`: what a
+/// constructor leaves in `this.x`, else what the base class says, else every value assigned.
+fn thisPropertyType(c: *Checker, s: *Symbol) *Type {
+    // JSDoc types are not modeled, so a documented member stays quiet.
+    for (s.decls) |left| if (checker.jsDocHas(c, left, &.{"@type"})) return c.t_err;
+    const base = inheritedType(c, s);
+    const ctor = for (s.decls) |left| {
+        if (thisOwner(left)) |f| if (f.data == .func and f.data.func.kind == .ctor) break f;
+    } else null;
+    if (ctor) |f| if (s.decls[0].data == .prop_access) if (expr.thisAccess(c, s.decls[0].data.prop_access.name, f)) |ref| {
+        const t = flow.flowType(c, ref, c.t_auto, base orelse c.t_undefined, f);
+        if (t == c.t_auto) return c.t_any;
+        if (!everyNullable(t)) return t;
+    };
+    if (ctor == null) if (base) |t| return t;
+    var parts = assignedTypes(c, s, true);
+    if (ctor == null and parts.items.len > 0 and c.strict_null) parts.append(c.a, c.t_undefined) catch oom();
+    const t = c.getUnion(parts.items);
+    if (!everyNullable(t)) return t;
+    implicitMember(c, s, s.value_decl orelse s.decls[0], "any");
+    return c.t_any;
+}
+
+fn implicitMember(c: *Checker, s: *Symbol, left: *Node, shown: []const u8) void {
+    if (!c.no_implicit_any) return;
+    report(c, left.parent.?, 7008, c.fmt("Member '{s}' implicitly has an '{s}' type.", .{ s.name, shown }));
+}
+
+fn everyNullable(t: *Type) bool {
+    const members_of = if (t.data == .union_) t.data.union_ else @as([]const *Type, &.{t});
+    for (members_of) |m| if (m.data != .null and m.data != .undefined) return false;
+    return true;
+}
+
+/// The class member whose `this` the assignment writes through.
+fn thisOwner(left: *Node) ?*Node {
+    var cur = left.parent;
+    while (cur) |x| : (cur = x.parent) switch (x.data) {
+        .func => |f| if (f.kind != .arrow) return x,
+        .static_block, .property_decl => return x,
+        else => {},
+    };
+    return null;
+}
+
+fn inheritedType(c: *Checker, s: *Symbol) ?*Type {
+    const cls = s.parent orelse return null;
+    if (cls.flags & F.class == 0) return null;
+    // A static member's base would be the base constructor, which this does not look at.
+    if (cls.exports) |e| if (e.get(s.name) == s) return null;
+    const bases = basesOf(c, declaredType(c, cls));
+    if (bases.len == 0) return null;
+    const p = getProp(c, bases[0], s.name) orelse return null;
+    return propType(c, p);
 }
 
 pub fn addOptional(c: *Checker, t: *Type) *Type {

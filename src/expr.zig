@@ -3054,7 +3054,7 @@ fn propAccessType(c: *Checker, n: *Node, left: *Type, name_node: *Node, name: []
     if (n.flow() == null or T.isAny(declared)) return declared;
     if (p.method and declared.data != .union_) return declared;
     const narrowable = narrowableRef(c, n, declared);
-    if (c.strict_null and addedHere(n, p)) {
+    if (c.strict_null and addedHere(c, n, p)) {
         const r = flow.flowType(c, n, narrowable, d.addOptional(c, narrowable), containingFunc(n));
         if (!canBeUndefined(narrowable) and canBeUndefined(r)) {
             err(c, name_node, 2565, c.fmt("Property '{s}' is used before being assigned.", .{name}));
@@ -3215,8 +3215,10 @@ fn referencedWithin(decl: *Node, usage: *Node, stop_at_any_field: bool) bool {
 }
 
 /// `f.x` next to the `f.x = 1` that declares it: the property exists only past that statement.
-fn addedHere(n: *Node, p: *T.Prop) bool {
+fn addedHere(c: *Checker, n: *Node, p: *T.Prop) bool {
     const decl = (p.sym orelse return false).value_decl orelse return false;
+    // tsc's strictPropertyInitialization rule for `this.x` looks only at declared fields.
+    if (c.strict_prop_init and n.data == .prop_access and n.data.prop_access.expr.data == .this_expr) return false;
     return decl.data == .prop_access and flowScope(n) == flowScope(decl);
 }
 

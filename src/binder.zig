@@ -278,6 +278,8 @@ pub const Binder = struct {
     frozen: ?*Node = null,
     /// `frozen`'s scope, as this block adds to it.
     frozen_locals: ?*SymbolTable = null,
+    /// `this.x = 1` in the class being bound, declared once its own members are all in place.
+    this_props: std.ArrayList(ThisProp) = .empty,
 
     fn mkSym(b: *Binder, name: []const u8, flags: u32) *Symbol {
         const s = b.a.create(Symbol) catch oom();
@@ -785,10 +787,14 @@ pub const Binder = struct {
         b.enterTypeParams(n, c.type_params);
         for (c.decorators) |d| b.bind(d);
         for (c.heritage) |h| b.bind(h);
+        const outer = b.this_props;
+        b.this_props = .empty;
         for (c.members) |m| {
             m.parent = n;
             b.bindMember(n, m);
         }
+        for (b.this_props.items) |x| b.declareThisProperty(n, x.left, x.static);
+        b.this_props = outer;
         b.container = save[0];
         b.block = save[1];
         b.flow = save[2];
@@ -1575,6 +1581,60 @@ pub const Binder = struct {
         _ = b.declare(s.exports.?, s, left, name, F.property | F.assignment, F.none, null);
     }
 
+    /// In JavaScript, `this.x = 1` inside a class member declares `x` on the class.
+    fn noteThisProperty(b: *Binder, left: *Node) void {
+        if (!isJsPath(b.file.path)) return;
+        switch (left.data) {
+            .prop_access => |x| if (x.expr.data != .this_expr or x.name.data != .identifier) return,
+            .elem_access => |x| switch (x.index.data) {
+                .string_lit, .numeric_lit, .no_subst_template => if (x.expr.data != .this_expr) return,
+                else => return,
+            },
+            else => return,
+        }
+        // Arrow functions see the `this` around them; any other function has its own.
+        var prev = left;
+        var cur = left.parent;
+        while (cur) |x| : ({
+            prev = x;
+            cur = x.parent;
+        }) switch (x.data) {
+            .func => |f| {
+                if (f.kind == .arrow) continue;
+                const owner = x.parent orelse return;
+                if (owner.data != .class) return;
+                switch (f.kind) {
+                    .ctor, .method, .getter, .setter => {},
+                    else => return,
+                }
+                if (prev != f.body) return;
+                return b.this_props.append(b.temps, .{ .left = left, .static = x.mods.static }) catch oom();
+            },
+            .static_block => return b.this_props.append(b.temps, .{ .left = left, .static = true }) catch oom(),
+            .property_decl => |d| {
+                if (prev != d.init) return;
+                return b.this_props.append(b.temps, .{ .left = left, .static = x.mods.static }) catch oom();
+            },
+            .class, .source_file, .module_block => return,
+            else => {},
+        };
+    }
+
+    /// A member the class declares itself always wins over `this.x = 1`: tsc keeps the pattern
+    /// `this.m = this.m.bind(this)` from clashing with the method `m`.
+    fn declareThisProperty(b: *Binder, cls: *Node, left: *Node, static: bool) void {
+        const sym = cls.symbol() orelse return;
+        const name = switch (left.data) {
+            .prop_access => |x| ast.memberText(x.name),
+            .elem_access => |x| b.propName(x.index) orelse return,
+            else => return,
+        };
+        const slot = if (static) &sym.exports else &sym.members;
+        if (slot.* == null) slot.* = b.table();
+        if (slot.*.?.get(name)) |s| if (!isThisProperty(s)) return;
+        _ = b.declare(slot.*.?, sym, left, name, F.property | F.assignment, F.none, null);
+    }
+
     /// `f[KEY] = 1`: only the checker can tell what name a constant holds.
     fn bindLateExpando(b: *Binder, left: *Node, target: *Node, key: *Node) void {
         if (!isEntityName(key)) return;
@@ -1632,6 +1692,7 @@ pub const Binder = struct {
                 if (op.isAssignment()) {
                     if (op == .assign) b.bindTarget(left) else b.mutate(stripParens(left));
                     if (op == .assign) b.bindExpando(left, right);
+                    if (op == .assign) b.noteThisProperty(left);
                 }
             },
         }
@@ -1663,6 +1724,26 @@ pub fn specName(n: *Node) []const u8 {
         .identifier, .string_lit => |v| v,
         else => "",
     };
+}
+
+const ThisProp = struct { left: *Node, static: bool };
+
+fn isJsPath(path: []const u8) bool {
+    return @import("project.zig").isJs(path);
+}
+
+/// Declared by nothing but `this.x = ...` assignments.
+pub fn isThisProperty(s: *const Symbol) bool {
+    if (s.decls.len == 0) return false;
+    for (s.decls) |d| {
+        const obj = switch (d.data) {
+            .prop_access => |x| x.expr,
+            .elem_access => |x| x.expr,
+            else => return false,
+        };
+        if (obj.data != .this_expr) return false;
+    }
+    return true;
 }
 
 /// `let` and `var` can be reassigned, so only a function or a `const` holding one takes members.
