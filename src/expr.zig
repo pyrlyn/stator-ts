@@ -5630,9 +5630,46 @@ fn checkJsx(c: *Checker, n: *Node) void {
             return;
         },
         .identifier, .prop_access, .this_expr => return,
+        .jsx_opening => |x| checkIntrinsicTag(c, n, x.tag),
+        .jsx_self_closing => |x| checkIntrinsicTag(c, n, x.tag),
+        .jsx_closing => |x| checkIntrinsicTag(c, n, x.tag),
         else => {},
     }
     ast.forEachChild(n, c, checkJsx);
+}
+
+/// tsc's `getIntrinsicTagSymbol`: a lower-case tag is looked up in `JSX.IntrinsicElements`, and
+/// without that interface the element is `any`.
+fn checkIntrinsicTag(c: *Checker, n: *Node, tag: *Node) void {
+    if (!c.no_implicit_any or tag.data != .identifier) return;
+    const name = tag.data.identifier;
+    if (name.len == 0 or !(std.ascii.isLower(name[0]) or std.mem.indexOfAny(u8, name, "-:") != null)) return;
+    const ns = jsxNamespace(c, n) orelse return;
+    if (ns) |x| if (x.exports) |e| if (e.get("IntrinsicElements")) |ie| if (ie.resolve().flags & F.type != 0) return;
+    err(c, n, 7026, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
+}
+
+/// tsc's `getJsxNamespaceAt`: `JSX` under the factory's namespace, else the global one. Null when
+/// it cannot be told here (automatic runtimes, `@jsx` pragmas); an inner null when there is none.
+fn jsxNamespace(c: *Checker, at: *Node) ??*Symbol {
+    const o = c.prog.cfg.options;
+    switch (o.jsxMode()) {
+        .react_jsx, .react_jsxdev => return null,
+        else => {},
+    }
+    const f = d.fileOf(c, at) orelse return null;
+    if (std.mem.indexOf(u8, f.src, "@jsx") != null) return null;
+    const entity = o.jsxFactory orelse o.reactNamespace orelse "React";
+    const root = entity[0 .. std.mem.indexOfScalar(u8, entity, '.') orelse entity.len];
+    if (d.resolveName(c, at, root, F.namespace | F.alias)) |s| {
+        const target = c.prog.resolveAlias(s, 0) orelse return null;
+        if (target.resolve().exports) |e| if (e.get("JSX")) |exported| {
+            const jsx = (c.prog.resolveAlias(exported, 0) orelse return null).resolve();
+            if (jsx.flags & F.namespace != 0) return jsx;
+        };
+    }
+    const global = d.globalSym(c, "JSX") orelse return @as(?*Symbol, null);
+    return global.resolve();
 }
 
 pub fn checkExpr(c: *Checker, n: *Node) *Type {
@@ -5723,7 +5760,7 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         .spread_elem => |x| iteratedOf(c, x.expr, checkExpr(c, x.expr), false),
         .meta_property => c.t_err,
         .jsx_element, .jsx_self_closing, .jsx_fragment => blk: {
-            ast.forEachChild(n, c, checkJsx);
+            checkJsx(c, n);
             break :blk c.t_err;
         },
         .omitted_expr => c.t_undefined,
