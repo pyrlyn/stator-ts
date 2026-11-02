@@ -80,6 +80,22 @@ fn jsDocTyped(c: *Checker, p: *Node) bool {
     return false;
 }
 
+/// Whether a JSDoc comment on `n`, or on what holds it within its statement, names one of `tags`.
+pub fn jsDocHas(c: *Checker, n: *Node, tags: []const []const u8) bool {
+    const f = d.fileOf(c, n) orelse return false;
+    if (!project.isJs(f.path)) return false;
+    var cur: ?*Node = n;
+    while (cur) |x| : (cur = x.parent) {
+        switch (x.data) {
+            .block, .source_file, .module_block => return false,
+            else => {},
+        }
+        const doc = jsDocBefore(f.src, x.start) orelse continue;
+        for (tags) |t| if (std.mem.indexOf(u8, doc, t) != null) return true;
+    }
+    return false;
+}
+
 fn jsDocBefore(src: []const u8, pos: u32) ?[]const u8 {
     const before = std.mem.trimEnd(u8, src[0..@min(pos, src.len)], " \t\r\n");
     if (!std.mem.endsWith(u8, before, "*/")) return null;

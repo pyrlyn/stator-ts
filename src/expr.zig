@@ -788,6 +788,11 @@ fn thisOfClass(c: *Checker, cls: *Node, is_static: bool) *Type {
 }
 
 pub fn checkThisAt(c: *Checker, n: *Node) *Type {
+    return thisTypeAt(c, n) orelse c.t_err;
+}
+
+/// Null where tsc's `tryGetThisTypeAt` finds nothing: `this` is then an implicit `any`.
+fn thisTypeAt(c: *Checker, n: *Node) ?*Type {
     var cur = n.parent;
     while (cur) |x| : (cur = x.parent) {
         switch (x.data) {
@@ -796,7 +801,9 @@ pub fn checkThisAt(c: *Checker, n: *Node) *Type {
                 .decl, .expr => {
                     if (d.thisParam(x)) |p| if (p.data.param.type) |ann| return d.typeFromNode(c, ann);
                     if (x.parent) |p| if (p.data == .property_assign or p.data == .object_lit) return objectThis(c, x);
-                    return contextualThis(c, x) orelse c.t_err;
+                    if (contextualThis(c, x)) |t| return t;
+                    if (d.thisParam(x) != null or checker.jsDocHas(c, x, &.{ "@this", "@type" })) return c.t_err;
+                    return assignedThis(c, x);
                 },
                 .method, .getter, .setter, .ctor => {
                     if (d.thisParam(x)) |p| if (p.data.param.type) |ann| return d.typeFromNode(c, ann);
@@ -815,13 +822,88 @@ pub fn checkThisAt(c: *Checker, n: *Node) *Type {
                 return thisOfClass(c, owner, true);
             },
             // A member does not own its own name: `this` there belongs to what surrounds the literal.
-            .computed_name => return checkThisAt(c, x.parent orelse break),
+            .computed_name => return thisTypeAt(c, x.parent orelse break),
+            .module_decl, .enum_decl => return null,
             .class => {},
             .interface, .type_literal => return d.typeFromNode(c, n),
             else => {},
         }
     }
     return c.t_err;
+}
+
+/// `obj.m = function () { this }` sees `obj`, except `exports.m = ...` in a CommonJS file.
+fn assignedThis(c: *Checker, fnode: *Node) ?*Type {
+    if (!c.no_implicit_this and !inJs(c, fnode)) return null;
+    var at = fnode;
+    while (at.parent) |p| : (at = p) if (p.data != .paren) break;
+    const p = at.parent orelse return null;
+    if (p.data != .binary or !isAssignOp(p.data.binary.op) or p.data.binary.right != at) return null;
+    const target = p.data.binary.left;
+    const obj = switch (target.data) {
+        .prop_access => |x| x.expr,
+        .elem_access => |x| x.expr,
+        else => return null,
+    };
+    if (obj.data == .identifier and inJs(c, fnode) and commonJsName(c, obj, obj.data.identifier)) return null;
+    return widenFresh(c, checkExpr(c, obj));
+}
+
+/// tsc's `checkThisExpression` diagnostics: where `this` may not appear, and where it is an implicit `any`.
+fn checkThisPlace(c: *Checker, n: *Node) void {
+    var captured = false;
+    var in_computed = false;
+    var cur = n.parent;
+    var container: ?*Node = null;
+    while (cur) |x| : (cur = x.parent) {
+        switch (x.data) {
+            .func => |f| {
+                if (f.kind == .arrow) {
+                    captured = true;
+                    continue;
+                }
+                container = x;
+                break;
+            },
+            .property_decl, .static_block, .module_decl, .enum_decl, .index_sig => {
+                container = x;
+                break;
+            },
+            .computed_name => {
+                // A class member's name is evaluated outside the class body.
+                const member = x.parent orelse continue;
+                if (member.parent) |cls| if (cls.data == .class) {
+                    in_computed = true;
+                    cur = cls;
+                    continue;
+                };
+                // An object literal member's name belongs to what surrounds the literal.
+                cur = member;
+                continue;
+            },
+            .decorator => {
+                // Decorators run outside the class or member they decorate.
+                const owner = x.parent orelse continue;
+                cur = if (owner.data == .param) owner.parent orelse owner else owner;
+                continue;
+            },
+            else => {},
+        }
+    }
+    if (in_computed) {
+        err(c, n, 2465, "'this' cannot be referenced in a computed property name.");
+    } else if (container) |k| switch (k.data) {
+        .module_decl => err(c, n, 2331, "'this' cannot be referenced in a module or namespace body."),
+        .enum_decl => err(c, n, 2332, "'this' cannot be referenced in current location."),
+        else => {},
+    };
+    if (!c.no_implicit_this) return;
+    if (container == null) {
+        const f = d.fileOf(c, n) orelse return;
+        if (captured and !f.is_module) err(c, n, 7041, "The containing arrow function captures the global value of 'this'.");
+        return;
+    }
+    if (thisTypeAt(c, n) == null) err(c, n, 2683, "'this' implicitly has type 'any' because it does not have a type annotation.");
 }
 
 fn contextualThis(c: *Checker, fnode: *Node) ?*Type {
@@ -5554,6 +5636,7 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         .false_lit => c.freshOf(c.t_false),
         .null_lit => c.t_null,
         .this_expr => blk: {
+            checkThisPlace(c, n);
             const t = checkThisAt(c, n);
             if (n.flow() == null or T.isAny(t)) break :blk t;
             break :blk flow.flowType(c, n, t, t, containingFunc(n));
