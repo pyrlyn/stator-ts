@@ -3880,7 +3880,7 @@ fn equalityOverlap(c: *Checker, l: *Type, r: *Type) bool {
     return relate.isComparable(c, l, r) or relate.isComparable(c, r, l);
 }
 
-fn baseOfLiteral(c: *Checker, t: *Type) *Type {
+pub fn baseOfLiteral(c: *Checker, t: *Type) *Type {
     return switch (t.data) {
         .str_lit => c.t_string,
         .num_lit => c.t_number,

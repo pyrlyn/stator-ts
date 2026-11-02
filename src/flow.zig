@@ -295,9 +295,9 @@ const St = struct {
         const c = st.c;
         const n = f.node orelse return null;
         if (matchingRef(c, st.ref, n)) {
+            // tsc never works out what `x += 1` or `x++` stores: `x` stays what it was, widened.
+            if (expr.isCompound(n)) return expr.baseOfLiteral(c, st.go(f.antecedent orelse return st.initial));
             if (st.declared == c.t_auto) {
-                // `x += 1` keeps what `x` already was.
-                if (expr.isCompound(n)) return null;
                 // A chain of `a = f(a)` reads every earlier link, so each is worked out once.
                 const k = st.cacheKey(f);
                 if (st.recall(k, f)) |t| return t;
