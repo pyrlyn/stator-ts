@@ -923,6 +923,8 @@ const Resolver = struct {
                 var it = o.iterator();
                 while (it.next()) |e| {
                     if (!r.conditionMatches(e.key_ptr.*)) continue;
+                    // A `null` target excludes the path rather than deferring to later conditions.
+                    if (e.value_ptr.* == .null) return null;
                     if (r.tryTarget(dir, e.value_ptr.*, stem)) |p| return p;
                 }
                 return null;
@@ -947,7 +949,10 @@ const Resolver = struct {
         const ends = std.mem.endsWith;
         if (ends(u8, path, ".mts") or ends(u8, path, ".mjs")) return .import;
         if (ends(u8, path, ".cts") or ends(u8, path, ".cjs")) return .require;
-        const ty = if (r.packageScope(fspath.dirname(path) orelse ".")) |scope| scope[1].get("type") else null;
+        // tsc's `getImpliedNodeFormatForFile` reads `type` only under Node resolution or in a package.
+        const reads_type = r.cfg.options.nodeResolution() or std.mem.indexOf(u8, path, "/node_modules/") != null;
+        const scope = if (reads_type) r.packageScope(fspath.dirname(path) orelse ".") else null;
+        const ty = if (scope) |x| x[1].get("type") else null;
         const module = ty != null and ty.? == .string and std.mem.eql(u8, ty.?.string, "module");
         if (r.cfg.options.moduleFormat() == .node) return if (module) .import else .require;
         if (module) return .import;
@@ -992,13 +997,25 @@ const Resolver = struct {
 
     /// An exact key wins; otherwise the `*` pattern with the longest prefix, as in Node.
     fn tryMapKey(r: Resolver, dir: []const u8, map: json.ObjectMap, key: []const u8) ?[]const u8 {
-        if (map.get(key)) |v| return r.tryTarget(dir, v, null);
+        // As in Node, a key with a `*` only matches as a pattern, and only with one `*`.
+        if (std.mem.indexOfScalar(u8, key, '*') == null) if (map.get(key)) |v| return r.tryTarget(dir, v, null);
         var best: ?json.Value = null;
         var best_pre: usize = 0;
         var stem: []const u8 = "";
+        // tsc still maps the folder keys (`"./": "./"`) Node deprecated.
+        var folder: ?json.Value = null;
+        var folder_key: []const u8 = "";
         var it = map.iterator();
         while (it.next()) |e| {
+            if (std.mem.endsWith(u8, e.key_ptr.*, "/") and std.mem.indexOfScalar(u8, e.key_ptr.*, '*') == null) {
+                if (std.mem.startsWith(u8, key, e.key_ptr.*) and e.key_ptr.len > folder_key.len) {
+                    folder = e.value_ptr.*;
+                    folder_key = e.key_ptr.*;
+                }
+                continue;
+            }
             const star = std.mem.indexOfScalar(u8, e.key_ptr.*, '*') orelse continue;
+            if (std.mem.indexOfScalarPos(u8, e.key_ptr.*, star + 1, '*') != null) continue;
             const pre = e.key_ptr.*[0..star];
             const post = e.key_ptr.*[star + 1 ..];
             if (key.len < pre.len + post.len or !std.mem.startsWith(u8, key, pre) or !std.mem.endsWith(u8, key, post)) continue;
@@ -1007,11 +1024,16 @@ const Resolver = struct {
             best_pre = pre.len;
             stem = key[pre.len .. key.len - post.len];
         }
-        return if (best) |v| r.tryTarget(dir, v, stem) else null;
+        if (best) |v| if (folder == null or best_pre >= folder_key.len) return r.tryTarget(dir, v, stem);
+        const v = folder orelse return null;
+        if (v != .string) return null;
+        return r.tryExportFile(dir, std.mem.concat(r.a, u8, &.{ v.string, key[folder_key.len..] }) catch oom());
     }
 
     fn tryExportFile(r: Resolver, dir: []const u8, rel: []const u8) ?[]const u8 {
         const p = fspath.resolve(r.a, &.{ dir, rel }) catch oom();
+        // tsc's `loadModuleFromFileNoImplicitExtensions`: an export target names its extension.
+        if (std.mem.indexOfScalar(u8, fspath.basename(p), '.') == null) return null;
         return r.tryFile(p);
     }
 
@@ -1022,9 +1044,8 @@ const Resolver = struct {
             const v = json.parseFromSliceLeaky(json.Value, r.a, text, .{}) catch break :blk;
             if (v != .object) break :blk;
             if (v.object.get("exports")) |e| {
-                if (r.tryExports(dir, e, sub)) |p| return p;
                 // A package with an exports map hides every other path.
-                if (e == .object or e == .string) break :blk;
+                if (e != .null) return r.tryExports(dir, e, sub);
             }
             if (sub.len == 0) for ([_][]const u8{ "types", "typings", "main" }) |k| {
                 if (v.object.get(k)) |x| if (x == .string) {
