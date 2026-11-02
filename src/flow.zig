@@ -749,6 +749,8 @@ const St = struct {
                 }
                 if (st.discriminant(l, cur)) |name| return st.discEq(cur, name, op, right, assume);
                 if (st.discriminant(r, cur)) |name| return st.discEq(cur, name, op, left, assume);
+                if (isConstructorOf(c, st.ref, l)) return byConstructor(c, cur, op, right, assume);
+                if (isConstructorOf(c, st.ref, r)) return byConstructor(c, cur, op, left, assume);
                 return cur;
             },
             .kw_instanceof => {
@@ -1315,6 +1317,50 @@ pub fn narrowedType(c: *Checker, t: *Type, candidate: *Type, assume: bool, check
     if (relate.isAssignable(c, t, candidate)) return t;
     if (relate.isAssignable(c, candidate, t)) return candidate;
     return c.getIntersection(&.{ t, candidate });
+}
+
+/// `ref.constructor` or `ref["constructor"]`.
+fn isConstructorOf(c: *Checker, ref: *Node, n: *Node) bool {
+    const object, const key = switch (n.data) {
+        .prop_access => |x| .{ x.expr, x.name },
+        .elem_access => |x| .{ x.expr, x.index },
+        else => return false,
+    };
+    const name = switch (key.data) {
+        .identifier => |x| if (n.data == .prop_access) x else return false,
+        .string_lit, .no_subst_template => |x| if (n.data == .elem_access) x else return false,
+        else => return false,
+    };
+    return std.mem.eql(u8, name, "constructor") and matchingRef(c, ref, object);
+}
+
+fn symbolOfObj(t: *Type) ?*binder.Symbol {
+    if (t.data != .obj) return null;
+    return (t.data.obj.target orelse t).data.obj.sym;
+}
+
+fn isClassObj(t: *Type) bool {
+    return t.data == .obj and (t.data.obj.target orelse t).data.obj.is_class;
+}
+
+/// `x.constructor === C` keeps what `C` constructs; tsc matches a class only by its own symbol,
+/// so a derived class is not constructed by its base.
+fn byConstructor(c: *Checker, t: *Type, op: @import("lexer.zig").Tok, ctor: *Node, assume: bool) *Type {
+    // Only the branch where the two are equal says anything.
+    if (assume != (op == .eq2 or op == .eq3)) return t;
+    const r = operand(c, ctor);
+    if (d.callSigs(c, r).len == 0 and d.ctorSigs(c, r).len == 0) return t;
+    const p = d.getProp(c, r, "prototype") orelse return t;
+    const k = d.propType(c, p);
+    if (T.isAny(k) or k == d.globalType(c, "Object") or k == d.globalType(c, "Function")) return t;
+    if (T.isAny(t)) return k;
+    const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
+    var parts = c.newList(*Type);
+    for (members) |m| {
+        const kept = if (isClassObj(m) or isClassObj(k)) symbolOfObj(m) == symbolOfObj(k) else relate.isSubtype(c, m, k);
+        if (kept) parts.append(c.a, m) catch oom();
+    }
+    return c.getUnion(parts.items);
 }
 
 fn byInstanceof(c: *Checker, t: *Type, right: *Node, assume: bool) *Type {

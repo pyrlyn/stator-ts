@@ -847,6 +847,7 @@ fn superBase(c: *Checker, n: *Node) ?struct { base: *Type, is_static: bool } {
     while (cur) |x| : (cur = x.parent) {
         if (x.data == .func and x.data.func.kind != .arrow) is_static = x.mods.static;
         if (x.data == .property_decl) is_static = x.mods.static;
+        if (x.data == .static_block) is_static = true;
         if (x.data == .class) {
             const s = x.symbol() orelse return null;
             const t = d.declaredType(c, s);
