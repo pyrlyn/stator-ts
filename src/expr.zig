@@ -3975,7 +3975,7 @@ fn spanStart(c: *Checker, n: *Node) u32 {
     };
 }
 
-fn skipTrivia(src: []const u8, from: u32) u32 {
+pub fn skipTrivia(src: []const u8, from: u32) u32 {
     var i: usize = from;
     while (i < src.len) {
         if (std.ascii.isWhitespace(src[i])) {

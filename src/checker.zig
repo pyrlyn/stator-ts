@@ -1201,7 +1201,106 @@ fn walkTypes(c: *Checker, n: *Node) void {
         if (f.body == null) for (f.params) |p| implicitAny(c, p, n);
         if (f.kind == .method_sig) overloads.check(c, n);
     }
+    if (n.data == .param) checkParameter(c, n);
+    if (n.data == .index_sig) checkIndexSignatureGrammar(c, n);
     ast.forEachChild(n, c, walkTypes);
+}
+
+/// tsc's `checkGrammarIndexSignatureParameters`: the first problem only.
+fn checkIndexSignatureGrammar(c: *Checker, n: *Node) void {
+    const f = d.fileOf(c, n) orelse return;
+    if (f.diags.len != 0) return;
+    const x = n.data.index_sig;
+    const one = "An index signature must have exactly one parameter.";
+    if (x.params.len == 0) return err(c, n, 1096, one);
+    const p = x.params[0];
+    const param = p.data.param;
+    if (x.params.len != 1) return err(c, param.name, 1096, one);
+    if (param.dotdotdot) {
+        const at: u32 = @intCast(std.mem.indexOfPos(u8, f.src, p.start, "...") orelse p.start);
+        return d.reportSpan(c, p, at, at + 3, 1017, "An index signature cannot have a rest parameter.");
+    }
+    if (@as(u16, @bitCast(p.mods)) != 0) return err(c, param.name, 1018, "An index signature parameter cannot have an accessibility modifier.");
+    if (param.question) {
+        const at = expr.skipTrivia(f.src, param.name.end);
+        return d.reportSpan(c, p, at, at + 1, 1019, "An index signature parameter cannot have a question mark.");
+    }
+    if (param.init != null) return err(c, param.name, 1020, "An index signature parameter cannot have an initializer.");
+    const tn = param.type orelse return err(c, param.name, 1022, "An index signature parameter must have a type annotation.");
+    const t = d.typeFromNode(c, tn);
+    if (someLiteralKey(t) or d.isGeneric(c, t)) {
+        return err(c, param.name, 1337, "An index signature parameter type cannot be a literal type or generic type. Consider using a mapped object type instead.");
+    }
+    const parts: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
+    for (parts) |k| if (!validIndexKey(c, k)) {
+        return err(c, param.name, 1268, "An index signature parameter type must be 'string', 'number', 'symbol', or a template literal type.");
+    };
+    if (x.type == null) err(c, n, 1021, "An index signature must have a type annotation.");
+}
+
+fn someLiteralKey(t: *Type) bool {
+    const parts: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
+    for (parts) |k| switch (k.data) {
+        .str_lit, .num_lit, .unique, .enum_lit => return true,
+        else => {},
+    };
+    return false;
+}
+
+/// tsc's `isValidIndexKeyType`; a non-generic template or string mapping is a pattern literal.
+fn validIndexKey(c: *Checker, t: *Type) bool {
+    return switch (t.data) {
+        .string, .number, .symbol => true,
+        .tmpl, .strmap => !t.vars,
+        .inter => |xs| blk: {
+            if (d.isGeneric(c, t)) break :blk false;
+            for (xs) |m| if (validIndexKey(c, m)) break :blk true;
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+/// tsc's `checkParameter`, for every parameter, including those of signatures in types.
+fn checkParameter(c: *Checker, p: *Node) void {
+    const fnode = p.parent orelse return;
+    const x = p.data.param;
+    const m = p.mods;
+    const property = m.public or m.private or m.protected or m.readonly or m.override;
+    if (fnode.data == .index_sig) {
+        if (property) err(c, p, 2369, "A parameter property is only allowed in a constructor implementation.");
+        return;
+    }
+    if (fnode.data != .func) return;
+    const f = fnode.data.func;
+    const name: []const u8 = if (x.name.data == .identifier) x.name.data.identifier else "";
+    if (property) {
+        if (f.kind != .ctor or f.body == null) err(c, p, 2369, "A parameter property is only allowed in a constructor implementation.");
+        if (f.kind == .ctor and std.mem.eql(u8, name, "constructor")) err(c, x.name, 2398, "'constructor' cannot be used as a parameter property name.");
+    }
+    if (x.init == null and x.question and x.name.data != .identifier and f.body != null) {
+        err(c, p, 2463, "A binding pattern parameter cannot be optional in an implementation signature.");
+    }
+    if (std.mem.eql(u8, name, "this")) {
+        // tsc's parser keeps modifiers and decorators on a `this` parameter but starts a new one after `...`.
+        const start = if (x.dotdotdot) x.name.start else p.start;
+        if (f.params[0] != p) d.reportSpan(c, p, start, p.end, 2680, "A 'this' parameter must be the first parameter.");
+        switch (f.kind) {
+            .ctor, .construct_sig, .constructor_type => d.reportSpan(c, p, start, p.end, 2681, "A constructor cannot have a 'this' parameter."),
+            .arrow => d.reportSpan(c, p, start, p.end, 2730, "An arrow function cannot have a 'this' parameter."),
+            .getter, .setter, .getter_sig, .setter_sig => d.reportSpan(c, p, start, p.end, 2784, "'get' and 'set' accessors cannot declare 'this' parameters."),
+            else => {},
+        }
+        return;
+    }
+    // A rest binding pattern is already a grammar error.
+    if (x.dotdotdot and x.name.data == .identifier) {
+        const t = d.typeOfParam(c, p);
+        // `X extends any[] ? X : any[]` fits through tsc's substitution types, which the
+        // relation does not model, so only a bare type parameter is judged when generic.
+        if (t.vars and t.data != .param) return;
+        if (!relate.isAssignable(c, t, d.readonlyArrayOf(c, c.t_any))) err(c, p, 2370, "A rest parameter must be of an array type.");
+    }
 }
 
 // ---- strict mode, which TypeScript 7 code is always in: tsc's binder checks ----
