@@ -1283,6 +1283,7 @@ fn checkClass(c: *Checker, n: *Node) void {
             }
         }
         checkAbstract(c, n, t, base);
+        checkMemberKinds(c, t, base, b0);
     }
     for (x.heritage) |h| {
         if (h.data != .heritage_clause or h.data.heritage_clause.tok != .kw_implements) continue;
@@ -1473,6 +1474,61 @@ fn nameOfMember(n: *Node) *Node {
         .param => |p| p.name,
         else => n,
     };
+}
+
+const MemberKind = enum { property, accessor, method };
+
+fn memberKind(p: *T.Prop) ?MemberKind {
+    const s = p.sym orelse return if (p.method) .method else .property;
+    if (s.flags & F.accessor != 0) return .accessor;
+    if (s.flags & F.method != 0) return .method;
+    if (s.flags & F.property == 0) return null;
+    const dn = p.decl orelse s.value_decl orelse return .property;
+    return if (dn.data == .property_decl and dn.mods.accessor) .accessor else .property;
+}
+
+/// tsc's `checkKindsOfPropertyMemberOverrides`: a base member keeps its kind in a subclass,
+/// except that a method may become a property and anything may override an abstract or
+/// interface member.
+fn checkMemberKinds(c: *Checker, t: *Type, base: *Type, shown: *Type) void {
+    for (d.propsOf(c, base)) |bp| {
+        if (bp.private or (bp.name.len > 0 and bp.name[0] == '#')) continue;
+        const p = d.ownProp(c, t, bp.name) orelse continue;
+        if (p == bp or p.decl == bp.decl or p.private) continue;
+        const bk = memberKind(bp) orelse continue;
+        const pk = memberKind(p) orelse continue;
+        const pd = p.decl orelse continue;
+        // A JavaScript `this.x = ...` declares no kind of its own.
+        if (pd.data != .property_decl and pd.data != .func and pd.data != .param) continue;
+        const at = nameOfMember(pd);
+        if (bk != .method and pk != .method) {
+            if (bk == pk or abstractOrInterface(bp)) continue;
+            if (pk == .property) {
+                err(c, at, 2610, c.fmt("'{s}' is defined as an accessor in class '{s}', but is overridden here in '{s}' as an instance property.", .{ bp.name, expr.show(c, shown), expr.show(c, t) }));
+            } else {
+                err(c, at, 2611, c.fmt("'{s}' is defined as a property in class '{s}', but is overridden here in '{s}' as an accessor.", .{ bp.name, expr.show(c, shown), expr.show(c, t) }));
+            }
+            continue;
+        }
+        const code: u32, const fmt = switch (bk) {
+            .method => if (pk == .accessor) .{ 2423, "function" } else continue,
+            .accessor => .{ 2426, "accessor" },
+            .property => .{ 2425, "property" },
+        };
+        const as = if (code == 2423) "accessor" else "function";
+        err(c, at, code, c.fmt("Class '{s}' defines instance member {s} '{s}', but extended class '{s}' defines it as instance member {s}.", .{ expr.show(c, shown), fmt, bp.name, expr.show(c, t), as }));
+    }
+}
+
+fn abstractOrInterface(bp: *T.Prop) bool {
+    const s = bp.sym orelse return false;
+    if (s.decls.len == 0) return false;
+    for (s.decls) |dn| {
+        const in_interface = if (dn.parent) |x| x.data == .interface else false;
+        const abstract_slot = bp.abstract and !(dn.data == .property_decl and dn.data.property_decl.init != null);
+        if (!in_interface and !abstract_slot) return false;
+    }
+    return true;
 }
 
 fn checkAbstract(c: *Checker, n: *Node, t: *Type, base: *Type) void {
