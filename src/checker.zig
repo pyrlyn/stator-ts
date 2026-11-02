@@ -578,21 +578,68 @@ fn grammarErrFirstToken(c: *Checker, n: *Node, code: u32, msg: []const u8) bool 
 }
 
 /// tsc's `checkGrammarStatementInAmbientContext`: reported once per block, at its first statement.
-fn statementInAmbient(c: *Checker, n: *Node) void {
+fn statementInAmbient(c: *Checker, n: *Node) bool {
     switch (n.data) {
         .block, .empty_stmt, .debugger_stmt, .if_stmt, .do_stmt, .while_stmt, .for_stmt, .for_in, .for_of, .break_stmt, .continue_stmt, .return_stmt, .with_stmt, .switch_stmt, .labeled, .throw_stmt, .try_stmt, .expr_stmt => {},
-        else => return,
+        else => return false,
     }
-    if (!isAmbient(c, n)) return;
-    const p = n.parent orelse return;
+    if (!isAmbient(c, n)) return false;
+    const p = n.parent orelse return false;
     const owner, const code, const msg = switch (p.data) {
         .func => .{ n, @as(u32, 1183), @as([]const u8, "An implementation cannot be declared in ambient contexts.") },
         // A statement inside another statement is covered by its parent's report.
         .block, .module_block, .source_file => .{ p, 1036, "Statements are not allowed in ambient contexts." },
+        else => return false,
+    };
+    if (c.ambient_reported.contains(owner)) return false;
+    if (!grammarErrFirstToken(c, n, code, msg)) return false;
+    c.ambient_reported.put(c.a, owner, {}) catch oom();
+    return true;
+}
+
+fn isIteration(n: *Node, through_labels: bool) bool {
+    return switch (n.data) {
+        .do_stmt, .while_stmt, .for_stmt, .for_in, .for_of => true,
+        .labeled => |x| through_labels and isIteration(x.stmt, true),
+        else => false,
+    };
+}
+
+/// tsc's `checkGrammarBreakOrContinueStatement` and the duplicate-label half of `checkLabeledStatement`.
+fn jumpGrammar(c: *Checker, n: *Node) void {
+    if (n.data == .labeled) {
+        const name = n.data.labeled.label.data.identifier;
+        var cur = n.parent;
+        while (cur) |x| : (cur = x.parent) {
+            if (x.data == .func) return;
+            if (x.data == .labeled and std.mem.eql(u8, x.data.labeled.label.data.identifier, name)) {
+                return grammarErr(c, n.data.labeled.label, 1114, c.fmt("Duplicate label '{s}'.", .{name}));
+            }
+        }
+        return;
+    }
+    const label, const is_break = switch (n.data) {
+        .break_stmt => |x| .{ x.label, true },
+        .continue_stmt => |x| .{ x.label, false },
         else => return,
     };
-    if (c.ambient_reported.contains(owner)) return;
-    if (grammarErrFirstToken(c, n, code, msg)) c.ambient_reported.put(c.a, owner, {}) catch oom();
+    var cur: ?*Node = n;
+    while (cur) |x| : (cur = x.parent) {
+        switch (x.data) {
+            .func, .static_block => return grammarErr(c, n, 1107, "Jump target cannot cross function boundary."),
+            .labeled => |l| if (label) |t| if (std.mem.eql(u8, l.label.data.identifier, t.data.identifier)) {
+                if (!is_break and !isIteration(l.stmt, true)) grammarErr(c, n, 1115, "A 'continue' statement can only jump to a label of an enclosing iteration statement.");
+                return;
+            },
+            .switch_stmt => if (is_break and label == null) return,
+            else => if (label == null and isIteration(x, false)) return,
+        }
+    }
+    if (label != null) {
+        if (is_break) grammarErr(c, n, 1116, "A 'break' statement can only jump to a label of an enclosing statement.") else grammarErr(c, n, 1115, "A 'continue' statement can only jump to a label of an enclosing iteration statement.");
+    } else {
+        if (is_break) grammarErr(c, n, 1105, "A 'break' statement can only be used within an enclosing iteration or switch statement.") else grammarErr(c, n, 1104, "A 'continue' statement can only be used within an enclosing iteration statement.");
+    }
 }
 
 /// tsc's `checkAmbientInitializer`: only a `const` or `readonly` without a type may keep a literal.
@@ -1484,7 +1531,7 @@ fn walkTypesIn(c: *Checker, n: *Node) void {
         if (f.kind == .method_sig) overloads.check(c, n);
     }
     modifiers.check(c, n);
-    statementInAmbient(c, n);
+    if (!statementInAmbient(c, n)) jumpGrammar(c, n);
     if (n.data == .computed_name) checkComputedNameType(c, n);
     ambientInitializer(c, n);
     if (n.data == .param) checkParameter(c, n);
