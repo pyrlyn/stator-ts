@@ -531,8 +531,20 @@ pub const Binder = struct {
     fn bindElem(b: *Binder, el: *Node, kind: ast.VarKind, mods: ast.Mods) void {
         const be = el.data.binding_elem;
         if (be.prop_name) |pn| b.bindComputed(pn);
-        if (be.init) |i| b.bind(i);
+        if (be.init) |i| b.bindInitializer(i);
         b.bindPatternDecls(be.name, kind, mods);
+    }
+
+    /// tsc's `bindInitializer`: a default runs only when the value is `undefined`, so what follows
+    /// is reached with or without it.
+    fn bindInitializer(b: *Binder, i: *Node) void {
+        const entry = b.flow;
+        b.bind(i);
+        if (entry.kind == .unreachable_end or entry == b.flow) return;
+        const exit = b.newLabel(.branch);
+        b.addAnte(exit, entry);
+        b.addAnte(exit, b.flow);
+        b.flow = b.finish(exit);
     }
 
     fn bindComputed(b: *Binder, name: *Node) void {
@@ -734,7 +746,7 @@ pub const Binder = struct {
         const d = p.data.param;
         for (d.decorators) |x| b.bind(x);
         if (d.type) |t| b.bind(t);
-        if (d.init) |i| b.bind(i);
+        if (d.init) |i| b.bindInitializer(i);
         switch (d.name.data) {
             .identifier => |name| {
                 if (name.len > 0 and !std.mem.eql(u8, name, "this")) {
@@ -765,7 +777,7 @@ pub const Binder = struct {
             if (el.data != .binding_elem) continue;
             const be = el.data.binding_elem;
             if (be.prop_name) |pn| b.bindComputed(pn);
-            if (be.init) |i| b.bind(i);
+            if (be.init) |i| b.bindInitializer(i);
             if (be.name.data == .identifier) {
                 if (be.name.data.identifier.len > 0) _ = b.declare(b.localsOf(func), null, el, be.name.data.identifier, F.func_var | F.param, F.param_ex, be.name);
             } else b.bindParamPattern(func, be.name);
