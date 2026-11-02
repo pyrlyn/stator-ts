@@ -430,6 +430,9 @@ pub fn isBlockBody(n: *const Node) bool {
     return n.data == .block or n.data == .lazy_body;
 }
 
+/// Which `exports` condition a module specifier resolves through.
+pub const ResolutionMode = enum { import, require };
+
 pub const File = struct {
     path: []const u8,
     src: []const u8,
@@ -454,7 +457,7 @@ pub const File = struct {
     /// A body had to be parsed while loading and has a syntax error.
     bad_body: bool = false,
 
-    pub const Reference = struct { kind: enum { path, lib, types }, value: []const u8 };
+    pub const Reference = struct { kind: enum { path, lib, types }, value: []const u8, mode: ?ResolutionMode = null };
 
     pub fn lineCol(f: *const File, pos: u32) struct { line: u32, col: u32 } {
         var line: u32 = 1;

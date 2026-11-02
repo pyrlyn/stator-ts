@@ -167,7 +167,9 @@ fn scanReferences(a: Allocator, src: []const u8) []ast.File.Reference {
         } else if (attrValue(line, "path")) |v| {
             out.append(a, .{ .kind = .path, .value = v }) catch oom();
         } else if (attrValue(line, "types")) |v| {
-            out.append(a, .{ .kind = .types, .value = v }) catch oom();
+            const mode = attrValue(line, "resolution-mode") orelse "";
+            const m: ?ast.ResolutionMode = std.meta.stringToEnum(ast.ResolutionMode, mode);
+            out.append(a, .{ .kind = .types, .value = v, .mode = m }) catch oom();
         }
     }
     return out.items;

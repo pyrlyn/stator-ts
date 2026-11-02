@@ -1,0 +1,1 @@
+{ "name": "selfpkg", "exports": { ".": { "import": "./import.d.ts", "require": "./require.d.ts" } } }

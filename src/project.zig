@@ -89,6 +89,30 @@ pub const Options = struct {
         return false;
     }
 
+    /// The emit format `module` asks for, by what it means for resolving imports.
+    pub fn moduleFormat(o: Options) enum { cjs, esm, node, preserve, other } {
+        const eql = std.ascii.eqlIgnoreCase;
+        const m = o.module orelse {
+            const t = o.target orelse return .esm;
+            return if (eql(t, "es3") or eql(t, "es5")) .cjs else .esm;
+        };
+        if (eql(m, "commonjs")) return .cjs;
+        if (eql(m, "preserve")) return .preserve;
+        if (eql(m, "node16") or eql(m, "node18") or eql(m, "node20") or eql(m, "nodenext")) return .node;
+        if (eql(m, "amd") or eql(m, "umd") or eql(m, "system") or eql(m, "none")) return .other;
+        return .esm;
+    }
+
+    /// tsc 7 dropped `node10` and `classic`: anything but Node's own modes resolves like a bundler.
+    pub fn nodeResolution(o: Options) bool {
+        const eql = std.ascii.eqlIgnoreCase;
+        if (o.moduleResolution) |m| {
+            if (eql(m, "node16") or eql(m, "nodenext")) return true;
+            if (eql(m, "bundler")) return false;
+        }
+        return o.moduleFormat() == .node;
+    }
+
     /// tsc's `canIncludeBindAndCheckDiagnostics`. A JavaScript file with neither `checkJs` nor a
     /// `@ts-check` comment is still checked, but keeps only the errors in `plain_js_errors`.
     pub fn semantics(o: Options, f: *const ast.File) Semantics {
@@ -796,6 +820,7 @@ const Resolver = struct {
     a: Allocator,
     fs: *FsCache,
     cfg: *const Config,
+    mode: ast.ResolutionMode = .import,
 
     fn jsonModules(r: Resolver) bool {
         const bundler = if (r.cfg.options.moduleResolution) |m| std.ascii.eqlIgnoreCase(m, "bundler") else false;
@@ -892,12 +917,9 @@ const Resolver = struct {
             .object => |o| {
                 var it = o.iterator();
                 while (it.next()) |e| {
-                    for ([_][]const u8{ "types", "import", "node", "default" }) |k| {
-                        if (!std.mem.eql(u8, e.key_ptr.*, k)) continue;
-                        if (r.tryTarget(dir, e.value_ptr.*, stem)) |p| return p;
-                    }
+                    if (!r.conditionMatches(e.key_ptr.*)) continue;
+                    if (r.tryTarget(dir, e.value_ptr.*, stem)) |p| return p;
                 }
-                if (o.get("require")) |x| return r.tryTarget(dir, x, stem);
                 return null;
             },
             .array => |l| {
@@ -906,6 +928,48 @@ const Resolver = struct {
             },
             else => return null,
         }
+    }
+
+    fn conditionMatches(r: Resolver, key: []const u8) bool {
+        const eql = std.mem.eql;
+        if (eql(u8, key, "default") or eql(u8, key, "types") or eql(u8, key, @tagName(r.mode))) return true;
+        return eql(u8, key, "node") and r.cfg.options.nodeResolution();
+    }
+
+    /// tsc's `getImpliedNodeFormatForEmit`: the format the file's extension or package.json
+    /// settles, or null when only `module` can.
+    fn impliedMode(r: Resolver, path: []const u8) ?ast.ResolutionMode {
+        const ends = std.mem.endsWith;
+        if (ends(u8, path, ".mts") or ends(u8, path, ".mjs")) return .import;
+        if (ends(u8, path, ".cts") or ends(u8, path, ".cjs")) return .require;
+        const ty = if (r.packageScope(fspath.dirname(path) orelse ".")) |scope| scope[1].get("type") else null;
+        const module = ty != null and ty.? == .string and std.mem.eql(u8, ty.?.string, "module");
+        if (r.cfg.options.moduleFormat() == .node) return if (module) .import else .require;
+        if (module) return .import;
+        if (ty != null and ty.? == .string and std.mem.eql(u8, ty.?.string, "commonjs")) return .require;
+        return null;
+    }
+
+    /// Without a format of its own, a file resolves the way tsc does with no mode at all.
+    fn defaultMode(r: Resolver) ast.ResolutionMode {
+        return if (r.cfg.options.nodeResolution()) .require else .import;
+    }
+
+    /// tsc's `getModeForUsageLocation`: `require` forms always resolve as require, `import()`
+    /// as import unless the file's format turns it into a require, the rest as the file's format.
+    fn usageMode(r: Resolver, path: []const u8, spec: *ast.Node) ast.ResolutionMode {
+        const format = r.cfg.options.moduleFormat();
+        const emitted: ?ast.ResolutionMode = r.impliedMode(path) orelse switch (format) {
+            .cjs => .require,
+            .esm, .preserve => .import,
+            .node, .other => null,
+        };
+        if (spec.parent) |p| switch (p.data) {
+            .external_module_ref => return .require,
+            .call => return if (format == .node or format == .preserve) .import else emitted orelse .require,
+            else => {},
+        };
+        return emitted orelse r.defaultMode();
     }
 
     fn tryExports(r: Resolver, dir: []const u8, exp: json.Value, sub: []const u8) ?[]const u8 {
@@ -1063,7 +1127,7 @@ const Resolver = struct {
             return r.tryPath(fspath.resolve(r.a, &.{ dir, spec }) catch oom());
         }
         // A package is imported from thousands of files, and each probe rereads its package.json.
-        const key = std.mem.concat(r.a, u8, &.{ dir, "\x00", spec }) catch oom();
+        const key = std.mem.concat(r.a, u8, &.{ dir, "\x00", @tagName(r.mode), "\x00", spec }) catch oom();
         if (r.fs.resolved(key)) |known| return known;
         const found = r.resolveBare(dir, spec);
         r.fs.remember(key, found);
@@ -1162,13 +1226,21 @@ fn loadOne(l: *const Loading, worker: usize, i: usize) void {
     const scratch = &l.scratch[worker];
     defer scratch.reset();
     const r = Resolver{ .io = l.io, .a = scratch.allocator(), .fs = l.fs, .cfg = l.cfg };
-    for (f.module_specs, 0..) |s, n| sf.pending[n] = if (r.resolve(path, s.data.string_lit)) |p| a.dupe(u8, p) catch oom() else null;
+    for (f.module_specs, 0..) |s, n| {
+        var by_mode = r;
+        by_mode.mode = r.usageMode(path, s);
+        sf.pending[n] = if (by_mode.resolve(path, s.data.string_lit)) |p| a.dupe(u8, p) catch oom() else null;
+    }
     var extra: std.ArrayList([]const u8) = .empty;
     for (f.references) |ref| switch (ref.kind) {
         .path => extra.append(a, fspath.resolve(a, &.{ fspath.dirname(path) orelse ".", ref.value }) catch oom()) catch oom(),
         .lib => if (l.lib_dir) |d| extra.append(a, libFile(a, l.io, d, ref.value)) catch oom(),
         // Type roots of the project win over whatever a package nests next to itself.
-        .types => if (r.tryTypeRoot(l.cfg.root, ref.value) orelse r.tryNodeModules(fspath.dirname(path) orelse ".", ref.value)) |p| extra.append(a, a.dupe(u8, p) catch oom()) catch oom(),
+        .types => {
+            var by_mode = r;
+            by_mode.mode = ref.mode orelse r.impliedMode(path) orelse r.defaultMode();
+            if (by_mode.tryTypeRoot(l.cfg.root, ref.value) orelse by_mode.tryNodeModules(fspath.dirname(path) orelse ".", ref.value)) |p| extra.append(a, a.dupe(u8, p) catch oom()) catch oom();
+        },
     };
     sf.extra = extra.items;
 }
@@ -1334,7 +1406,8 @@ pub const Program = struct {
     /// for every package it can see.
     fn addTypeRoots(p: *Program, level: *std.ArrayList(*SourceFile)) void {
         const names = p.cfg.options.types orelse return;
-        const r = Resolver{ .io = p.io, .a = p.a, .fs = p.fs, .cfg = p.cfg };
+        var r = Resolver{ .io = p.io, .a = p.a, .fs = p.fs, .cfg = p.cfg };
+        r.mode = r.defaultMode();
         for (names) |n| {
             if (std.mem.eql(u8, n, "*")) {
                 p.addEveryTypePackage(r, level);
