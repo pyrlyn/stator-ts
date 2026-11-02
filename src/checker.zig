@@ -14,6 +14,7 @@ const flow = @import("flow.zig");
 const unused = @import("unused.zig");
 const overloads = @import("overloads.zig");
 const modifiers = @import("modifiers.zig");
+const helpers = @import("helpers.zig");
 const lexer = @import("lexer.zig");
 const Node = ast.Node;
 const Symbol = binder.Symbol;
@@ -1798,6 +1799,7 @@ fn walkTypesIn(c: *Checker, n: *Node) void {
         if (f.kind == .method_sig) overloads.check(c, n);
     }
     modifiers.check(c, n);
+    helpers.check(c, n);
     if (!statementInAmbient(c, n)) {
         jumpGrammar(c, n);
         awaitGrammar(c, n);

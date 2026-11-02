@@ -516,6 +516,9 @@ pub const Checker = struct {
 
     diags: std.ArrayList(Diag) = .empty,
     seen_diags: std.StringHashMapUnmanaged(void) = .empty,
+    /// Per file, the tslib helpers already looked up and the module they come from.
+    helpers_requested: std.AutoHashMapUnmanaged(*ast.File, u32) = .empty,
+    helpers_module: std.AutoHashMapUnmanaged(*ast.File, ?*binder.Symbol) = .empty,
     /// Files this checker answers for. Another checker owns the rest and reports on them itself.
     owned: IdMap(*ast.File, void) = .empty,
     /// Function bodies wait until the expression that holds them has been fully typed.

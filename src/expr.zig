@@ -3182,7 +3182,7 @@ fn inFieldInitializer(n: *Node) bool {
     return false;
 }
 
-fn useDefineForClassFields(c: *Checker) bool {
+pub fn useDefineForClassFields(c: *Checker) bool {
     const o = c.prog.cfg.options;
     return o.useDefineForClassFields orelse (d.targetYear(o.target orelse "esnext") >= 2022);
 }

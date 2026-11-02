@@ -38,6 +38,7 @@ pub const Options = struct {
     noUnusedLocals: ?bool = null,
     noUnusedParameters: ?bool = null,
     esModuleInterop: ?bool = null,
+    importHelpers: ?bool = null,
     allowSyntheticDefaultImports: ?bool = null,
     resolveJsonModule: ?bool = null,
     skipLibCheck: ?bool = null,
@@ -63,6 +64,7 @@ pub const Options = struct {
     jsxFragmentFactory: ?[]const u8 = null,
     jsxImportSource: ?[]const u8 = null,
     experimentalDecorators: ?bool = null,
+    emitDecoratorMetadata: ?bool = null,
     reactNamespace: ?[]const u8 = null,
     outDir: ?[]const u8 = null,
     rootDir: ?[]const u8 = null,
@@ -1230,6 +1232,8 @@ fn libRank(path: []const u8) usize {
     return lib_order.len + 2;
 }
 
+pub const helpers_module = "tslib";
+
 fn loadOne(l: *const Loading, worker: usize, i: usize) void {
     const sf = l.list[i];
     const a = l.keeps[worker].allocator();
@@ -1243,6 +1247,12 @@ fn loadOne(l: *const Loading, worker: usize, i: usize) void {
     const f = if (l.lazy_bodies) parser.parseLazily(a, path, src) else parser.parse(a, path, src);
     if (!f.is_dts and l.cfg.options.forcesModule(path)) f.is_module = true;
     binder.bindFile(a, f);
+    // tsc resolves the helpers module like an import every emitted module makes.
+    if (l.cfg.options.importHelpers orelse false) if (f.is_module and !f.is_dts) {
+        const spec = a.create(ast.Node) catch oom();
+        spec.* = .{ .start = 0, .end = 0, .data = .{ .string_lit = helpers_module } };
+        f.module_specs = std.mem.concat(a, *ast.Node, &.{ f.module_specs, &.{spec} }) catch oom();
+    };
     sf.file = f;
     sf.pending = a.alloc(?[]const u8, f.module_specs.len) catch oom();
     // Every path tried and package.json read goes here: resolving keeps only what it found.
