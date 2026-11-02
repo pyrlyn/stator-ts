@@ -46,6 +46,7 @@ fn implicitAny(c: *Checker, p: *Node, fnode: ?*Node) void {
     if (x.type != null or x.init != null) return;
     if (c.param_types.contains(p)) return;
     if (fnode) |f| if (f.data == .func and d.setterGetter(f) != null) return;
+    if (jsDocTyped(c, p)) return;
     if (x.name.data == .identifier) {
         const name = x.name.data.identifier;
         if (std.mem.eql(u8, name, "this")) return;
@@ -57,6 +58,65 @@ fn implicitAny(c: *Checker, p: *Node, fnode: ?*Node) void {
     } else {
         checkPatternAny(c, x.name);
     }
+}
+
+/// JSDoc types are not modeled, so a JavaScript parameter that JSDoc may type stays `any`, silently:
+/// a `@param` naming it, or a `@type` or `@overload` on it or on what holds its function.
+fn jsDocTyped(c: *Checker, p: *Node) bool {
+    const f = d.fileOf(c, p) orelse return false;
+    if (!project.isJs(f.path)) return false;
+    const name_node = p.data.param.name;
+    const name = if (name_node.data == .identifier) name_node.data.identifier else "";
+    var n: ?*Node = p;
+    while (n) |x| : (n = x.parent) {
+        switch (x.data) {
+            .block, .source_file, .module_block => return false,
+            else => {},
+        }
+        const doc = jsDocBefore(f.src, x.start) orelse continue;
+        if (std.mem.indexOf(u8, doc, "@type") != null or std.mem.indexOf(u8, doc, "@overload") != null) return true;
+        if (name.len > 0 and documentsParam(doc, name)) return true;
+    }
+    return false;
+}
+
+fn jsDocBefore(src: []const u8, pos: u32) ?[]const u8 {
+    const before = std.mem.trimEnd(u8, src[0..@min(pos, src.len)], " \t\r\n");
+    if (!std.mem.endsWith(u8, before, "*/")) return null;
+    const open = std.mem.lastIndexOf(u8, before[0 .. before.len - 2], "/*") orelse return null;
+    if (!std.mem.startsWith(u8, before[open..], "/**")) return null;
+    return before[open..];
+}
+
+/// `@param {T} name`, `@param [name]` and the `@arg` and `@argument` spellings.
+fn documentsParam(doc: []const u8, name: []const u8) bool {
+    var i: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, doc, i, '@')) |at| {
+        i = at + 1;
+        var rest = doc[i..];
+        const tag_end = std.mem.indexOfAny(u8, rest, " \t\r\n{") orelse rest.len;
+        const tag = rest[0..tag_end];
+        if (!std.mem.eql(u8, tag, "param") and !std.mem.eql(u8, tag, "arg") and !std.mem.eql(u8, tag, "argument")) continue;
+        rest = std.mem.trimStart(u8, rest[tag_end..], " \t\r\n*");
+        if (std.mem.startsWith(u8, rest, "{")) {
+            var depth: usize = 0;
+            var k: usize = 0;
+            while (k < rest.len) : (k += 1) {
+                if (rest[k] == '{') depth += 1;
+                if (rest[k] == '}') {
+                    depth -= 1;
+                    if (depth == 0) break;
+                }
+            }
+            rest = std.mem.trimStart(u8, rest[@min(k + 1, rest.len)..], " \t\r\n*");
+        }
+        if (std.mem.startsWith(u8, rest, "[")) rest = rest[1..];
+        if (std.mem.startsWith(u8, rest, name)) {
+            const after = rest[name.len..];
+            if (after.len == 0 or !(std.ascii.isAlphanumeric(after[0]) or after[0] == '_' or after[0] == '$')) return true;
+        }
+    }
+    return false;
 }
 
 fn checkPatternAny(c: *Checker, pat: *Node) void {
