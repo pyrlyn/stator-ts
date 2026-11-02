@@ -546,6 +546,10 @@ pub fn checkModuleRef(c: *Checker, n: *Node, spec: *Node) void {
     const silent = c.silent;
     c.silent = 0;
     defer c.silent = silent;
+    if (sf.untypedPath(name)) |path| {
+        if (c.no_implicit_any) err(c, spec, 7016, c.fmt("Could not find a declaration file for module '{s}'. '{s}' implicitly has an 'any' type.", .{ name, path }));
+        return;
+    }
     if (isNodeCoreModule(name)) return expr.reportNodeTypes(c, spec, name);
     err(c, spec, 2307, c.fmt("Cannot find module '{s}' or its corresponding type declarations.", .{name}));
 }

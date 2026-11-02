@@ -821,6 +821,8 @@ const Resolver = struct {
     fs: *FsCache,
     cfg: *const Config,
     mode: ast.ResolutionMode = .import,
+    /// tsc's second pass for a module TypeScript cannot type: a JavaScript file makes it `any`.
+    js: bool = false,
 
     fn jsonModules(r: Resolver) bool {
         const bundler = if (r.cfg.options.moduleResolution) |m| std.ascii.eqlIgnoreCase(m, "bundler") else false;
@@ -845,7 +847,7 @@ const Resolver = struct {
 
     /// tsc's `tryAddingExtensions`, for the extensions this program reads.
     fn tryAddingExtensions(r: Resolver, stem: []const u8, ext: []const u8, listing: *const FsCache.Listing) ?[]const u8 {
-        const js = r.cfg.options.allowJs orelse false;
+        const js = r.js or r.cfg.options.allowJs orelse false;
         const eql = std.mem.eql;
         const candidates: []const []const u8 = if (eql(u8, ext, ".mjs") or eql(u8, ext, ".mts") or eql(u8, ext, ".d.mts"))
             if (js) &.{ ".mts", ".d.mts", ".mjs" } else &.{ ".mts", ".d.mts" }
@@ -1127,7 +1129,7 @@ const Resolver = struct {
             return r.tryPath(fspath.resolve(r.a, &.{ dir, spec }) catch oom());
         }
         // A package is imported from thousands of files, and each probe rereads its package.json.
-        const key = std.mem.concat(r.a, u8, &.{ dir, "\x00", @tagName(r.mode), "\x00", spec }) catch oom();
+        const key = std.mem.concat(r.a, u8, &.{ dir, "\x00", @tagName(r.mode), if (r.js) "\x00js\x00" else "\x00", spec }) catch oom();
         if (r.fs.resolved(key)) |known| return known;
         const found = r.resolveBare(dir, spec);
         r.fs.remember(key, found);
@@ -1156,7 +1158,16 @@ pub const SourceFile = struct {
     /// `/// <reference>` targets and lib names, resolved to paths.
     extra: []const []const u8 = &.{},
     extra_files: []*SourceFile = &.{},
+    /// Specifiers that found only JavaScript, which is not read: tsc types them as `any`.
+    untyped: []const Untyped = &.{},
     read_failed: bool = false,
+
+    pub const Untyped = struct { spec: []const u8, path: []const u8 };
+
+    pub fn untypedPath(sf: *const SourceFile, spec: []const u8) ?[]const u8 {
+        for (sf.untyped) |u| if (std.mem.eql(u8, u.spec, spec)) return u.path;
+        return null;
+    }
 };
 
 const Loading = struct {
@@ -1226,11 +1237,16 @@ fn loadOne(l: *const Loading, worker: usize, i: usize) void {
     const scratch = &l.scratch[worker];
     defer scratch.reset();
     const r = Resolver{ .io = l.io, .a = scratch.allocator(), .fs = l.fs, .cfg = l.cfg };
+    var untyped: std.ArrayList(SourceFile.Untyped) = .empty;
     for (f.module_specs, 0..) |s, n| {
         var by_mode = r;
         by_mode.mode = r.usageMode(path, s);
         sf.pending[n] = if (by_mode.resolve(path, s.data.string_lit)) |p| a.dupe(u8, p) catch oom() else null;
+        if (sf.pending[n] != null or (l.cfg.options.allowJs orelse false)) continue;
+        by_mode.js = true;
+        if (by_mode.resolve(path, s.data.string_lit)) |p| untyped.append(a, .{ .spec = s.data.string_lit, .path = a.dupe(u8, p) catch oom() }) catch oom();
     }
+    sf.untyped = untyped.items;
     var extra: std.ArrayList([]const u8) = .empty;
     for (f.references) |ref| switch (ref.kind) {
         .path => extra.append(a, fspath.resolve(a, &.{ fspath.dirname(path) orelse ".", ref.value }) catch oom()) catch oom(),
