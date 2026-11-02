@@ -2691,7 +2691,8 @@ pub fn assignedType(c: *Checker, n: *Node) ?*Type {
 fn exprName(c: *Checker, n: *Node) ?[]const u8 {
     return switch (n.data) {
         .identifier => |v| v,
-        .this_expr => "this",
+        // tsc parses `this` in `typeof this.x` as a name; elsewhere it is no entity name.
+        .this_expr => if (inTypeQuery(n)) "this" else null,
         .paren => |x| exprName(c, x.expr),
         .prop_access => |x| blk: {
             const l = exprName(c, x.expr) orelse break :blk null;
@@ -2700,6 +2701,16 @@ fn exprName(c: *Checker, n: *Node) ?[]const u8 {
         .non_null => |x| exprName(c, x.expr),
         else => null,
     };
+}
+
+fn inTypeQuery(n: *Node) bool {
+    var cur = n.parent;
+    while (cur) |x| : (cur = x.parent) switch (x.data) {
+        .type_query => return true,
+        .prop_access, .qualified_name => {},
+        else => return false,
+    };
+    return false;
 }
 
 fn nullFlags(t: *Type) struct { n: bool, u: bool } {
