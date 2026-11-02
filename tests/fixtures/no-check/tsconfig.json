@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "noCheck": true,
+    "target": "es2022",
+    "lib": ["es2022"],
+    "types": []
+  }
+}

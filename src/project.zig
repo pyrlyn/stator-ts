@@ -48,6 +48,7 @@ pub const Options = struct {
     rewriteRelativeImportExtensions: ?bool = null,
     allowJs: ?bool = null,
     checkJs: ?bool = null,
+    noCheck: ?bool = null,
     target: ?[]const u8 = null,
     module: ?[]const u8 = null,
     moduleResolution: ?[]const u8 = null,
@@ -85,6 +86,7 @@ pub const Options = struct {
     /// tsc's `canIncludeBindAndCheckDiagnostics`. A JavaScript file with neither `checkJs` nor a
     /// `@ts-check` comment is still checked, but keeps only the errors in `plain_js_errors`.
     pub fn semantics(o: Options, f: *const ast.File) Semantics {
+        if (o.noCheck orelse false) return .none;
         const directive = checkDirective(f.src);
         if (directive == false) return .none;
         if (!isJs(f.path)) return .all;
