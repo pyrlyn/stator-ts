@@ -1406,6 +1406,7 @@ const Parser = struct {
         while (p.t() != .r_brace and p.t() != .eof) {
             const ms = p.lx.start;
             const mn = p.parsePropertyName();
+            if (mn.data == .computed_name) p.lx.err(mn.start, mn.end - mn.start, 1164, "Computed property names are not allowed in enums.");
             const in = if (p.eat(.assign)) p.parseAssignmentAllowIn() else null;
             p.push(&members, p.mk(ms, .{ .enum_member = .{ .name = mn, .init = in } }));
             if (!p.eat(.comma)) break;

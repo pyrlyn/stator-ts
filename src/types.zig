@@ -1035,7 +1035,7 @@ pub const Checker = struct {
         return c.t_err;
     }
 
-    pub fn internRef(c: *Checker, target: *Type, args: []*Type, this_arg: ?*Type) *Type {
+    pub fn internRef(c: *Checker, target: *Type, args: []const *Type, this_arg: ?*Type) *Type {
         const key = c.keyOf('r', args.len + 2);
         key[1] = target.id;
         key[2] = if (this_arg) |x| x.id else 0;

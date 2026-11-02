@@ -668,6 +668,7 @@ compiler/commentsModules(target=es2015)
 compiler/commentsMultiModuleMultiFile(target=es2015)
 compiler/commentsMultiModuleSingleFile(target=es2015)
 compiler/commentsOnObjectLiteral1
+compiler/commentsOnObjectLiteral2
 compiler/commentsOnObjectLiteral3(target=es2015)
 compiler/commentsOnObjectLiteral4(target=es2015)
 compiler/commentsOnObjectLiteral5(target=es2015)
@@ -711,6 +712,7 @@ compiler/compositeGenericFunction
 compiler/compositeWithNodeModulesSourceFile
 compiler/compoundAssignmentAfterExcludedLiteral
 compiler/compoundVarDecl1
+compiler/computedEnumMemberKeyNoCrash1
 compiler/computedEnumTypeWidening
 compiler/computedPropertyBindingElementDeclarationNoCrash1
 compiler/computedPropertyNameAndTypeParameterConflict
@@ -1419,6 +1421,7 @@ compiler/deprecatedCompilerOptions3
 compiler/deprecatedCompilerOptions4
 compiler/deprecatedCompilerOptions5
 compiler/deprecatedCompilerOptions6
+compiler/deprecatedReferenceInEnumComputedNameNoFlake
 compiler/derivedClasses
 compiler/derivedInterfaceCallSignature
 compiler/derivedTypeCallingBaseImplWithOptionalParams
@@ -1611,6 +1614,7 @@ compiler/emitSuperCallBeforeEmitPropertyDeclaration1
 compiler/emitSuperCallBeforeEmitPropertyDeclaration1ES6
 compiler/emitSuperCallBeforeEmitPropertyDeclarationAndParameterPropertyDeclaration1
 compiler/emitSuperCallBeforeEmitPropertyDeclarationAndParameterPropertyDeclaration1ES6
+compiler/emitThisInObjectLiteralGetter(target=es2015)
 compiler/emitTopOfFileTripleSlashCommentOnNotEmittedNodeIfRemoveCommentsIsFalse
 compiler/emptyAnonymousObjectNarrowing(strictnullchecks=false)
 compiler/emptyAnonymousObjectNarrowing(strictnullchecks=true)
@@ -2422,6 +2426,7 @@ compiler/import_var-referencing-an-imported-module-alias
 compiler/importedAliasedConditionalTypeInstantiation
 compiler/importedAliasesInTypePositions
 compiler/importedModuleClassNameClash
+compiler/importedValueInEnumComputedNameNoFlake
 compiler/importsInAmbientModules1
 compiler/importsInAmbientModules2
 compiler/importsInAmbientModules3
@@ -2430,6 +2435,7 @@ compiler/inKeywordNarrowingWithNoUncheckedIndexedAccess
 compiler/inOperator
 compiler/inOperatorWithFunction
 compiler/inOperatorWithGeneric
+compiler/incompatibleAssignmentInEnumComputedNameNoFlake
 compiler/incompatibleGenericTypes
 compiler/incrementOnNullAssertion
 compiler/incrementOnTypeParameter
@@ -2917,6 +2923,7 @@ compiler/localAliasExportAssignment
 compiler/localClassesInLoop
 compiler/localClassesInLoop_ES6
 compiler/localImportNameVsGlobalName
+compiler/localReferenceInEnumComputedNameNoFlake
 compiler/localTypeParameterInferencePriority
 compiler/localVariablesReturnedFromCatchBlocks
 compiler/logicalNotExpression1
@@ -3006,7 +3013,9 @@ compiler/missingCloseBrace
 compiler/missingCloseBraceInObjectLiteral
 compiler/missingCloseBracketInArray
 compiler/missingDomElement_UsingDomLib
+compiler/missingIdentifierInEnumComputedNameNoFlake
 compiler/missingMemberErrorHasShortPath
+compiler/missingModuleInEnumComputedNameNoFlake
 compiler/missingPropertiesOfClassExpression
 compiler/missingReturnStatement
 compiler/missingReturnStatement1
@@ -3016,6 +3025,7 @@ compiler/missingTypeArguments1
 compiler/missingTypeArguments2
 compiler/missingTypeArguments3
 compiler/missingTypesConditionDefaultSidecar
+compiler/misspelledIdentifierInEnumComputedNameNoFlake
 compiler/mixedExports
 compiler/mixedTypeEnumComparison
 compiler/mixinIntersectionIsValidbaseType
@@ -4117,6 +4127,7 @@ compiler/strictSupertypeSchema
 compiler/strictTypeofUnionNarrowing
 compiler/stringHasStringValuedNumericIndexer
 compiler/stringIncludes
+compiler/stringIncrementInEnumComputedNameNoFlake
 compiler/stringIndexerAssignments1
 compiler/stringIndexerAssignments2
 compiler/stringLiteralObjectLiteralDeclaration1
@@ -5966,6 +5977,7 @@ conformance/extendsTag6
 conformance/extendsTag7
 conformance/extendsTag8
 conformance/filterNamespace_import
+conformance/fixSignatureCaching
 conformance/float16Array
 conformance/fluentClasses
 conformance/fluentInterfaces
@@ -6875,14 +6887,17 @@ conformance/parserCommaInTypeMemberList2
 conformance/parserComputedPropertyName10
 conformance/parserComputedPropertyName11
 conformance/parserComputedPropertyName12
+conformance/parserComputedPropertyName16
 conformance/parserComputedPropertyName2
 conformance/parserComputedPropertyName22
 conformance/parserComputedPropertyName23
 conformance/parserComputedPropertyName24
 conformance/parserComputedPropertyName25
+conformance/parserComputedPropertyName26
 conformance/parserComputedPropertyName27
 conformance/parserComputedPropertyName32
 conformance/parserComputedPropertyName33
+conformance/parserComputedPropertyName34
 conformance/parserComputedPropertyName40
 conformance/parserComputedPropertyName6
 conformance/parserComputedPropertyName7
@@ -6901,6 +6916,7 @@ conformance/parserES5ComputedPropertyName1(target=es2015)
 conformance/parserES5ComputedPropertyName10(target=es2015)
 conformance/parserES5ComputedPropertyName11(target=es2015)
 conformance/parserES5ComputedPropertyName2(target=es2015)
+conformance/parserES5ComputedPropertyName6(target=es2015)
 conformance/parserES5ComputedPropertyName7(target=es2015)
 conformance/parserES5ComputedPropertyName9(target=es2015)
 conformance/parserES5ForOfStatement10(target=es2015)

@@ -626,9 +626,11 @@ fn checkStmt(c: *Checker, n: *Node) void {
         .enum_decl => |x| {
             checkStatementMods(c, n);
             if (n.symbol()) |s| _ = d.declaredType(c, s);
-            for (x.members) |m| if (m.data.enum_member.init) |i| {
-                _ = expr.checkExpression(c, i);
-            };
+            for (x.members) |m| {
+                const member = m.data.enum_member;
+                if (member.name.data == .computed_name) _ = expr.checkExpression(c, member.name.data.computed_name.expr);
+                if (member.init) |i| _ = expr.checkExpression(c, i);
+            }
         },
         .module_decl => |x| {
             if (x.body) |b| checkStmt(c, b);
