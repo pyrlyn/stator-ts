@@ -426,6 +426,7 @@ const Walk = struct {
     level: []const []const u8,
     out: []WalkItem,
     excludes: []const []const u8 = &.{},
+    js: bool = false,
 };
 
 fn walkOne(w: *const Walk, worker: usize, i: usize) void {
@@ -445,7 +446,7 @@ fn walkOne(w: *const Walk, worker: usize, i: usize) void {
             if (std.mem.eql(u8, name, "node_modules") or std.mem.eql(u8, name, ".git") or std.mem.eql(u8, name, "bower_components") or std.mem.eql(u8, name, "jspm_packages")) continue;
             const child = fspath.join(a, &.{ path, name }) catch oom();
             if (!excludedDir(w.excludes, child)) item.dirs.append(a, child) catch oom();
-        } else if (kind == .file and isSourceFile(name)) {
+        } else if (kind == .file and (isSourceFile(name) or (w.js and isJs(name)))) {
             item.files.append(a, fspath.join(a, &.{ path, name }) catch oom()) catch oom();
         }
     }
@@ -453,7 +454,7 @@ fn walkOne(w: *const Walk, worker: usize, i: usize) void {
 
 /// Breadth-first, one parallel pass per directory level; no queue or lock needed.
 pub fn walkDirs(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, roots: []const []const u8) []const []const u8 {
-    return walkFiltered(a, fs, tp, roots, &.{});
+    return walkFiltered(a, fs, tp, roots, &.{}, false);
 }
 
 fn excludedDir(patterns: []const []const u8, path: []const u8) bool {
@@ -469,7 +470,7 @@ fn pathLessThan(_: void, l: []const u8, r: []const u8) bool {
     return std.mem.lessThan(u8, l, r);
 }
 
-fn walkFiltered(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, roots: []const []const u8, excludes: []const []const u8) []const []const u8 {
+fn walkFiltered(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, roots: []const []const u8, excludes: []const []const u8, js: bool) []const []const u8 {
     var files: std.ArrayList([]const u8) = .empty;
     var level: std.ArrayList([]const u8) = .empty;
     level.appendSlice(a, roots) catch oom();
@@ -488,7 +489,7 @@ fn walkFiltered(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, roots: []const
         if (count == 0) break;
         const items = a.alloc(WalkItem, tp.width()) catch oom();
         for (items) |*x| x.* = .{ .arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator) };
-        const w = Walk{ .fs = fs, .level = level.items, .out = items, .excludes = excludes };
+        const w = Walk{ .fs = fs, .level = level.items, .out = items, .excludes = excludes, .js = js };
         pool.parallelFor(tp, level.items.len, &w, walkOne);
         var next: std.ArrayList([]const u8) = .empty;
         for (items) |*x| {
@@ -543,6 +544,29 @@ test "project discovery prunes excluded subtrees and terminates directory cycles
     try std.testing.expectEqualStrings(files[0], cyclic[0]);
 }
 
+test "project discovery keeps the highest-priority extension per name" {
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][]const u8{ "a.ts", "a.d.ts", "a.js", "b.d.ts", "b.js", "c.js", "d.mjs" }) |name| {
+        try tmp.dir.writeFile(io, .{ .sub_path = name, .data = "export {};" });
+    }
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    var tp = pool.ThreadPool.init(2);
+    const ts_only = projectFiles(a, FsCache.create(a, io), &tp, &Config{ .root = root });
+    try std.testing.expectEqual(@as(usize, 2), ts_only.len);
+    const cfg = Config{ .root = root, .options = .{ .allowJs = true } };
+    const files = projectFiles(a, FsCache.create(a, io), &tp, &cfg);
+    var names: std.ArrayList([]const u8) = .empty;
+    for (files) |f| try names.append(a, fspath.basename(f));
+    std.mem.sort([]const u8, names.items, {}, pathLessThan);
+    try std.testing.expectEqual(@as(usize, 5), names.items.len);
+    for ([_][]const u8{ "a.ts", "b.d.ts", "b.js", "c.js", "d.mjs" }, names.items) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
 pub fn projectFiles(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, cfg: *const Config) []const []const u8 {
     const io = fs.io;
     var out: std.ArrayList([]const u8) = .empty;
@@ -571,7 +595,12 @@ pub fn projectFiles(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, cfg: *cons
         for (ex) |e| excludes.append(a, expandInclude(a, e)) catch oom();
     } else if (cfg.options.outDir) |d| excludes.append(a, expandInclude(a, d)) catch oom();
 
-    next: for (walkFiltered(a, fs, tp, roots.items, excludes.items)) |f| {
+    const js = cfg.options.allowJs orelse false;
+    const groups: []const []const []const u8 = if (js) &all_extension_groups else &ts_extension_groups;
+    var literal: std.StringHashMapUnmanaged(void) = .empty;
+    for (out.items) |f| literal.put(a, f, {}) catch oom();
+    var wildcard: std.StringArrayHashMapUnmanaged(void) = .empty;
+    next: for (walkFiltered(a, fs, tp, roots.items, excludes.items, js)) |f| {
         var hit = false;
         for (patterns.items) |p| {
             if (includeMatch(p, f)) {
@@ -581,9 +610,57 @@ pub fn projectFiles(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, cfg: *cons
         }
         if (!hit) continue;
         for (excludes.items) |e| if (globMatch(e, f)) continue :next;
-        out.append(a, f) catch oom();
+        if (hasHigherPriority(a, f, groups, &literal, &wildcard)) continue;
+        removeLowerPriority(a, f, groups, &wildcard);
+        if (!literal.contains(f)) wildcard.put(a, f, {}) catch oom();
     }
+    out.appendSlice(a, wildcard.keys()) catch oom();
     return out.items;
+}
+
+/// tsc's extension priority: of `a.ts`, `a.tsx`, `a.d.ts`, `a.js` and `a.jsx` in one directory,
+/// usually compiler output beside its source, only the first one present is a root.
+const ts_extension_groups = [_][]const []const u8{ &.{ ".ts", ".tsx", ".d.ts" }, &.{ ".cts", ".d.cts" }, &.{ ".mts", ".d.mts" } };
+const all_extension_groups = [_][]const []const u8{ &.{ ".ts", ".tsx", ".d.ts", ".js", ".jsx" }, &.{ ".cts", ".d.cts", ".cjs" }, &.{ ".mts", ".d.mts", ".mjs" } };
+
+fn extensionGroup(a: Allocator, file: []const u8, groups: []const []const []const u8) []const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (groups) |g| for (g) |ext| if (std.mem.endsWith(u8, file, ext)) {
+        out.appendSlice(a, g) catch oom();
+        break;
+    };
+    return out.items;
+}
+
+fn withExtension(a: Allocator, file: []const u8, ext: []const u8) []const u8 {
+    const known = [_][]const u8{ ".d.mts", ".d.cts", ".d.ts", ".tsx", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".ts", ".js" };
+    const base = for (known) |k| {
+        if (std.mem.endsWith(u8, file, k)) break file[0 .. file.len - k.len];
+    } else file;
+    return std.mem.concat(a, u8, &.{ base, ext }) catch oom();
+}
+
+fn hasHigherPriority(a: Allocator, file: []const u8, groups: []const []const []const u8, literal: *const std.StringHashMapUnmanaged(void), wildcard: *const std.StringArrayHashMapUnmanaged(void)) bool {
+    for (extensionGroup(a, file, groups)) |ext| {
+        // `a.d.ts` also ends in `.ts`, which must not count as its own extension.
+        if (std.mem.endsWith(u8, file, ext) and !(std.mem.eql(u8, ext, ".ts") and std.mem.endsWith(u8, file, ".d.ts"))) return false;
+        const other = withExtension(a, file, ext);
+        if (!literal.contains(other) and !wildcard.contains(other)) continue;
+        // tsc keeps a declaration file next to its JavaScript, a legacy quirk it does not break.
+        if (std.mem.eql(u8, ext, ".d.ts") and (std.mem.endsWith(u8, file, ".js") or std.mem.endsWith(u8, file, ".jsx"))) continue;
+        return true;
+    }
+    return false;
+}
+
+fn removeLowerPriority(a: Allocator, file: []const u8, groups: []const []const []const u8, wildcard: *std.StringArrayHashMapUnmanaged(void)) void {
+    const group = extensionGroup(a, file, groups);
+    var i = group.len;
+    while (i > 0) {
+        i -= 1;
+        if (std.mem.endsWith(u8, file, group[i])) return;
+        _ = wildcard.orderedRemove(withExtension(a, file, group[i]));
+    }
 }
 
 /// Every import probes up to a dozen names, nearly all missing, and each failed stat takes a
