@@ -1,0 +1,11 @@
+declare let flag: boolean;
+declare let text: string;
+declare let count: number;
+declare let maybe: number | undefined;
+flag *= 1;
+flag -= true;
+text /= 2;
+count *= "x";
+count += "x";
+maybe *= 2;
+flag |= 1;

@@ -3568,10 +3568,14 @@ fn isStringLike(c: *Checker, t: *Type) bool {
     return relate.isAssignable(c, t, c.t_string) and t.data != .never;
 }
 
+fn isArithOperand(c: *Checker, t: *Type) bool {
+    if (T.isAny(t) or isNumberLike(c, t) or isBigLike(c, t)) return true;
+    return t.vars and isNumberLike(c, d.baseConstraint(c, t));
+}
+
 fn arithOperand(c: *Checker, t0: *Type, n: *Node, code: u32) void {
     const t = checkNonNull(c, t0, n);
-    if (T.isAny(t) or isNumberLike(c, t) or isBigLike(c, t)) return;
-    if (t.vars) if (isNumberLike(c, d.baseConstraint(c, t))) return;
+    if (isArithOperand(c, t)) return;
     err(c, n, code, if (code == 2362) "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type." else "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
 }
 
@@ -3921,6 +3925,13 @@ fn checkCompound(c: *Checker, n: *Node) *Type {
         else => return c.t_err,
     };
     const result = binaryResult(c, n, op, x.left, x.right, l, r);
+    const arith = switch (op) {
+        .minus, .star, .star2, .slash, .percent, .shl, .shr, .ushr, .amp, .pipe, .caret => true,
+        else => false,
+    };
+    // tsc checks the assignment only when both operands were fit for arithmetic.
+    const fit = !arith or (isArithOperand(c, nonNull(c, l)) and isArithOperand(c, nonNull(c, r)));
+    if (!fit) return result;
     if (!T.isAny(l) and !T.isAny(result) and op != .amp2 and op != .pipe2 and op != .qq) {
         checkAssignable(c, result, l, x.left, x.left);
     } else if (op == .pipe2 or op == .qq or op == .amp2) {
