@@ -3347,20 +3347,24 @@ fn checkObjectLit(c: *Checker, n: *Node) *Type {
             },
             .func => |f| {
                 const nm = f.name orelse continue;
-                const name = propNameOf(c, nm) orelse {
-                    const key = if (f.kind == .getter or f.kind == .setter) null else computedKeyOf(c, nm);
-                    if (key) |k| {
-                        computed.append(c.a, .{ .key = k, .ty = checkFunctionExpr(c, p) }) catch oom();
-                    } else open = true;
-                    continue;
-                };
-                if (f.kind == .getter or f.kind == .setter) {
+                const is_accessor = f.kind == .getter or f.kind == .setter;
+                // An accessor's body, and with it a computed name, is checked once the literal is done.
+                if (is_accessor) {
                     if (d.outerTParams(c, p).len > 0) vars = true;
                     assignContext(c, p);
                     if (!quiet(c)) {
                         const gop = c.checked_funcs.getOrPut(c.a, p) catch oom();
                         if (!gop.found_existing) c.deferred.append(c.a, p) catch oom();
                     }
+                }
+                const name = propNameOf(c, nm) orelse {
+                    const key = if (is_accessor) null else computedKeyOf(c, nm);
+                    if (key) |k| {
+                        computed.append(c.a, .{ .key = k, .ty = checkFunctionExpr(c, p) }) catch oom();
+                    } else open = true;
+                    continue;
+                };
+                if (is_accessor) {
                     if (p.symbol()) |s| m.props.put(c.a, name, c.create(Prop, .{ .name = name, .sym = s, .readonly = f.kind == .getter and s.flags & F.setter == 0, .decl = p })) catch oom();
                     continue;
                 }
