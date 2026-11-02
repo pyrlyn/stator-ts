@@ -705,43 +705,59 @@ const Resolver = struct {
         return r.cfg.options.resolveJsonModule orelse bundler;
     }
 
+    /// tsc's `loadModuleFromFile`: a known extension is swapped for the ones that may stand for
+    /// it, then the whole name gets each extension added.
     fn tryFile(r: Resolver, base: []const u8) ?[]const u8 {
-        const suffixes = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".d.mts", ".d.cts" };
         // All extension candidates share one directory snapshot and its synchronization cost.
-        const dir = if (base.len > 0 and fspath.isSep(base[base.len - 1])) base else fspath.dirname(base) orelse ".";
+        const dir_only = base.len > 0 and fspath.isSep(base[base.len - 1]);
+        const dir = if (dir_only) base else fspath.dirname(base) orelse ".";
         const listing = r.fs.listing(dir);
         if (listing.* == .missing) return null;
-        if (isSourceFile(base) and r.fs.kindInListing(base, listing) == .file) return base;
-        if (r.jsonModules() and std.mem.endsWith(u8, base, ".json") and r.fs.kindInListing(base, listing) == .file) return base;
-        for (suffixes) |s| {
-            const p = std.mem.concat(r.a, u8, &.{ base, s }) catch oom();
+        const name = fspath.basename(base);
+        if (!dir_only and std.mem.indexOfScalar(u8, name, '.') != null) {
+            const ext = knownExtension(name) orelse name[std.mem.lastIndexOfScalar(u8, name, '.').?..];
+            if (r.tryAddingExtensions(base[0 .. base.len - ext.len], ext, listing)) |p| return p;
+        }
+        return r.tryAddingExtensions(base, "", listing);
+    }
+
+    /// tsc's `tryAddingExtensions`, for the extensions this program reads.
+    fn tryAddingExtensions(r: Resolver, stem: []const u8, ext: []const u8, listing: *const FsCache.Listing) ?[]const u8 {
+        const js = r.cfg.options.allowJs orelse false;
+        const eql = std.mem.eql;
+        const candidates: []const []const u8 = if (eql(u8, ext, ".mjs") or eql(u8, ext, ".mts") or eql(u8, ext, ".d.mts"))
+            if (js) &.{ ".mts", ".d.mts", ".mjs" } else &.{ ".mts", ".d.mts" }
+        else if (eql(u8, ext, ".cjs") or eql(u8, ext, ".cts") or eql(u8, ext, ".d.cts"))
+            if (js) &.{ ".cts", ".d.cts", ".cjs" } else &.{ ".cts", ".d.cts" }
+        else if (eql(u8, ext, ".json"))
+            if (r.jsonModules()) &.{ ".d.json.ts", ".json" } else &.{".d.json.ts"}
+        else if (eql(u8, ext, ".tsx") or eql(u8, ext, ".jsx"))
+            if (js) &.{ ".tsx", ".ts", ".d.ts", ".jsx", ".js" } else &.{ ".tsx", ".ts", ".d.ts" }
+        else if (ext.len == 0 or eql(u8, ext, ".ts") or eql(u8, ext, ".d.ts") or eql(u8, ext, ".js"))
+            if (js) &.{ ".ts", ".tsx", ".d.ts", ".js", ".jsx" } else &.{ ".ts", ".tsx", ".d.ts" }
+        else {
+            // `./styles.css` finds `./styles.d.css.ts`.
+            const p = std.mem.concat(r.a, u8, &.{ stem, ".d", ext, ".ts" }) catch oom();
+            return if (r.fs.kindInListing(p, listing) == .file) p else null;
+        };
+        for (candidates) |x| {
+            const p = std.mem.concat(r.a, u8, &.{ stem, x }) catch oom();
             if (r.fs.kindInListing(p, listing) == .file) return p;
         }
-        // Source written for ESM imports `./a.js` while `./a.ts` is on disk.
-        const maps = [_]struct { []const u8, []const []const u8 }{
-            .{ ".js", &.{ ".ts", ".tsx", ".d.ts" } },
-            .{ ".jsx", &.{ ".tsx", ".d.ts" } },
-            .{ ".mjs", &.{ ".mts", ".d.mts" } },
-            .{ ".cjs", &.{ ".cts", ".d.cts" } },
-        };
-        for (maps) |m| if (std.mem.endsWith(u8, base, m[0])) {
-            const stem = base[0 .. base.len - m[0].len];
-            for (m[1]) |x| {
-                const p = std.mem.concat(r.a, u8, &.{ stem, x }) catch oom();
-                if (r.fs.kindInListing(p, listing) == .file) return p;
-            }
-        };
+        return null;
+    }
+
+    fn knownExtension(name: []const u8) ?[]const u8 {
+        const exts = [_][]const u8{ ".d.ts", ".d.mts", ".d.cts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json" };
+        for (exts) |x| if (std.mem.endsWith(u8, name, x) and name.len > x.len) return x;
         return null;
     }
 
     fn tryIndex(r: Resolver, dir: []const u8) ?[]const u8 {
         const listing = r.fs.listing(dir);
         if (listing.* == .missing) return null;
-        for ([_][]const u8{ "index.ts", "index.tsx", "index.d.ts" }) |x| {
-            const p = fspath.join(r.a, &.{ dir, x }) catch oom();
-            if (r.fs.kindInListing(p, listing) == .file) return p;
-        }
-        return null;
+        const index = fspath.join(r.a, &.{ dir, "index" }) catch oom();
+        return r.tryAddingExtensions(index, "", listing);
     }
 
     fn tryPath(r: Resolver, base: []const u8) ?[]const u8 {
@@ -1608,6 +1624,20 @@ test "resolver probes preserve extension order and unreadable-directory fallback
         try std.testing.expectEqualStrings(expected, r.tryFile(base).?);
     }
     try std.testing.expectEqualStrings(try fspath.join(a, &.{ dir, "index.ts" }), r.tryIndex(dir).?);
+    for ([_][]const u8{ "decl.d.ts", "styles.d.css.ts", "plain.js" }) |name| {
+        try tmp.dir.writeFile(io, .{ .sub_path = name, .data = "" });
+    }
+    // The first cache keeps its listing from before these files existed.
+    var js_fs = FsCache{ .io = io };
+    const js_cfg = Config{ .root = dir, .options = .{ .allowJs = true } };
+    const js = Resolver{ .io = io, .a = a, .fs = &js_fs, .cfg = &js_cfg };
+    for ([_][2][]const u8{ .{ "decl.ts", "decl.d.ts" }, .{ "styles.css", "styles.d.css.ts" }, .{ "plain", "plain.js" } }) |pair| {
+        const base = try std.mem.concat(a, u8, &.{ dir, fspath.sep_str, pair[0] });
+        try std.testing.expectEqualStrings(try fspath.join(a, &.{ dir, pair[1] }), js.tryFile(base).?);
+    }
+    const ts_cfg = Config{ .root = dir };
+    const ts = Resolver{ .io = io, .a = a, .fs = &js_fs, .cfg = &ts_cfg };
+    try std.testing.expect(ts.tryFile(try fspath.join(a, &.{ dir, "plain" })) == null);
     const missing = try fspath.join(a, &.{ dir, "absent", "item" });
     try std.testing.expect(r.tryFile(missing) == null);
     try std.testing.expect(r.tryIndex(missing) == null);
