@@ -698,23 +698,23 @@ fn checkStmt(c: *Checker, n: *Node) void {
         .var_list => |x| for (x.decls) |v| checkVarDecl(c, v),
         .expr_stmt => |x| _ = expr.checkExpression(c, x.expr),
         .if_stmt => |x| {
-            _ = expr.checkExpression(c, x.cond);
+            _ = expr.checkCondition(c, x.cond);
             checkStmt(c, x.then);
             if (x.els) |e| checkStmt(c, e);
         },
         .do_stmt => |x| {
             checkStmt(c, x.body);
-            _ = expr.checkExpression(c, x.cond);
+            _ = expr.checkCondition(c, x.cond);
         },
         .while_stmt => |x| {
-            _ = expr.checkExpression(c, x.cond);
+            _ = expr.checkCondition(c, x.cond);
             checkStmt(c, x.body);
         },
         .for_stmt => |x| {
             if (x.init) |i| {
                 if (i.data == .var_list) checkStmt(c, i) else _ = expr.checkExpression(c, i);
             }
-            if (x.cond) |e| _ = expr.checkExpression(c, e);
+            if (x.cond) |e| _ = expr.checkCondition(c, e);
             if (x.update) |e| _ = expr.checkExpression(c, e);
             checkStmt(c, x.body);
         },

@@ -3938,7 +3938,129 @@ fn checkBinary(c: *Checker, n: *Node) *Type {
     // Checking the left operand again for each right one's context is exponential on `a || b || c`.
     if (op == .pipe2 or op == .qq) c.logical_left.put(c.a, n, l0) catch oom();
     const r0 = checkExpr(c, x.right);
+    if (op == .amp2 or op == .pipe2) checkTruthiness(c, l0, x.left);
+    if (op == .qq) checkNullishLeft(c, x.left);
     return binaryResult(c, n, op, x.left, x.right, l0, r0);
+}
+
+/// tsc's `checkTruthinessExpression`: a condition is checked, then tested for truthiness.
+pub fn checkCondition(c: *Checker, n: *Node) *Type {
+    const t = checkExpression(c, n);
+    checkTruthiness(c, t, n);
+    return t;
+}
+
+/// tsc's `checkTruthinessOfType`: `void` cannot be tested, and some expressions can be told
+/// truthy or falsy from their syntax alone.
+fn checkTruthiness(c: *Checker, t: *Type, n: *Node) void {
+    if (t.data == .void) return err(c, n, 1345, "An expression of type 'void' cannot be tested for truthiness.");
+    switch (truthySemantics(c, n)) {
+        .always => errSpan(c, n, spanStart(c, n), n.end, 2872, "This kind of expression is always truthy."),
+        .never => errSpan(c, n, spanStart(c, n), n.end, 2873, "This kind of expression is always falsy."),
+        else => {},
+    }
+}
+
+/// Where tsc's `getErrorSpanForNode` starts: at the name of a named function or class
+/// expression, and at the keyword of `x satisfies T`.
+fn spanStart(c: *Checker, n: *Node) u32 {
+    return switch (n.data) {
+        .func => |f| if (f.name) |name| name.start else n.start,
+        .class => |k| if (k.name) |name| name.start else n.start,
+        .satisfies_expr => |x| blk: {
+            const f = d.fileOf(c, n) orelse break :blk n.start;
+            break :blk skipTrivia(f.src, x.expr.end);
+        },
+        else => n.start,
+    };
+}
+
+fn skipTrivia(src: []const u8, from: u32) u32 {
+    var i: usize = from;
+    while (i < src.len) {
+        if (std.ascii.isWhitespace(src[i])) {
+            i += 1;
+        } else if (std.mem.startsWith(u8, src[i..], "//")) {
+            i = std.mem.indexOfScalarPos(u8, src, i, '\n') orelse src.len;
+        } else if (std.mem.startsWith(u8, src[i..], "/*")) {
+            i = if (std.mem.indexOfPos(u8, src, i + 2, "*/")) |e| e + 2 else src.len;
+        } else break;
+    }
+    return @intCast(i);
+}
+
+/// tsc's `skipOuterExpressions` with `OuterExpressionKinds.All`.
+fn skipOuter(n0: *Node) *Node {
+    var n = binder.stripParens(n0);
+    while (n.data == .expr_with_type_args) n = binder.stripParens(n.data.expr_with_type_args.expr);
+    return n;
+}
+
+/// tsc's `PredicateSemantics`: whether a predicate holds always, never, or either way.
+const Semantics = enum(u2) {
+    none = 0,
+    always = 1,
+    never = 2,
+    sometimes = 3,
+
+    fn either(a: Semantics, b: Semantics) Semantics {
+        return @enumFromInt(@intFromEnum(a) | @intFromEnum(b));
+    }
+};
+
+fn isUndefinedName(c: *Checker, n: *Node) bool {
+    return n.data == .identifier and std.mem.eql(u8, n.data.identifier, "undefined") and symbolOf(c, n) == null;
+}
+
+/// tsc's `getSyntacticTruthySemantics`.
+fn truthySemantics(c: *Checker, n0: *Node) Semantics {
+    const n = skipOuter(n0);
+    return switch (n.data) {
+        // `while (0)` and `while (1)` are idioms, not mistakes.
+        .numeric_lit => |v| if (emit.parseNumber(v)) |x| if (x == 0 or x == 1) .sometimes else .always else .always,
+        .array_lit, .bigint_lit, .object_lit, .regex_lit, .jsx_element, .jsx_self_closing => .always,
+        .func => |f| if (f.kind == .expr or f.kind == .arrow) .always else .sometimes,
+        .class => |k| if (k.is_expr) .always else .sometimes,
+        .void_expr, .null_lit => .never,
+        .string_lit, .no_subst_template => |v| if (v.len > 0) .always else .never,
+        .conditional => |x| truthySemantics(c, x.then).either(truthySemantics(c, x.els)),
+        .identifier => if (isUndefinedName(c, n)) .never else .sometimes,
+        else => .sometimes,
+    };
+}
+
+/// tsc's `checkNullishCoalesceOperandLeft`.
+fn checkNullishLeft(c: *Checker, left: *Node) void {
+    const target = skipOuter(left);
+    switch (nullishSemantics(c, target)) {
+        .always => err(c, target, 2871, "This expression is always nullish."),
+        .never => err(c, target, 2869, "Right operand of ?? is unreachable because the left operand is never nullish."),
+        else => {},
+    }
+}
+
+/// tsc's `getSyntacticNullishnessSemantics`.
+fn nullishSemantics(c: *Checker, n0: *Node) Semantics {
+    const n = skipOuter(n0);
+    return switch (n.data) {
+        .await_expr, .call, .tagged_template, .elem_access, .meta_property, .new_expr, .prop_access, .yield_expr, .this_expr => .sometimes,
+        .binary => |x| switch (x.op) {
+            .pipe2, .pipe2_assign, .amp2, .amp2_assign => .sometimes,
+            // The right operand is the value.
+            .comma, .assign => nullishSemantics(c, x.right),
+            .qq, .qq_assign => blk: {
+                const l = nullishSemantics(c, x.left);
+                var out: Semantics = if (@intFromEnum(l) & @intFromEnum(Semantics.never) != 0) .never else .none;
+                if (@intFromEnum(l) & @intFromEnum(Semantics.always) != 0) out = out.either(nullishSemantics(c, x.right));
+                break :blk out;
+            },
+            else => .never,
+        },
+        .conditional => |x| nullishSemantics(c, x.then).either(nullishSemantics(c, x.els)),
+        .null_lit => .always,
+        .identifier => if (isUndefinedName(c, n)) .always else .sometimes,
+        else => .never,
+    };
 }
 
 fn isSideEffectFree(n0: *Node) bool {
@@ -4327,6 +4449,7 @@ fn checkPrefix(c: *Checker, n: *Node) *Type {
     const t = checkExpr(c, x.expr);
     switch (x.op) {
         .bang => {
+            checkTruthiness(c, t, x.expr);
             // tsc answers `false` for an operand that is always truthy and `true` for one that
             // is always falsy; `never` has neither fact and stays `boolean`.
             if (t.data == .never or T.isAny(t)) return c.t_boolean;
@@ -6101,7 +6224,7 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         .yield_expr => checkYield(c, n),
         .binary => checkBinary(c, n),
         .conditional => |x| blk: {
-            _ = checkExpr(c, x.cond);
+            checkTruthiness(c, checkExpr(c, x.cond), x.cond);
             const a = checkExpr(c, x.then);
             const b = checkExpr(c, x.els);
             break :blk reduceSubtypes(c, &.{ a, b });
