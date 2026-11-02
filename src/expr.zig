@@ -2633,6 +2633,8 @@ fn restOf(c: *Checker, t: *Type, skip: []const []const u8) *Type {
         if (p.private or p.protected or p.method) continue;
         const q = c.create(Prop, p.*);
         q.ty = d.propType(c, p);
+        // tsc's `getSpreadSymbol(prop, false)`: the rest is a fresh object the code owns.
+        q.readonly = false;
         m.props.put(c.a, p.name, q) catch oom();
     }
     m.indexes = c.dupe(T.Index, d.indexesOf(c, ap));
