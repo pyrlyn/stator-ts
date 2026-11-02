@@ -356,28 +356,40 @@ pub fn loadConfig(c: Ctx, path: []const u8) !Config {
     return cfg;
 }
 
-/// `*`, `?` and `**/`, as in tsconfig include patterns. Patterns are absolute.
+/// `*`, `?` and `**/`, as in tsconfig exclude patterns. Patterns are absolute.
 pub fn globMatch(pat: []const u8, s: []const u8) bool {
+    return matchGlob(pat, s, false, true);
+}
+
+/// tsc's include wildcards, unlike its excludes, skip a file or directory whose name starts with a dot.
+pub fn includeMatch(pat: []const u8, s: []const u8) bool {
+    return matchGlob(pat, s, true, true);
+}
+
+fn matchGlob(pat: []const u8, s: []const u8, hide_dots: bool, start: bool) bool {
     if (pat.len == 0) return s.len == 0;
     if (std.mem.startsWith(u8, pat, "**/")) {
         const rest = pat[3..];
-        if (globMatch(rest, s)) return true;
+        if (matchGlob(rest, s, hide_dots, true)) return true;
         var i: usize = 0;
         while (std.mem.indexOfScalarPos(u8, s, i, '/')) |p| : (i = p + 1) {
-            if (globMatch(rest, s[p + 1 ..])) return true;
+            if (hide_dots and s[i] == '.') return false;
+            if (matchGlob(rest, s[p + 1 ..], hide_dots, true)) return true;
         }
         return false;
     }
+    const hidden = hide_dots and start and s.len > 0 and s[0] == '.';
     switch (pat[0]) {
         '*' => {
+            if (hidden) return false;
             var i: usize = 0;
             while (true) : (i += 1) {
-                if (globMatch(pat[1..], s[i..])) return true;
+                if (matchGlob(pat[1..], s[i..], hide_dots, start and i == 0)) return true;
                 if (i >= s.len or s[i] == '/') return false;
             }
         },
-        '?' => return s.len > 0 and s[0] != '/' and globMatch(pat[1..], s[1..]),
-        else => return s.len > 0 and s[0] == pat[0] and globMatch(pat[1..], s[1..]),
+        '?' => return s.len > 0 and s[0] != '/' and !hidden and matchGlob(pat[1..], s[1..], hide_dots, false),
+        else => return s.len > 0 and s[0] == pat[0] and matchGlob(pat[1..], s[1..], hide_dots, s[0] == '/'),
     }
 }
 
@@ -558,7 +570,7 @@ pub fn projectFiles(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, cfg: *cons
     next: for (walkFiltered(a, fs, tp, roots.items, excludes.items)) |f| {
         var hit = false;
         for (patterns.items) |p| {
-            if (globMatch(p, f)) {
+            if (includeMatch(p, f)) {
                 hit = true;
                 break;
             }
@@ -1661,4 +1673,10 @@ test "globMatch" {
     try std.testing.expect(globMatch("/a/*.ts", "/a/c.ts"));
     try std.testing.expect(!globMatch("/a/*.ts", "/a/b/c.ts"));
     try std.testing.expect(globMatch("/a/**/x?.ts", "/a/b/xy.ts"));
+    try std.testing.expect(globMatch("/a/**/*", "/a/.lib/c.ts"));
+    try std.testing.expect(!includeMatch("/a/**/*", "/a/.lib/c.ts"));
+    try std.testing.expect(!includeMatch("/a/**/*", "/a/b/.c.ts"));
+    try std.testing.expect(!includeMatch("/a/?lib/c.ts", "/a/.lib/c.ts"));
+    try std.testing.expect(includeMatch("/a/.lib/*.ts", "/a/.lib/c.ts"));
+    try std.testing.expect(includeMatch("/a/**/*", "/a/b.c/d.ts"));
 }
