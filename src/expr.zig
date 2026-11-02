@@ -2764,6 +2764,17 @@ fn baseHas(c: *Checker, t: *Type, b: *Node, depth: u32) bool {
     return false;
 }
 
+/// An instance read of a member that exists only on the class itself.
+fn hasStaticProp(c: *Checker, t: *Type, name: []const u8) bool {
+    const h = if (t.data == .obj and t.data.obj.kind == .ref) t.data.obj.target.? else t;
+    if (h.data != .obj) return false;
+    const s = h.data.obj.sym orelse return false;
+    if (s.flags & F.class == 0) return false;
+    const p = d.getProp(c, d.typeOfSymbol(c, s), name) orelse return false;
+    const decl = (p.sym orelse return false).value_decl orelse return false;
+    return decl.mods.static;
+}
+
 fn missingProp(c: *Checker, n: *Node, name_node: *Node, name: []const u8, t: *Type) void {
     if (name.len > 0 and name[0] == '#') {
         err(c, name_node, 18013, c.fmt("Property '{s}' is not accessible outside class because it has a private identifier.", .{name}));
@@ -2771,13 +2782,11 @@ fn missingProp(c: *Checker, n: *Node, name_node: *Node, name: []const u8, t: *Ty
     }
     _ = n;
     const ap = d.getApparent(c, t);
-    if (t.data == .obj and t.data.obj.kind == .anon) if (t.data.obj.sym) |s| if (s.flags & F.class != 0) {
-        const inst = d.declaredType(c, s);
-        if (inst.data == .obj and d.getProp(c, inst, name) != null) {
-            err(c, name_node, 2576, c.fmt("Property '{s}' does not exist on type '{s}'. Did you mean to access the static member '{s}.{s}' instead?", .{ name, show(c, t), s.name, name }));
-            return;
-        }
-    };
+    if (hasStaticProp(c, t, name)) {
+        const shown = show(c, t);
+        err(c, name_node, 2576, c.fmt("Property '{s}' does not exist on type '{s}'. Did you mean to access the static member '{s}.{s}' instead?", .{ name, shown, shown, name }));
+        return;
+    }
     // An empty name is the parser's stand-in for one that is missing, and it has said so already.
     if (name.len == 0) return;
     if (similarProp(c, name, ap)) |s| {
