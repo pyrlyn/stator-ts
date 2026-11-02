@@ -50,6 +50,7 @@ pub const Options = struct {
     checkJs: ?bool = null,
     noCheck: ?bool = null,
     allowUnreachableCode: ?bool = null,
+    useDefineForClassFields: ?bool = null,
     target: ?[]const u8 = null,
     module: ?[]const u8 = null,
     moduleResolution: ?[]const u8 = null,

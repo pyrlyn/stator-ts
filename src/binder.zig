@@ -822,6 +822,7 @@ pub const Binder = struct {
                 b.block = m;
                 b.flow = b.createFlow(.start, null, null);
                 if (d.body.data == .block) b.bindList(d.body.data.block.stmts);
+                m.data.static_block.end_flow = if (b.flow.kind == .unreachable_end) null else b.flow;
                 b.container = save[0];
                 b.block = save[1];
                 b.flow = save[2];

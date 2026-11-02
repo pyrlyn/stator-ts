@@ -133,7 +133,7 @@ fn paramsMoveToBody(c: *Checker, params: []const *Node) bool {
     return scan.found;
 }
 
-fn targetYear(target: []const u8) u32 {
+pub fn targetYear(target: []const u8) u32 {
     if (std.ascii.eqlIgnoreCase(target, "es3") or std.ascii.eqlIgnoreCase(target, "es5")) return 2009;
     if (std.ascii.eqlIgnoreCase(target, "es6")) return 2015;
     if (target.len < 2) return std.math.maxInt(u32);
@@ -2566,7 +2566,7 @@ fn paramPropOf(c: *Checker, pn: *Node, s: *Symbol, mapper: ?*Mapper, owner: *Typ
     return p;
 }
 
-fn isParamProp(pn: *Node) bool {
+pub fn isParamProp(pn: *Node) bool {
     return pn.mods.public or pn.mods.private or pn.mods.protected or pn.mods.readonly;
 }
 

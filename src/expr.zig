@@ -750,10 +750,14 @@ fn aliasIsTypeOnly(s: *Symbol) bool {
 /// Builds `this.<name>` as read at the end of `ctor`, for a question no source node asks.
 pub fn thisAccess(c: *Checker, name: *Node, ctor: *Node) ?*Node {
     const end = (d.bodyOf(c, ctor) orelse return null).end_flow orelse return null;
+    return thisAccessAt(c, name, ctor, end);
+}
+
+fn thisAccessAt(c: *Checker, name: *Node, owner: *Node, end: *binder.FlowNode) *Node {
     const this = c.a.create(Node) catch oom();
     const ref = c.a.create(Node) catch oom();
-    this.* = .{ .start = ctor.start, .end = ctor.start, .parent = ref, .data = .this_expr };
-    ref.* = Node.atFlow(end, ctor.start, ctor.start, ctor, .{ .prop_access = .{ .expr = this, .name = name, .optional = false } });
+    this.* = .{ .start = owner.start, .end = owner.start, .parent = ref, .data = .this_expr };
+    ref.* = Node.atFlow(end, owner.start, owner.start, owner, .{ .prop_access = .{ .expr = this, .name = name, .optional = false } });
     return ref;
 }
 
@@ -2962,6 +2966,7 @@ fn propAccessType(c: *Checker, n: *Node, left: *Type, name_node: *Node, name: []
         return c.t_err;
     };
     checkVisibility(c, n, left, p, name_node);
+    checkUsedBeforeInit(c, n, p, name_node);
     if (isWriteOnly(n)) return d.propWriteType(c, p);
     const declared = d.propType(c, p);
     if (n.flow() == null or T.isAny(declared)) return declared;
@@ -2976,6 +2981,155 @@ fn propAccessType(c: *Checker, n: *Node, left: *Type, name_node: *Node, name: []
         return r;
     }
     return flow.flowType(c, n, narrowable, narrowable, containingFunc(n));
+}
+
+/// Field initializers and static blocks run in document order, before the fields below them exist.
+fn checkUsedBeforeInit(c: *Checker, n: *Node, p: *Prop, name_node: *Node) void {
+    const decl = (if (p.sym) |s| s.value_decl else null) orelse p.decl orelse return;
+    if (d.fileOf(c, n)) |f| if (f.is_dts) return;
+    if (!inFieldInitializer(n)) return;
+    if (decl.data == .property_decl and decl.data.property_decl.question and !decl.mods.accessor) return;
+    if (n.data == .prop_access and isAccess(n.data.prop_access.expr)) return;
+    if (decl.data == .func and decl.data.func.kind == .method and decl.mods.static) return;
+    if (memberDeclaredBefore(c, decl, n, name_node)) return;
+    // Without define semantics the base class's field is already there when the derived initializer runs.
+    if (!useDefineForClassFields(c) and declaredInBaseClass(c, decl, p.name)) return;
+    err(c, name_node, 2729, c.fmt("Property '{s}' is used before its initialization.", .{ast.memberText(name_node)}));
+}
+
+fn isAccess(n: *Node) bool {
+    return n.data == .prop_access or n.data == .elem_access;
+}
+
+fn inFieldInitializer(n: *Node) bool {
+    var prev = n;
+    var cur = n.parent;
+    while (cur) |x| : ({
+        prev = x;
+        cur = x.parent;
+    }) switch (x.data) {
+        .property_decl, .static_block => return true,
+        .type_query, .jsx_closing => return false,
+        // A function body runs later, but its computed name is evaluated in place.
+        .func => |f| if (f.kind == .arrow or prev == f.body) return false,
+        else => {},
+    };
+    return false;
+}
+
+fn useDefineForClassFields(c: *Checker) bool {
+    const o = c.prog.cfg.options;
+    return o.useDefineForClassFields orelse (d.targetYear(o.target orelse "esnext") >= 2022);
+}
+
+/// Fields are emitted as class fields, so a parameter property is assigned after them.
+fn emitStandardClassFields(c: *Checker) bool {
+    return useDefineForClassFields(c) and d.targetYear(c.prog.cfg.options.target orelse "esnext") >= 2022;
+}
+
+fn declaredInBaseClass(c: *Checker, decl: *Node, name: []const u8) bool {
+    const cls = enclosingClass(decl) orelse return false;
+    const s = cls.symbol() orelse return false;
+    const bases = d.basesOf(c, d.declaredType(c, s));
+    if (bases.len == 0) return false;
+    const bp = d.getProp(c, bases[0], name) orelse return false;
+    return (bp.sym orelse return false).value_decl != null;
+}
+
+fn isParamProperty(n: *Node) bool {
+    return n.data == .param and d.isParamProp(n);
+}
+
+/// tsc's `isBlockScopedNameDeclaredBeforeUse` for a class member read through `access`.
+fn memberDeclaredBefore(c: *Checker, decl: *Node, access: *Node, usage: *Node) bool {
+    if (d.fileOf(c, decl) != d.fileOf(c, usage)) return true;
+    const container = blockScopeContainer(decl);
+    const uninitialized_this = decl.data == .property_decl and access.data == .prop_access and
+        access.data.prop_access.expr.data == .this_expr and decl.data.property_decl.init == null and !decl.data.property_decl.excl;
+    if (decl.start <= usage.start and !uninitialized_this) {
+        if (decl.data == .property_decl) return !referencedWithin(decl, usage, false);
+        if (isParamProperty(decl)) return !(emitStandardClassFields(c) and enclosingClass(decl) == enclosingClass(usage) and usedDeferred(c, usage, decl, container));
+        return true;
+    }
+    if (usedDeferred(c, usage, decl, container)) {
+        if (emitStandardClassFields(c) and (decl.data == .property_decl or isParamProperty(decl))) return !referencedWithin(decl, usage, true);
+        return true;
+    }
+    return false;
+}
+
+fn blockScopeContainer(n: *Node) ?*Node {
+    var cur = n.parent;
+    while (cur) |x| : (cur = x.parent) switch (x.data) {
+        .switch_stmt, .catch_clause, .module_decl, .for_stmt, .for_in, .for_of, .func, .property_decl, .static_block => return x,
+        .block => if (x.parent == null or (x.parent.?.data != .func and x.parent.?.data != .static_block)) return x,
+        else => if (x.parent == null) return x,
+    };
+    return null;
+}
+
+/// tsc's `isUsedInFunctionOrInstanceProperty`: the read happens only after the declaration has run.
+fn usedDeferred(c: *Checker, usage: *Node, decl: *Node, container: ?*Node) bool {
+    var cur: ?*Node = usage;
+    while (cur) |x| : (cur = x.parent) {
+        if (x == container) return false;
+        switch (x.data) {
+            .func => if (!isCallee(x)) return true,
+            .static_block => if (decl.start < usage.start) return true,
+            else => {},
+        }
+        const p = x.parent orelse continue;
+        if (p.data != .property_decl or p.data.property_decl.init != x) continue;
+        if (p.mods.static) {
+            if (decl.data == .func and decl.data.func.kind == .method) return true;
+            if (decl.data == .property_decl and enclosingClass(usage) == decl.parent and initializedInStaticBlocks(c, decl, x.start)) return true;
+        } else {
+            const instance_field = decl.data == .property_decl and !decl.mods.static;
+            if (!instance_field or enclosingClass(usage) != enclosingClass(decl)) return true;
+        }
+    }
+    return false;
+}
+
+/// tsc's `isPropertyInitializedInStaticBlocks`: blocks run in document order, so only those above `until` count.
+fn initializedInStaticBlocks(c: *Checker, decl: *Node, until: u32) bool {
+    const name = decl.data.property_decl.name;
+    if (name.data != .identifier and name.data != .private_name) return false;
+    const cls = decl.parent orelse return false;
+    const t = d.typeOfSymbol(c, decl.symbol() orelse return false);
+    for (cls.data.class.members) |m| {
+        if (m.data != .static_block or m.start > until) continue;
+        // A block that never completes leaves nothing unassigned behind it.
+        const end = m.data.static_block.end_flow orelse return true;
+        const r = flow.flowType(c, thisAccessAt(c, name, m, end), t, d.addOptional(c, t), m);
+        if (!canBeUndefined(r)) return true;
+    }
+    return false;
+}
+
+/// tsc's `isPropertyImmediatelyReferencedWithinDeclaration`.
+fn referencedWithin(decl: *Node, usage: *Node, stop_at_any_field: bool) bool {
+    if (usage.end > decl.end) return false;
+    var prev = usage;
+    var cur: ?*Node = usage;
+    while (cur) |x| : ({
+        prev = x;
+        cur = x.parent;
+    }) {
+        if (x == decl) break;
+        switch (x.data) {
+            .func => |f| switch (f.kind) {
+                .arrow => return false,
+                .method, .getter, .setter => if (prev == f.body) return false,
+                else => {},
+            },
+            .property_decl => return stop_at_any_field and
+                ((decl.data == .property_decl and x.parent == decl.parent) or
+                    (isParamProperty(decl) and decl.parent != null and x.parent == decl.parent.?.parent)),
+            else => {},
+        }
+    }
+    return true;
 }
 
 /// `f.x` next to the `f.x = 1` that declares it: the property exists only past that statement.

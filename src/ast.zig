@@ -261,7 +261,7 @@ pub const Data = union(enum) {
     decorator: struct { expr: *Node },
     property_decl: *Property,
     index_sig: struct { params: []*Node, type: ?*Node },
-    static_block: struct { body: *Node },
+    static_block: struct { body: *Node, end_flow: ?*binder.FlowNode = null },
     semicolon_member,
     computed_name: struct { expr: *Node },
 
