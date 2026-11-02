@@ -1237,7 +1237,8 @@ fn checkClass(c: *Checker, n: *Node) void {
         const base = d.withThis(c, b0, t.data.obj.thisType() orelse t);
         if (base.data != .obj) continue;
         for (d.propsOf(c, base)) |bp| {
-            if (bp.private) continue;
+            // A private name is its class's own: a subclass's `#x` is another member.
+            if (bp.private or (bp.name.len > 0 and bp.name[0] == '#')) continue;
             const p = d.ownProp(c, this_t, bp.name) orelse continue;
             if (p == bp or p.decl == bp.decl) continue;
             if (!isOverrideOk(c, p, bp)) {

@@ -2848,6 +2848,37 @@ fn checkVisibility(c: *Checker, n: *Node, left: *Type, p: *Prop, name_node: *Nod
     err(c, name_node, 2445, c.fmt("Property '{s}' is protected and only accessible within class '{s}' and its subclasses.", .{ name, cls }));
 }
 
+/// tsc's `checkPrivateIdentifierPropertyAccess`: a private name is the declaring class's own, so
+/// only code inside that class reaches it, and a nearer class with the same name hides it.
+fn privateNameOutside(c: *Checker, n: *Node, left: *Type, p: *Prop, name_node: *Node) bool {
+    if (p.name.len == 0 or p.name[0] != '#') return false;
+    const owner = ownerClass(p.decl orelse return false) orelse return false;
+    var cur = enclosingClass(n);
+    while (cur) |x| : (cur = enclosingClass(x)) {
+        if (x == owner) return false;
+        if (!declaresPrivate(x, p.name)) continue;
+        // A subclass's own `#x` hides this class's in the member table, but tsc keeps both.
+        if (derivesFrom(c, owner, x)) return false;
+        var up: ?*Node = x;
+        while (up) |y| : (up = y.parent) if (y == owner) {
+            err(c, name_node, 18014, c.fmt("The property '{s}' cannot be accessed on type '{s}' within this class because it is shadowed by another private identifier with the same spelling.", .{ p.name, show(c, left) }));
+            return true;
+        };
+        break;
+    }
+    const cls = if (owner.symbol()) |s| s.name else "?";
+    err(c, name_node, 18013, c.fmt("Property '{s}' is not accessible outside class '{s}' because it has a private identifier.", .{ p.name, cls }));
+    return true;
+}
+
+fn declaresPrivate(cls: *Node, name: []const u8) bool {
+    for (cls.data.class.members) |m| {
+        const nm = binder.nameNode(m) orelse continue;
+        if (nm.data == .private_name and std.mem.eql(u8, nm.data.private_name, name)) return true;
+    }
+    return false;
+}
+
 /// A function written outside the class may still declare, or be promised, a `this` of it.
 fn thisDerivesFrom(c: *Checker, n: *Node, owner: ?*Node) bool {
     const sym = (owner orelse return false).symbol() orelse return false;
@@ -2900,8 +2931,9 @@ fn hasStaticProp(c: *Checker, t: *Type, name: []const u8) bool {
 }
 
 fn missingProp(c: *Checker, n: *Node, name_node: *Node, name: []const u8, t: *Type) void {
+    // A private name the type has but this code cannot reach is `privateNameOutside`'s.
     if (name.len > 0 and name[0] == '#') {
-        err(c, name_node, 18013, c.fmt("Property '{s}' is not accessible outside class because it has a private identifier.", .{name}));
+        err(c, name_node, 2339, c.fmt("Property '{s}' does not exist on type '{s}'.", .{ name, show(c, t) }));
         return;
     }
     _ = n;
@@ -3085,6 +3117,7 @@ fn propAccessType(c: *Checker, n: *Node, left: *Type, name_node: *Node, name: []
         missingProp(c, n, name_node, name, left);
         return c.t_err;
     };
+    if (privateNameOutside(c, n, left, p, name_node)) return c.t_err;
     checkVisibility(c, n, left, p, name_node);
     unused.noteProperty(c, n, p);
     checkUsedBeforeInit(c, n, p, name_node);

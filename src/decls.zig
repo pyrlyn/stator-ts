@@ -2949,7 +2949,11 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
         if (s.decls.len > 0) {
             for (basesOf(c, cls)) |_| {
                 if (classBaseValue(c, s)) |v| if (v.data == .obj or v.data == .inter) {
-                    for (propsOf(c, v)) |p| if (!m.props.contains(p.name)) m.props.put(c.a, p.name, p) catch oom();
+                    for (propsOf(c, v)) |p| {
+                        // tsc's `addInheritedMembers` leaves the base's static private names behind.
+                        if (p.name.len > 0 and p.name[0] == '#') continue;
+                        if (!m.props.contains(p.name)) m.props.put(c.a, p.name, p) catch oom();
+                    }
                 };
                 break;
             }
