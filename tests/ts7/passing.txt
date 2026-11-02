@@ -247,6 +247,7 @@ compiler/assignmentCompatibilityForConstrainedTypeParameters
 compiler/assignmentIndexedToPrimitives
 compiler/assignmentNestedInLiterals
 compiler/assignmentNonObjectTypeConstraints
+compiler/assignmentRestElementWithErrorSourceType
 compiler/assignmentStricterConstraints
 compiler/assignmentToConditionalBrandedStringTemplateOrMapping
 compiler/assignmentToExpandingArrayType
@@ -433,6 +434,7 @@ compiler/chainedCallsWithTypeParameterConstrainedToOtherTypeParameter2
 compiler/chainedFilterPredicateInference
 compiler/chainedImportAlias
 compiler/chainedSpecializationToObjectTypeLiteral
+compiler/checkDestructuringShorthandAssigment
 compiler/checkIndexConstraintOfJavascriptClassExpression
 compiler/checkInfiniteExpansionTermination
 compiler/checkInfiniteExpansionTermination2
@@ -1517,6 +1519,7 @@ compiler/destructureOptionalParameter
 compiler/destructuredDeclarationEmit
 compiler/destructuredMaappedTypeIsNotImplicitlyAny
 compiler/destructuringAssignmentWithDefault
+compiler/destructuringAssignmentWithDefault2
 compiler/destructuringAssignmentWithStrictNullChecks
 compiler/destructuringFromUnionSpread
 compiler/destructuringInVariableDeclarations1
@@ -3572,6 +3575,7 @@ compiler/noUncheckedIndexAccess
 compiler/noUnusedLocals_potentialPredicateUnusedParam
 compiler/noUnusedLocals_selfReference
 compiler/noUnusedLocals_selfReference_skipsBlockLocations
+compiler/noUnusedLocals_writeOnly
 compiler/noUnusedLocals_writeOnlyProperty
 compiler/noUsedBeforeDefinedErrorInAmbientContext1
 compiler/noUsedBeforeDefinedErrorInTypeContext
@@ -4042,6 +4046,7 @@ compiler/reexportMissingDefault7
 compiler/reexportMissingDefault8
 compiler/reexportNameAliasedAndHoisted
 compiler/reexportWrittenCorrectlyInDeclaration
+compiler/referenceSatisfiesExpression
 compiler/referenceTypesPreferedToPathIfPossible
 compiler/regExpWithSlashInCharClass
 compiler/regexInvalidUtf8WithUnicodeFlag
@@ -5083,14 +5088,17 @@ conformance/ES5For-of29(target=es2015)
 conformance/ES5For-of3(target=es2015)
 conformance/ES5For-of31(target=es2015)
 conformance/ES5For-of33(target=es2015)
+conformance/ES5For-of34(target=es2015)
 conformance/ES5For-of35(target=es2015)
 conformance/ES5For-of37(target=es2015)
 conformance/ES5For-of4(target=es2015)
 conformance/ES5For-of5(target=es2015)
 conformance/ES5For-of6(target=es2015)
+conformance/ES5For-of8(target=es2015)
 conformance/ES5For-of9(target=es2015)
 conformance/ES5For-ofTypeCheck1(target=es2015)
 conformance/ES5For-ofTypeCheck10(target=es2015)
+conformance/ES5For-ofTypeCheck11(target=es2015)
 conformance/ES5For-ofTypeCheck12(target=es2015)
 conformance/ES5For-ofTypeCheck13(target=es2015)
 conformance/ES5For-ofTypeCheck14(target=es2015)
@@ -5100,6 +5108,7 @@ conformance/ES5For-ofTypeCheck4(target=es2015)
 conformance/ES5For-ofTypeCheck5(target=es2015)
 conformance/ES5For-ofTypeCheck6(target=es2015)
 conformance/ES5For-ofTypeCheck7(target=es2015)
+conformance/ES5For-ofTypeCheck8(target=es2015)
 conformance/ES5For-ofTypeCheck9(target=es2015)
 conformance/ES5SymbolProperty2(target=es2015)
 conformance/ES5SymbolProperty3(target=es2015)
@@ -6538,8 +6547,12 @@ conformance/for-inStatementsArray
 conformance/for-inStatementsArrayErrors
 conformance/for-inStatementsAsyncIdentifier
 conformance/for-of1
+conformance/for-of10
+conformance/for-of11
+conformance/for-of12
 conformance/for-of13
 conformance/for-of14
+conformance/for-of17
 conformance/for-of18
 conformance/for-of19
 conformance/for-of20
@@ -6566,6 +6579,8 @@ conformance/for-of43
 conformance/for-of44
 conformance/for-of45
 conformance/for-of46
+conformance/for-of47
+conformance/for-of48
 conformance/for-of49
 conformance/for-of5
 conformance/for-of50
@@ -6912,6 +6927,10 @@ conformance/iterableArrayPattern29
 conformance/iterableArrayPattern3
 conformance/iterableArrayPattern30
 conformance/iterableArrayPattern4
+conformance/iterableArrayPattern5
+conformance/iterableArrayPattern6
+conformance/iterableArrayPattern7
+conformance/iterableArrayPattern8
 conformance/iterableArrayPattern9
 conformance/iterableContextualTyping1
 conformance/iteratorConcat
@@ -7283,6 +7302,7 @@ conformance/nominalSubtypeCheckOfTypeParameter2
 conformance/nonInstantiatedModule
 conformance/nonIterableRestElement1
 conformance/nonIterableRestElement2
+conformance/nonIterableRestElement3
 conformance/nonPrimitiveAccessProperty
 conformance/nonPrimitiveAndEmptyObject
 conformance/nonPrimitiveAndTypeVariables
