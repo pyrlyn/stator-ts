@@ -986,9 +986,17 @@ fn contextualReturn(c: *Checker, fnode: *Node) ?*Type {
     }
     if (f.asterisk) return null;
     if (d.setterAnnotation(c, fnode)) |t| return t;
-    const sig = contextualSig(c, fnode) orelse return null;
+    const sig = contextualSig(c, fnode) orelse {
+        const t = iifeContext(c, fnode) orelse return null;
+        return if (fnode.mods.async) asyncReturnContext(c, t) else t;
+    };
     const t = d.returnOf(c, sig);
     return if (fnode.mods.async) asyncReturnContext(c, awaitableMembers(c, t)) else t;
+}
+
+/// tsc's `getContextualReturnType`: `(() => …)()` returns whatever its call is expected to give.
+fn iifeContext(c: *Checker, fnode: *Node) ?*Type {
+    return contextualType(c, binder.callOnTheSpot(fnode) orelse return null);
 }
 
 fn hasThen(c: *Checker, t: *Type) bool {
@@ -1045,7 +1053,7 @@ fn iteratorArg(c: *Checker, t: *Type, ch: Channel, is_async: bool) ?*Type {
 
 pub fn generatorContext(c: *Checker, fnode: *Node, ch: Channel) ?*Type {
     const f = fnode.data.func;
-    const t = if (f.ret) |r| d.typeFromNode(c, r) else d.returnOf(c, contextualSig(c, fnode) orelse return null);
+    const t = if (f.ret) |r| d.typeFromNode(c, r) else if (contextualSig(c, fnode)) |sig| d.returnOf(c, sig) else iifeContext(c, fnode) orelse return null;
     return iteratorArg(c, t, ch, fnode.mods.async);
 }
 
