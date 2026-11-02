@@ -850,6 +850,8 @@ pub const Binder = struct {
         for (d.members) |m| {
             m.parent = n;
             const md = m.data.enum_member;
+            // Invalid computed names can still contain functions visited by the checker.
+            b.bindComputed(md.name);
             if (b.propName(md.name)) |mn| {
                 if (s.exports == null) s.exports = b.table();
                 _ = b.declare(s.exports.?, s, m, mn, F.enum_member, F.enum_member_ex, md.name);

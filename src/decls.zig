@@ -219,7 +219,7 @@ pub fn generic(c: *Checker, name: []const u8, args: []const *Type) *Type {
 
 fn refTo(c: *Checker, g: *Type, args: []const *Type) *Type {
     if (g.data != .obj or g.data.obj.tparams().len != args.len) return c.t_err;
-    return c.internRef(g, c.dupe(*Type, args), null);
+    return c.internRef(g, args, null);
 }
 
 pub fn arrayOf(c: *Checker, e: *Type) *Type {
