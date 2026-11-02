@@ -2977,18 +2977,32 @@ fn eraseArgs(c: *Checker, t: *Type) *Type {
     return c.internRef(t, args, null);
 }
 
-fn classBaseValue(c: *Checker, s: *Symbol) ?*Type {
+fn classExtends(s: *Symbol) ?*Node {
     for (s.decls) |d| {
         if (d.data != .class) continue;
         for (d.data.class.heritage) |h| {
             if (h.data != .heritage_clause or h.data.heritage_clause.tok != .kw_extends) continue;
-            for (h.data.heritage_clause.types) |e| {
-                if (e.data != .expr_with_type_args) continue;
-                return expr.checkExpression(c, e.data.expr_with_type_args.expr);
-            }
+            for (h.data.heritage_clause.types) |e| if (e.data == .expr_with_type_args) return e;
         }
     }
     return null;
+}
+
+fn classBaseValue(c: *Checker, s: *Symbol) ?*Type {
+    const e = classExtends(s) orelse return null;
+    return expr.checkExpression(c, e.data.expr_with_type_args.expr);
+}
+
+/// The type arguments `extends B<...>` gives a generic base constructor: from the base instance
+/// when it is a plain reference, else straight from the clause, as tsc reads them.
+fn extendsTypeArgs(c: *Checker, s: *Symbol, base: *Type, count: usize) ?[]*Type {
+    if (base.data == .obj and base.data.obj.args != null and base.data.obj.args.?.len == count) return base.data.obj.args.?;
+    const e = classExtends(s) orelse return null;
+    const nodes = e.data.expr_with_type_args.type_args.items;
+    if (nodes.len != count) return null;
+    const args = c.a.alloc(*Type, count) catch oom();
+    for (nodes, args) |n, *a| a.* = typeFromNode(c, n);
+    return args;
 }
 
 fn classCtors(c: *Checker, s: *Symbol) []*Sig {
@@ -3027,9 +3041,8 @@ fn classCtors(c: *Checker, s: *Symbol) []*Sig {
                 q.tparams = o.localTparams();
                 if (b.tparams.len > 0 and basesOf(c, cls).len > 0) {
                     // Base type arguments are fixed by the extends clause; map them in.
-                    const base0 = basesOf(c, cls)[0];
-                    if (base0.data == .obj and base0.data.obj.args != null and base0.data.obj.args.?.len == b.tparams.len) {
-                        const inst = applySig(c, b, arrayMapper(c, b.tparams, base0.data.obj.args.?));
+                    if (extendsTypeArgs(c, s, basesOf(c, cls)[0], b.tparams.len)) |args| {
+                        const inst = applySig(c, b, arrayMapper(c, b.tparams, args));
                         const q2 = c.create(Sig, inst.*);
                         q2.ret = q.ret;
                         q2.tparams = o.localTparams();
@@ -3442,7 +3455,15 @@ fn sigsOf(c: *Checker, t0: *Type, ctor: bool) []*Sig {
         },
         .inter => |x| {
             var out = c.newList(*Sig);
-            for (x) |y| for (sigsOf(c, y, ctor)) |s| out.append(c.a, s) catch oom();
+            const mixins = if (ctor) mixinFlags(c, x) else null;
+            for (x, 0..) |y, i| {
+                const flags = mixins orelse {
+                    for (sigsOf(c, y, ctor)) |s| out.append(c.a, s) catch oom();
+                    continue;
+                };
+                if (flags[i]) continue;
+                for (sigsOf(c, y, ctor)) |s| out.append(c.a, withMixins(c, s, x, flags, i)) catch oom();
+            }
             return out.items;
         },
         .union_ => |x| {
@@ -3457,6 +3478,49 @@ fn sigsOf(c: *Checker, t0: *Type, ctor: bool) []*Sig {
         },
         else => return &.{},
     }
+}
+
+/// tsc's `findMixins`: in an intersection, a constructor taking only `...args: any[]` lends its
+/// instance to the other constructors instead of standing as one. If all are mixins, the first stays.
+fn mixinFlags(c: *Checker, x: []*Type) ?[]bool {
+    const flags = c.a.alloc(bool, x.len) catch oom();
+    var ctors: usize = 0;
+    var mixins: usize = 0;
+    for (x, flags) |y, *f| {
+        const sigs = sigsOf(c, y, true);
+        if (sigs.len > 0) ctors += 1;
+        f.* = isMixinCtor(c, sigs);
+        if (f.*) mixins += 1;
+    }
+    if (mixins == 0) return null;
+    if (ctors == mixins) flags[std.mem.indexOfScalar(bool, flags, true).?] = false;
+    return flags;
+}
+
+fn isMixinCtor(c: *Checker, sigs: []*Sig) bool {
+    if (sigs.len != 1) return false;
+    const s = sigs[0];
+    if (s.tparams.len != 0 or s.params.len != 1 or !s.has_rest) return false;
+    const t = paramTypeAt(c, s, 0);
+    if (t.data == .any) return true;
+    return c.isArrayType(t) and t.data.obj.args.?[0].data == .any;
+}
+
+/// tsc's `includeMixinType`: `s` builds the intersection of its own instance and every mixin's.
+fn withMixins(c: *Checker, s: *Sig, x: []*Type, flags: []bool, at: usize) *Sig {
+    var mixed = c.newList(*Type);
+    for (x, flags, 0..) |y, f, i| {
+        if (i == at) {
+            mixed.append(c.a, returnOf(c, s)) catch oom();
+        } else if (f) {
+            mixed.append(c.a, returnOf(c, sigsOf(c, y, true)[0])) catch oom();
+        }
+    }
+    const q = c.create(Sig, s.*);
+    q.ret = c.getIntersection(mixed.items);
+    q.erased = null;
+    q.shape = null;
+    return q;
 }
 
 /// tsc: `(A[] | B[])["member"]` reads as `(A | B)[]["member"]`, because the overloads of two
