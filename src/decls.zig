@@ -2252,6 +2252,7 @@ pub fn ownProp(c: *Checker, t: *Type, name: []const u8) ?*Prop {
         .declared => |x| declaredProp(c, x.owner, x.mapper, x.bases, name),
         .instance => |x| if (ownProp(c, x.root, name)) |q| instProp(c, q, x.mapper) else null,
     } orelse return null;
+    if (m.props.entries.capacity == 0) c.reserveProps(m, 2);
     m.props.put(c.a, p.name, p) catch oom();
     return p;
 }
@@ -3426,7 +3427,7 @@ pub fn baseConstraint(c: *Checker, t: *Type) *Type {
 }
 
 fn baseConstraintDepth(c: *Checker, t: *Type, depth: u32) *Type {
-    if (depth > 24) return c.t_err;
+    if (depth > 24) return c.metCycle();
     switch (t.data) {
         .param => {
             const k = constraintOf(c, t) orelse return c.t_unknown;
@@ -3991,4 +3992,22 @@ test "numeric property names normalize like tsc" {
     try std.testing.expectEqualStrings("16", numNameAlloc(a, 16));
     try std.testing.expectEqualStrings("1.5", numNameAlloc(a, 1.5));
     try std.testing.expectEqualStrings("-2", numNameAlloc(a, -2));
+}
+
+test "a constraint depth limit marks its answer provisional" {
+    const project = @import("project.zig");
+    const pool = @import("pool.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cfg = project.Config{ .root = "." };
+    var tp = pool.ThreadPool.init(1);
+    const p = project.loadProgram(a, std.testing.io, &tp, &cfg, &.{}, .{ .want_libs = false });
+    const c = Checker.new(a, p);
+    var ty = c.t_number;
+    for (0..25) |_| ty = c.mk(.{ .param = c.create(T.TParam, .{ .name = "T", .constraint = ty, .constraint_done = true }) });
+    const before = c.cycles;
+    try std.testing.expectEqual(c.t_err, baseConstraint(c, ty));
+    try std.testing.expectEqual(before + 1, c.cycles);
+    try std.testing.expectEqual(c.t_number, baseConstraint(c, ty.data.param.constraint.?));
 }
