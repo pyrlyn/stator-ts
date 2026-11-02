@@ -269,6 +269,24 @@ fn hasReturnValue(body: *Node) bool {
     return s.found;
 }
 
+/// tsc's `checkFunctionOrMethodDeclaration`: a signature without a body or a return type returns `any`.
+fn implicitAnyReturn(c: *Checker, n: *Node) void {
+    const f = n.data.func;
+    if (!c.no_implicit_any or f.ret != null or f.body != null or f.body_missing) return;
+    if (f.kind != .decl and f.kind != .method and f.kind != .method_sig) return;
+    // tsc checks object literal methods as function expressions, which do not get here.
+    if (f.kind == .method and n.parent != null and n.parent.?.data == .object_lit) return;
+    const file = d.fileOf(c, n) orelse return;
+    // Where parsing failed, tsc's recovery often keeps a body this parser does not.
+    if (project.isJs(file.path) or file.diags.len > 0) return;
+    const name = f.name orelse {
+        err(c, n, 7011, "Function expression, which lacks return-type annotation, implicitly has an 'any' return type.");
+        return;
+    };
+    if ((n.mods.private or name.data == .private_name) and isAmbient(c, n)) return;
+    err(c, name, 7010, c.fmt("'{s}', which lacks return-type annotation, implicitly has an 'any' return type.", .{file.src[name.start..name.end]}));
+}
+
 fn checkFuncBody(c: *Checker, n: *Node) void {
     const f = n.data.func;
     // First, since a parameter's default can name what the block declares.
@@ -1210,6 +1228,7 @@ fn walkTypes(c: *Checker, n: *Node) void {
         // Also covers signature-only declarations, which have no body to check.
         const f = n.data.func;
         if (f.body == null) for (f.params) |p| implicitAny(c, p, n);
+        implicitAnyReturn(c, n);
         if (f.kind == .method_sig) overloads.check(c, n);
     }
     modifiers.check(c, n);
