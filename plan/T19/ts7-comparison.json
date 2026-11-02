@@ -1,0 +1,31 @@
+{
+  "tests": 13737,
+  "baseline_counts": {
+    "fail": 5503,
+    "pass": 8233,
+    "crash": 1
+  },
+  "candidate_counts": {
+    "fail": 5488,
+    "pass": 8249
+  },
+  "lost": [],
+  "gained": [
+    "compiler/commentsOnObjectLiteral2",
+    "compiler/computedEnumMemberKeyNoCrash1",
+    "compiler/deprecatedReferenceInEnumComputedNameNoFlake",
+    "compiler/emitThisInObjectLiteralGetter(target=es2015)",
+    "compiler/importedValueInEnumComputedNameNoFlake",
+    "compiler/incompatibleAssignmentInEnumComputedNameNoFlake",
+    "compiler/localReferenceInEnumComputedNameNoFlake",
+    "compiler/missingIdentifierInEnumComputedNameNoFlake",
+    "compiler/missingModuleInEnumComputedNameNoFlake",
+    "compiler/misspelledIdentifierInEnumComputedNameNoFlake",
+    "compiler/stringIncrementInEnumComputedNameNoFlake",
+    "conformance/fixSignatureCaching",
+    "conformance/parserES5ComputedPropertyName6(target=es2015)",
+    "conformance/parserComputedPropertyName16",
+    "conformance/parserComputedPropertyName26",
+    "conformance/parserComputedPropertyName34"
+  ]
+}
