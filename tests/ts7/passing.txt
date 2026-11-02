@@ -4091,6 +4091,8 @@ compiler/propTypeValidatorInference
 compiler/propagateNonInferrableType
 compiler/propagationOfPromiseInitialization
 compiler/properties(target=es2015)
+compiler/propertiesAndIndexers
+compiler/propertiesAndIndexersForNumericNames
 compiler/propertyAccess1
 compiler/propertyAccess2
 compiler/propertyAccess3
@@ -5766,6 +5768,8 @@ conformance/bestCommonTypeOfTuple2
 conformance/bigintMissingES2019
 conformance/bigintMissingES2020
 conformance/bigintMissingESNext
+conformance/binaryIntegerLiteral(target=es2015)
+conformance/binaryIntegerLiteralES6
 conformance/binderUninitializedModuleExportsAssignment
 conformance/bitwiseNotOperatorInvalidOperations
 conformance/bitwiseNotOperatorWithBooleanType
@@ -7775,6 +7779,8 @@ conformance/objectTypesIdentityWithPrivates3
 conformance/objectTypesIdentityWithPublics
 conformance/objectTypesIdentityWithStringIndexers
 conformance/objectTypesIdentityWithStringIndexers2
+conformance/octalIntegerLiteral(target=es2015)
+conformance/octalIntegerLiteralES6
 conformance/optionalBindingParameters1
 conformance/optionalBindingParameters2
 conformance/optionalBindingParametersInOverloads1
