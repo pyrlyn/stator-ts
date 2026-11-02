@@ -480,6 +480,11 @@ fn grammarErr(c: *Checker, n: *Node, code: u32, msg: []const u8) void {
     if (f.diags.len == 0) err(c, n, code, msg);
 }
 
+fn grammarErrSpan(c: *Checker, n: *Node, start: u32, end: u32, code: u32, msg: []const u8) void {
+    const f = d.fileOf(c, n) orelse return;
+    if (f.diags.len == 0) d.reportSpan(c, n, start, end, code, msg);
+}
+
 /// Reports `n` when it sits outside a file or a module. What it would have checked stays unchecked.
 fn misplaced(c: *Checker, n: *Node, code: u32, msg: []const u8) bool {
     const p = n.parent orelse return false;
@@ -757,7 +762,12 @@ fn checkStmt(c: *Checker, n: *Node) void {
             checkStmt(c, x.body);
         },
         .return_stmt => checkReturn(c, n),
-        .with_stmt => |x| _ = expr.checkExpression(c, x.expr),
+        .with_stmt => |x| {
+            _ = expr.checkExpression(c, x.expr);
+            const f = d.fileOf(c, n).?;
+            const close = std.mem.lastIndexOfScalar(u8, f.src[n.start..x.body.start], ')') orelse x.body.start - n.start - 1;
+            grammarErrSpan(c, n, n.start, n.start + @as(u32, @intCast(close)) + 1, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
+        },
         .switch_stmt => |x| {
             const t = expr.checkExpression(c, x.expr);
             for (x.clauses) |cl| {
@@ -1225,7 +1235,21 @@ fn walkTypes(c: *Checker, n: *Node) void {
     if (n.data == .param) checkParameter(c, n);
     if (n.data == .index_sig) checkIndexSignatureGrammar(c, n);
     if (n.data == .property_decl or n.data == .property_sig) implicitAnyMember(c, n);
+    if (n.data == .with_stmt) {
+        // tsc checks only the object of a `with`; its binder still walks the body.
+        walkTypes(c, n.data.with_stmt.expr);
+        return walkStrictMode(c, n.data.with_stmt.body);
+    }
     ast.forEachChild(n, c, walkTypes);
+}
+
+fn walkStrictMode(c: *Checker, n: *Node) void {
+    if (n.data == .lazy_body) {
+        if (d.bodyOf(c, n.parent.?)) |b| walkStrictMode(c, b.block);
+        return;
+    }
+    checkStrictMode(c, n);
+    ast.forEachChild(n, c, walkStrictMode);
 }
 
 /// tsc's `checkGrammarIndexSignatureParameters`: the first problem only.
