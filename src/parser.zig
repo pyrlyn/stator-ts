@@ -1022,6 +1022,7 @@ const Parser = struct {
                 return;
             }
             p.errHere(1144, "'{' or ';' expected.");
+            f.body_missing = true;
             return;
         }
         const save_a = p.in_async;

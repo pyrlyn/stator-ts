@@ -62,6 +62,8 @@ pub const Func = struct {
     ret_span: Span = .{},
     ret: ?*Node = null,
     body: ?*Node = null,
+    /// The body's `{` is missing; tsc still gives such a function an (empty) body.
+    body_missing: bool = false,
     /// Null when control cannot fall off the end; set by the binder.
     end_flow: ?*binder.FlowNode = null,
 };

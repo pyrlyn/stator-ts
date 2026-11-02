@@ -523,6 +523,9 @@ pub const Checker = struct {
     resolving_calls: IdMap(*Node, void) = .empty,
     regular_objs: IdMap(*Type, *Type) = .empty,
     declaring_enums: std.AutoHashMapUnmanaged(*binder.Symbol, void) = .empty,
+    /// Symbols and per-block declaration lists whose overloads were checked (tsc's
+    /// `constructorOrFunctionChecked`).
+    overloads_checked: std.AutoHashMapUnmanaged(*const anyopaque, void) = .empty,
     logical_left: IdMap(*Node, *Type) = .empty,
     current_node: ?*Node = null,
     current_is_type: bool = false,

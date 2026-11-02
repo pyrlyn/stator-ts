@@ -1037,6 +1037,22 @@ fn sigRel(c: *Checker, s0: *Sig, t: *Sig, rel: Relation, mode: SigMode) bool {
     if (s0 == t) return true;
     var s = s0;
     if (s.tparams.len > 0 and s.tparams.ptr != t.tparams.ptr) s = sigInContext(c, s, t);
+    if (!paramsRel(c, s, t, rel, mode)) return false;
+    return returnsRel(c, s, t, rel, mode);
+}
+
+/// tsc's `isImplementationCompatibleWithOverload`: the return types relate either way, then the
+/// parameters do, all with type parameters erased.
+pub fn implementationFits(c: *Checker, impl: *Sig, overload: *Sig) bool {
+    const s = erased(c, impl);
+    const t = erased(c, overload);
+    const sr = if (s.ret_resolving) c.t_any else d.returnOf(c, s);
+    const tr = if (t.ret_resolving) c.t_any else d.returnOf(c, t);
+    if (tr.data != .void and !isAssignable(c, tr, sr) and !isAssignable(c, sr, tr)) return false;
+    return paramsRel(c, s, t, .assignable, .normal);
+}
+
+fn paramsRel(c: *Checker, s: *Sig, t: *Sig, rel: Relation, mode: SigMode) bool {
     const sa = arityOf(c, s);
     const ta = arityOf(c, t);
     if (sa.min > (ta.max orelse std.math.maxInt(u32))) return false;
@@ -1058,6 +1074,10 @@ fn sigRel(c: *Checker, s0: *Sig, t: *Sig, rel: Relation, mode: SigMode) bool {
         if (mode == .normal and !strict and related(c, x, y, rel)) continue;
         return false;
     }
+    return true;
+}
+
+fn returnsRel(c: *Checker, s: *Sig, t: *Sig, rel: Relation, mode: SigMode) bool {
     const tr = if (t.ret_resolving) c.t_any else d.returnOf(c, t);
     if (tr.data == .void or T.isAny(tr)) return true;
     const sr = if (s.ret_resolving) c.t_any else d.returnOf(c, s);

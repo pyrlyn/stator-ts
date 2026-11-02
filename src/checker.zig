@@ -12,6 +12,7 @@ const expr = @import("expr.zig");
 const relate = @import("relate.zig");
 const flow = @import("flow.zig");
 const unused = @import("unused.zig");
+const overloads = @import("overloads.zig");
 const Node = ast.Node;
 const Symbol = binder.Symbol;
 const F = binder.F;
@@ -767,6 +768,7 @@ fn checkStmt(c: *Checker, n: *Node) void {
         },
         .func => {
             checkStatementMods(c, n);
+            overloads.check(c, n);
             checkFuncBody(c, n);
         },
         .class => {
@@ -1125,7 +1127,10 @@ fn checkMembers(c: *Checker, cls: *Node, members: []*Node) void {
     _ = cls;
     for (members) |m| {
         switch (m.data) {
-            .func => checkFuncBody(c, m),
+            .func => {
+                overloads.check(c, m);
+                checkFuncBody(c, m);
+            },
             .property_decl => |p| {
                 for (p.decorators) |dn| _ = expr.checkExpression(c, dn.data.decorator.expr);
                 if (p.name.data == .computed_name) _ = expr.checkExpression(c, p.name.data.computed_name.expr);
@@ -1194,6 +1199,7 @@ fn walkTypes(c: *Checker, n: *Node) void {
         // Also covers signature-only declarations, which have no body to check.
         const f = n.data.func;
         if (f.body == null) for (f.params) |p| implicitAny(c, p, n);
+        if (f.kind == .method_sig) overloads.check(c, n);
     }
     ast.forEachChild(n, c, walkTypes);
 }
