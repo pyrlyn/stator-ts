@@ -3443,8 +3443,16 @@ fn elemType(c: *Checker, n: *Node, left: *Type, idx: *Type, index_node: *Node) *
 }
 
 fn reportImplicitIndex(c: *Checker, n: *Node, index_node: *Node, idx: *Type, left: *Type, ap: *Type) void {
-    if (d.indexValue(c, ap, c.t_number) != null) {
+    const name = d.literalName(c, idx);
+    const file = d.fileOf(c, n);
+    if (name != null and file != null and hasStaticProp(c, left, name.?)) {
+        const shown = show(c, left);
+        const arg = file.?.src[index_node.start..index_node.end];
+        err(c, n, 2576, c.fmt("Property '{s}' does not exist on type '{s}'. Did you mean to access the static member '{s}[{s}]' instead?", .{ name.?, shown, shown, arg }));
+    } else if (d.indexValue(c, ap, c.t_number) != null) {
         err(c, index_node, 7015, "Element implicitly has an 'any' type because index expression is not of type 'number'.");
+    } else if (if (name) |nm| similarProp(c, nm, ap) else null) |close| {
+        err(c, index_node, 2551, c.fmt("Property '{s}' does not exist on type '{s}'. Did you mean '{s}'?", .{ name.?, show(c, left), close }));
     } else {
         err(c, n, 7053, c.fmt("Element implicitly has an 'any' type because expression of type '{s}' can't be used to index type '{s}'.", .{ show(c, idx), show(c, left) }));
     }
