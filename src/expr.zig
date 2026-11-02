@@ -3265,6 +3265,26 @@ fn canBeUndefined(t: *Type) bool {
     return false;
 }
 
+/// tsc's `checkThisBeforeSuper`, for `this` or `super` directly in a derived class's constructor:
+/// an arrow function may run later, so one in between ends the check.
+fn checkBeforeSuper(c: *Checker, n: *Node, code: u32, msg: []const u8) void {
+    const ctor = blk: {
+        var cur = n.parent;
+        while (cur) |x| : (cur = x.parent) switch (x.data) {
+            .func => |f| break :blk if (f.kind == .ctor) x else return,
+            .property_decl, .class, .computed_name, .static_block, .decorator => return,
+            else => {},
+        };
+        return;
+    };
+    const cls = ctor.parent orelse return;
+    if (cls.data != .class) return;
+    const base = d.extendsClause(cls) orelse return;
+    if (binder.stripParens(base.data.expr_with_type_args.expr).data == .null_lit) return;
+    const f = n.flow() orelse return;
+    if (!flow.isPostSuper(c, f)) err(c, n, code, msg);
+}
+
 /// In static code `super` is the base class's constructor, elsewhere an instance of it.
 fn superType(c: *Checker, n: *Node) *Type {
     const info = superBase(c, n) orelse return c.t_err;
@@ -3275,6 +3295,7 @@ fn superType(c: *Checker, n: *Node) *Type {
 
 fn checkSuperProp(c: *Checker, n: *Node, name: []const u8) *Type {
     const x = n.data.prop_access;
+    checkBeforeSuper(c, x.expr, 17011, "'super' must be called before accessing a property of 'super' in the constructor of a derived class.");
     const base = superType(c, n);
     if (base == c.t_err) return base;
     if (T.isAny(base)) return base;
@@ -6208,6 +6229,7 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         .null_lit => c.t_null,
         .this_expr => blk: {
             checkThisPlace(c, n);
+            checkBeforeSuper(c, n, 17009, "'super' must be called before accessing 'this' in the constructor of a derived class.");
             const t = checkThisAt(c, n);
             if (n.flow() == null or T.isAny(t)) break :blk t;
             break :blk flow.flowType(c, n, t, t, containingFunc(n));

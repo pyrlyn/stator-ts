@@ -512,6 +512,7 @@ pub const Checker = struct {
     flow_operands: IdMap(*Node, Provisional) = .empty,
     flow_depth: u32 = 0,
     reach_cache: IdMap(*binder.FlowNode, bool) = .empty,
+    post_super: IdMap(*binder.FlowNode, bool) = .empty,
 
     diags: std.ArrayList(Diag) = .empty,
     seen_diags: std.StringHashMapUnmanaged(void) = .empty,

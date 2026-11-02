@@ -2978,12 +2978,14 @@ fn eraseArgs(c: *Checker, t: *Type) *Type {
 }
 
 fn classExtends(s: *Symbol) ?*Node {
-    for (s.decls) |d| {
-        if (d.data != .class) continue;
-        for (d.data.class.heritage) |h| {
-            if (h.data != .heritage_clause or h.data.heritage_clause.tok != .kw_extends) continue;
-            for (h.data.heritage_clause.types) |e| if (e.data == .expr_with_type_args) return e;
-        }
+    for (s.decls) |d| if (d.data == .class) if (extendsClause(d)) |e| return e;
+    return null;
+}
+
+pub fn extendsClause(cls: *Node) ?*Node {
+    for (cls.data.class.heritage) |h| {
+        if (h.data != .heritage_clause or h.data.heritage_clause.tok != .kw_extends) continue;
+        for (h.data.heritage_clause.types) |e| if (e.data == .expr_with_type_args) return e;
     }
     return null;
 }

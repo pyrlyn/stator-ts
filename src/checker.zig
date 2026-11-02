@@ -1792,6 +1792,7 @@ fn forgetBodies(c: *Checker) void {
     c.effects.clearRetainingCapacity();
     c.flow_cache.clearRetainingCapacity();
     c.reach_cache.clearRetainingCapacity();
+    c.post_super.clearRetainingCapacity();
     c.ref_answers.clearRetainingCapacity();
     c.const_keys.clearRetainingCapacity();
     c.constant_refs.clearRetainingCapacity();

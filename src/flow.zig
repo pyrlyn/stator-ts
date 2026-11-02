@@ -1494,6 +1494,33 @@ fn isFalseExpr(n0: *Node) bool {
     };
 }
 
+/// tsc's `isPostSuperFlowNode`: every path to here has called `super()`. Unreachable code counts
+/// as past it, which keeps it quiet; a loop is judged by the path into it.
+pub fn isPostSuper(c: *Checker, f0: *FlowNode) bool {
+    var f = f0;
+    while (true) {
+        switch (f.kind) {
+            .start => return false,
+            .unreachable_end => return true,
+            .assign, .true_cond, .false_cond, .switch_clause => f = f.antecedent orelse return false,
+            .call => {
+                if (f.node) |n| if (n.data == .call and n.data.call.callee.data == .super_expr) return true;
+                f = f.antecedent orelse return false;
+            },
+            .loop => f = if (f.antecedents.len > 0) f.antecedents[0] else return false,
+            // Past a `finally` only its own exits count, as in `isReachable`.
+            .reduce, .branch => {
+                if (c.post_super.get(f)) |v| return v;
+                const r = for (f.antecedents) |a| {
+                    if (!isPostSuper(c, a)) break false;
+                } else true;
+                c.post_super.put(c.a, f, r) catch oom();
+                return r;
+            },
+        }
+    }
+}
+
 pub fn isReachable(c: *Checker, f0: ?*FlowNode) bool {
     var f = f0 orelse return true;
     var steps: u32 = 0;

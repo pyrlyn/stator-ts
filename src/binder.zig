@@ -1414,7 +1414,10 @@ pub const Binder = struct {
                 if (inlined) b.bind(d.callee);
                 n.setFlow(b.a, b.flow);
                 b.leaveChain(n, saved);
-                if (n.parent) |p| if (p.data == .expr_stmt and isDotted(d.callee)) {
+                // `this` is usable only past `super()`, wherever in an expression the call sits.
+                if (d.callee.data == .super_expr) {
+                    b.flowEffect(.call, n);
+                } else if (n.parent) |p| if (p.data == .expr_stmt and isDotted(d.callee)) {
                     b.flowEffect(.call, n);
                 };
             },
