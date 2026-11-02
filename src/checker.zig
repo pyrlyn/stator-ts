@@ -213,13 +213,14 @@ fn checkParams(c: *Checker, n: *Node) void {
         for (x.decorators) |dn| _ = expr.checkExpression(c, dn.data.decorator.expr);
         // Signatures without a body are reported by walkTypes, which also reaches the ones in types.
         if (f.body != null) implicitAny(c, p, n);
-        if (x.init) |i| {
+        // Without a body the initializer is only TS2371, from checkParameter; tsc checks nothing inside it.
+        if (x.init) |i| if (f.body != null) {
             const t = expr.checkExpression(c, i);
             if (x.type) |ann| {
                 const want = d.typeFromNode(c, ann);
                 expr.checkAssignable(c, t, want, i, x.name);
             }
-        }
+        };
         if (x.name.data != .identifier) {
             // Only the side effects matter: the pattern's type is resolved and cached before its bindings are checked.
             _ = d.typeOfParam(c, p);
@@ -1640,12 +1641,15 @@ fn checkParameter(c: *Checker, p: *Node) void {
     const x = p.data.param;
     const m = p.mods;
     const property = m.public or m.private or m.protected or m.readonly or m.override;
+    const init_msg = "A parameter initializer is only allowed in a function or constructor implementation.";
     if (fnode.data == .index_sig) {
         if (property) err(c, p, 2369, "A parameter property is only allowed in a constructor implementation.");
+        if (x.init != null) err(c, p, 2371, init_msg);
         return;
     }
     if (fnode.data != .func) return;
     const f = fnode.data.func;
+    if (x.init != null and f.body == null) err(c, p, 2371, init_msg);
     const name: []const u8 = if (x.name.data == .identifier) x.name.data.identifier else "";
     if (property) {
         if (f.kind != .ctor or f.body == null) err(c, p, 2369, "A parameter property is only allowed in a constructor implementation.");
