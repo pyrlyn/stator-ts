@@ -31,6 +31,7 @@ pub const Options = struct {
     noImplicitReturns: ?bool = null,
     noFallthroughCasesInSwitch: ?bool = null,
     noUncheckedIndexedAccess: ?bool = null,
+    noUncheckedSideEffectImports: ?bool = null,
     exactOptionalPropertyTypes: ?bool = null,
     noPropertyAccessFromIndexSignature: ?bool = null,
     noImplicitOverride: ?bool = null,

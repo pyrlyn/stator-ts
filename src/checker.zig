@@ -541,15 +541,20 @@ pub fn checkModuleRef(c: *Checker, n: *Node, spec: *Node) void {
     const sf = c.prog.sourceOf(f) orelse return;
     const name = spec.data.string_lit;
     if (c.prog.resolveModuleName(sf, name) != null) return;
-    if (isSideEffectImport(n)) return;
+    const side_effect = isSideEffectImport(n);
+    if (side_effect and !(c.prog.cfg.options.noUncheckedSideEffectImports orelse true)) return;
+    // A script runs when imported, though it exports nothing.
+    if (side_effect and sf.resolvedFile(name) != null) return;
     // Whichever pass asks first is the only one: a type is read once, and silently or not.
     const silent = c.silent;
     c.silent = 0;
     defer c.silent = silent;
     if (sf.untypedPath(name)) |path| {
-        if (c.no_implicit_any) err(c, spec, 7016, c.fmt("Could not find a declaration file for module '{s}'. '{s}' implicitly has an 'any' type.", .{ name, path }));
+        // JavaScript is something to run, which is all a side-effect import asks for.
+        if (c.no_implicit_any and !side_effect) err(c, spec, 7016, c.fmt("Could not find a declaration file for module '{s}'. '{s}' implicitly has an 'any' type.", .{ name, path }));
         return;
     }
+    if (side_effect) return err(c, spec, 2882, c.fmt("Cannot find module or type declarations for side-effect import of '{s}'.", .{name}));
     if (isNodeCoreModule(name)) return expr.reportNodeTypes(c, spec, name);
     err(c, spec, 2307, c.fmt("Cannot find module '{s}' or its corresponding type declarations.", .{name}));
 }
