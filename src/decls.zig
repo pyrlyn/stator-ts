@@ -3214,8 +3214,7 @@ pub fn numName(c: *Checker, v: f64) []const u8 {
 /// The one spelling of a numeric property name, shared with the binder so that declarations and
 /// lookups agree on it.
 pub fn numNameAlloc(a: Allocator, v: f64) []const u8 {
-    if (@floor(v) == v and @abs(v) < 1e15) return std.fmt.allocPrint(a, "{d}", .{@as(i64, @intFromFloat(v))}) catch oom();
-    return std.fmt.allocPrint(a, "{d}", .{v}) catch oom();
+    return emit.numberText(a, v);
 }
 
 /// `{ '1': x }` has a string key and `{ 1: x }` a numeric one; the name alone cannot tell.
