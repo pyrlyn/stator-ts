@@ -1,6 +1,8 @@
+//! How work is cut into chunks and runs for the workers.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+/// A half-open index range `[start, end)`.
 pub const Range = struct { start: usize, end: usize };
 
 /// Small enough that a run of slow items still balances, large enough that workers on small

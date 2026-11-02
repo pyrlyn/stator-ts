@@ -1,3 +1,6 @@
+//! Command-line entry point: parses the arguments, loads the project's tsconfig and dispatches
+//! to `check`, `build`, `scan` or `test`. Exit codes: 0 on success, 1 on a usage or load error,
+//! 2 when diagnostics were reported.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -140,6 +143,7 @@ fn cmdScan(a: Allocator, io: Io, tp: *pool.ThreadPool, cfg: *const project.Confi
     return if (s.nodes_err.load(.monotonic) > 0 or s.unreadable.load(.monotonic) > 0) 2 else 0;
 }
 
+/// Runs one command and returns the process exit code.
 pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
     const a = init.arena.allocator();

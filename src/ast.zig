@@ -1,8 +1,10 @@
+//! The syntax tree: node kinds and their payloads, modifiers, and the per-file `File` record.
 const std = @import("std");
 const lexer = @import("lexer.zig");
 const binder = @import("binder.zig");
 pub const Tok = lexer.Tok;
 
+/// Declaration modifiers, packed into the spare bytes of a `Node`.
 pub const Mods = packed struct(u16) {
     @"export": bool = false,
     default: bool = false,
@@ -22,6 +24,7 @@ pub const Mods = packed struct(u16) {
     _pad: u1 = 0,
 };
 
+/// A byte range in the source.
 pub const Span = struct { start: u32 = 0, end: u32 = 0 };
 
 /// Type parameters or arguments, with the span of the angle brackets so the emitter can erase them.
@@ -427,6 +430,7 @@ pub fn isBlockBody(n: *const Node) bool {
     return n.data == .block or n.data == .lazy_body;
 }
 
+/// One parsed source file: its text, root node, diagnostics and what the binder and emitter need.
 pub const File = struct {
     path: []const u8,
     src: []const u8,

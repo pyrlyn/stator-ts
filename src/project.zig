@@ -1,3 +1,5 @@
+//! Projects: tsconfig loading (with `extends`), file discovery, module resolution, lib lookup,
+//! and the `Program` that parses and binds every reachable file in parallel.
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
@@ -92,6 +94,7 @@ pub const Options = struct {
 
 pub const PathMapping = struct { pattern: []const u8, targets: []const []const u8 };
 
+/// A loaded tsconfig: compiler options plus `files`, `include`, `exclude` and `paths`.
 pub const Config = struct {
     /// Directory of the tsconfig, or the scanned directory.
     root: []const u8,
@@ -124,6 +127,7 @@ fn isDir(io: Io, path: []const u8) bool {
     return st.kind == .directory;
 }
 
+/// Reads a whole file into memory.
 pub fn readFile(a: Allocator, io: Io, path: []const u8) ![]u8 {
     const f = try Io.Dir.cwd().openFile(io, path, .{});
     defer f.close(io);
@@ -285,6 +289,7 @@ fn absList(a: Allocator, base: []const u8, list: []const []const u8) []const []c
     return out;
 }
 
+/// Loads the tsconfig at `path`, following `extends`.
 pub fn loadConfig(c: Ctx, path: []const u8) !Config {
     var cfg = Config{ .root = fspath.dirname(path) orelse ".", .path = path };
     try loadInto(c, &cfg, path, 0);
@@ -333,6 +338,7 @@ fn walkRoot(pat: []const u8) []const u8 {
     return if (slash == 0) "/" else pat[0..slash];
 }
 
+/// True for `.ts`, `.tsx`, `.mts` and `.cts` names, declaration files included.
 pub fn isSourceFile(name: []const u8) bool {
     for ([_][]const u8{ ".ts", ".tsx", ".mts", ".cts" }) |e| if (std.mem.endsWith(u8, name, e)) return true;
     return false;
@@ -462,6 +468,8 @@ test "project discovery prunes excluded subtrees and terminates directory cycles
     try std.testing.expectEqualStrings(files[0], cyclic[0]);
 }
 
+/// The root files of a project: `files` plus whatever `include` matches minus `exclude`. With
+/// no `exclude`, `outDir` is excluded.
 pub fn projectFiles(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, cfg: *const Config) []const []const u8 {
     const io = fs.io;
     var out: std.ArrayList([]const u8) = .empty;
@@ -881,6 +889,7 @@ const Resolver = struct {
     }
 };
 
+/// A file in the program, with its resolved imports.
 pub const SourceFile = struct {
     file: *ast.File,
     /// Parallel to `file.module_specs`.
@@ -973,6 +982,7 @@ fn loadOne(l: *const Loading, worker: usize, i: usize) void {
     sf.extra = extra.items;
 }
 
+/// All files reachable from the roots, the default libs and the global symbol table.
 pub const Program = struct {
     a: Allocator,
     io: Io,
@@ -1391,6 +1401,7 @@ pub const Program = struct {
     }
 };
 
+/// How `loadProgram` finds libs and whether it leaves function bodies unparsed.
 pub const LoadOptions = struct { fs: ?*FsCache = null, lib_dir_flag: ?[]const u8 = null, lib_dir_env: ?[]const u8 = null, want_libs: bool = true, lazy_bodies: bool = false };
 
 fn findLibDir(a: Allocator, io: Io, root: []const u8, o: LoadOptions) ?[]const u8 {
@@ -1433,6 +1444,9 @@ fn defaultLib(target: []const u8) []const u8 {
     return "esnext.full";
 }
 
+/// Parses, resolves and binds every file reachable from `roots`. The lib directory comes from
+/// `--lib-dir`, then `STATOR_TS_LIB`, then the nearest `node_modules/typescript/lib` (or
+/// TypeScript 7's per-platform package) at or above the project root.
 pub fn loadProgram(a: Allocator, io: Io, tp: *pool.ThreadPool, cfg: *const Config, roots: []const []const u8, o: LoadOptions) *Program {
     const p = a.create(Program) catch oom();
     const g = a.create(SymbolTable) catch oom();

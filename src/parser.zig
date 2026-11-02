@@ -1,3 +1,4 @@
+//! Recursive-descent parser for TypeScript, TSX and declaration files, producing an `ast.File`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
@@ -28,6 +29,7 @@ fn oom() noreturn {
     @panic("out of memory");
 }
 
+/// Parses the whole of `src` eagerly. Syntax errors land in the file's `diags`.
 pub fn parse(a: Allocator, path: []const u8, src: []const u8) *ast.File {
     return parseFile(a, path, src, false).?;
 }

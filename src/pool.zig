@@ -1,3 +1,4 @@
+//! Parallel loops over a `ThreadPool`, each pass spawning and joining its own workers.
 const std = @import("std");
 const sm = @import("coroutines").state_machine;
 pub const threads = @import("pool/threads.zig");

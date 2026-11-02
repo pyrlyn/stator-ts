@@ -1,6 +1,8 @@
+//! Tokenizer for TypeScript and JSX source.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+/// Token kinds; keyword tags start with `kw_`.
 pub const Tok = enum(u8) {
     eof,
     unknown,
@@ -195,6 +197,7 @@ const keywords = std.StaticStringMap(Tok).initComptime(blk: {
     break :blk pairs[0..n].*;
 });
 
+/// The source spelling of a token kind, for messages.
 pub fn tokenText(t: Tok) []const u8 {
     return switch (t) {
         .l_brace => "{",
@@ -221,6 +224,7 @@ pub fn tokenText(t: Tok) []const u8 {
     };
 }
 
+/// A syntax diagnostic: byte offset, length, TS error code and message.
 pub const Diag = struct {
     start: u32,
     len: u32,
@@ -281,6 +285,7 @@ fn isDigit(c: u8) bool {
     return c >= '0' and c <= '9';
 }
 
+/// Scans `src` one token at a time from `pos`, recording errors in `diags`.
 pub const Lexer = struct {
     src: []const u8,
     a: Allocator,
