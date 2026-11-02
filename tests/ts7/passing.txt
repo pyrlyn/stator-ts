@@ -548,6 +548,7 @@ compiler/classSideInheritance2
 compiler/classSideInheritance3
 compiler/classStaticInitializersUsePropertiesBeforeDeclaration
 compiler/classStaticPropertyTypeGuard(target=es2015)
+compiler/classUsedBeforeInitializedVariables(target=es2015)
 compiler/classVarianceCircularity
 compiler/classVarianceResolveCircularity1
 compiler/classdecl(target=es2015)
@@ -2467,6 +2468,7 @@ compiler/implicitAnyFunctionReturnNullOrUndefined
 compiler/implicitAnyGenericTypeInference
 compiler/implicitAnyGenerics
 compiler/implicitAnyInCatch
+compiler/implicitAnyNewExprLackConstructorSignature
 compiler/implicitAnyWidenToAny
 compiler/implicitConstParameters
 compiler/implicitEmptyObjectType
@@ -2592,6 +2594,7 @@ compiler/indirectSelfReference
 compiler/indirectSelfReferenceGeneric
 compiler/indirectTypeParameterReferences
 compiler/indirectUniqueSymbolDeclarationEmit
+compiler/inexistentPropertyInsideToStringType
 compiler/inferConditionalConstraintMappedMember
 compiler/inferFromAnnotatedReturn1
 compiler/inferFromGenericFunctionReturnTypes1
@@ -2875,6 +2878,7 @@ compiler/jsDeclarationEmitFunction
 compiler/jsDeclarationEmitPrivateStaticMethod
 compiler/jsDeclarationExportDefaultAssignmentCrash
 compiler/jsDeclarationsExpandoInternal
+compiler/jsDeclarationsGlobalFileConstFunction
 compiler/jsDeclarationsWithDefaultAsNamespaceLikeMerge
 compiler/jsDocCallbackExport1
 compiler/jsDocCallbackExport2
@@ -2929,6 +2933,7 @@ compiler/jsFileMethodOverloads
 compiler/jsFileMethodOverloads2
 compiler/jsFileMethodOverloads4
 compiler/jsFileMethodOverloads5
+compiler/jsFunctionWithPrototypeNoErrorTruncationNoCrash
 compiler/jsNegativeElementAccessNotBound
 compiler/jsPropertyAssignedAfterMethodDeclaration
 compiler/jsPropertyAssignedAfterMethodDeclaration_nonError
@@ -3022,6 +3027,7 @@ compiler/lambdaArgCrash
 compiler/lambdaExpression
 compiler/lambdaParamTypes
 compiler/lambdaParameterWithTupleArgsHasCorrectAssignability
+compiler/lambdaPropSelf
 compiler/largeDiscriminantUnionArrayPredicate
 compiler/largeStringLiteralUnionSuggestion
 compiler/largeTupleTypes
@@ -3522,9 +3528,11 @@ compiler/noImplicitReturnsInAsync1
 compiler/noImplicitReturnsWithProtectedBlocks1
 compiler/noImplicitReturnsWithProtectedBlocks2
 compiler/noImplicitReturnsWithProtectedBlocks3
+compiler/noImplicitThisFunctions
 compiler/noInferUnionExcessPropertyCheck1
 compiler/noIterationTypeErrorsInCFA
 compiler/noObjectKeysToKeyofT
+compiler/noParameterReassignmentIIFEAnnotated
 compiler/noParameterReassignmentJSIIFE
 compiler/noReachabilityErrorsOnEmptyStatement
 compiler/noSelfOnVars
@@ -4455,6 +4463,7 @@ compiler/ternaryExpressionSourceMap
 compiler/testContainerList
 compiler/testTypings
 compiler/thisBinding
+compiler/thisBinding2
 compiler/thisCapture1
 compiler/thisConditionalOnMethodReturnOfGenericInstance
 compiler/thisExpressionInCallExpressionWithTypeArguments
@@ -4462,19 +4471,28 @@ compiler/thisExpressionInIndexExpression
 compiler/thisExpressionOfGenericObject
 compiler/thisInAccessors
 compiler/thisInArrowFunctionInStaticInitializer1
+compiler/thisInClassBodyStaticESNext
 compiler/thisInConstructorParameter1
 compiler/thisInConstructorParameter2
+compiler/thisInFunctionCall
 compiler/thisInGenericStaticMembers
+compiler/thisInInnerFunctions
 compiler/thisInLambda
+compiler/thisInModule
+compiler/thisInModuleFunction1
 compiler/thisInObjectJs
+compiler/thisInPropertyBoundDeclarations
 compiler/thisInStaticMethod1
 compiler/thisInStatics
 compiler/thisInTupleTypeParameterConstraints
 compiler/thisInTypeQuery
 compiler/thisIndexOnExistingReadonlyFieldIsNotNever
+compiler/thisKeyword
 compiler/thisReferencedInFunctionInsideArrowFunction1
+compiler/thisShadowingErrorSpans
 compiler/thisTypeAsConstraint
 compiler/thisWhenTypeCheckFails
+compiler/this_inside-enum-should-not-be-allowed
 compiler/this_inside-object-literal-getters-and-setters
 compiler/throwWithoutNewLine1
 compiler/toStringOnPrimitives
@@ -4484,7 +4502,9 @@ compiler/topLevel
 compiler/topLevelAwaitReparseWithTypedef
 compiler/topLevelBlockExpando
 compiler/topLevelExports
+compiler/topLevelLambda
 compiler/topLevelLambda2
+compiler/topLevelLambda3
 compiler/trackedSymbolsNoCrash
 compiler/trailingCommaInHeterogenousArrayLiteral1
 compiler/trailingCommasES5(target=es2015)
@@ -4804,6 +4824,7 @@ compiler/validRegexp
 compiler/validUseOfThisInSuper
 compiler/valueOfTypedArray
 compiler/varAndFunctionShareName
+compiler/varArgParamTypeCheck
 compiler/varArgWithNoParamName
 compiler/varArgsOnConstructorTypes
 compiler/varAsID
@@ -5404,6 +5425,7 @@ conformance/callWithSpread3
 conformance/callWithSpread4
 conformance/callWithSpread5
 conformance/callWithSpreadES6
+conformance/callbackCrossModule
 conformance/callbackOnConstructor
 conformance/callbackTag1
 conformance/callbackTag2
@@ -5606,12 +5628,20 @@ conformance/computedPropertyNames13_ES5(target=es2015)
 conformance/computedPropertyNames13_ES6
 conformance/computedPropertyNames16_ES5(target=es2015)
 conformance/computedPropertyNames16_ES6
+conformance/computedPropertyNames18_ES5(target=es2015)
+conformance/computedPropertyNames18_ES6
+conformance/computedPropertyNames19_ES5(target=es2015)
+conformance/computedPropertyNames19_ES6
 conformance/computedPropertyNames1_ES5(target=es2015)
 conformance/computedPropertyNames1_ES6
 conformance/computedPropertyNames20_ES5(target=es2015)
 conformance/computedPropertyNames20_ES6
+conformance/computedPropertyNames21_ES5(target=es2015)
+conformance/computedPropertyNames21_ES6
 conformance/computedPropertyNames22_ES5(target=es2015)
 conformance/computedPropertyNames22_ES6
+conformance/computedPropertyNames23_ES5(target=es2015)
+conformance/computedPropertyNames23_ES6
 conformance/computedPropertyNames25_ES5(target=es2015)
 conformance/computedPropertyNames25_ES6
 conformance/computedPropertyNames28_ES5(target=es2015)
@@ -6592,6 +6622,7 @@ conformance/inferTypesInvalidExtendsDeclaration
 conformance/inferTypesWithExtends1
 conformance/inferTypesWithExtendsDependingOnTypeVariables
 conformance/inferingFromAny
+conformance/inferringClassMembersFromAssignments2
 conformance/inferringClassMembersFromAssignments7
 conformance/inferringClassMembersFromAssignments8
 conformance/infiniteExpansionThroughInstantiation
@@ -6711,6 +6742,7 @@ conformance/jsContainerMergeTsDeclaration3
 conformance/jsDeclarationsClassAccessor
 conformance/jsDeclarationsClassImplementsGenericsSerialization(target=es2015)
 conformance/jsDeclarationsClassLeadingOptional(target=es2015)
+conformance/jsDeclarationsClassMethod
 conformance/jsDeclarationsClassStatic2
 conformance/jsDeclarationsClassStaticMethodAugmentation(target=es2015)
 conformance/jsDeclarationsCommonjsRelativePath
@@ -7798,6 +7830,7 @@ conformance/protectedClassPropertyAccessibleWithinSubclass(target=es2015)
 conformance/protectedStaticClassPropertyAccessibleWithinSubclass
 conformance/protectedStaticClassPropertyAccessibleWithinSubclass2(target=es2015)
 conformance/protectedStaticNotAccessibleInClodule
+conformance/prototypePropertyAssignmentMergeAcrossFiles
 conformance/quotedConstructors
 conformance/reExportAliasMakesInstantiated
 conformance/reExportDefaultExport(target=es2015)
@@ -8332,6 +8365,7 @@ conformance/tsxSpreadAttributesResolution8
 conformance/tsxSpreadAttributesResolution9
 conformance/tsxSpreadChildren
 conformance/tsxStatelessFunctionComponentOverload3
+conformance/tsxStatelessFunctionComponentOverload6
 conformance/tsxStatelessFunctionComponentWithDefaultTypeParameter1
 conformance/tsxStatelessFunctionComponentsWithTypeArguments1
 conformance/tsxStatelessFunctionComponentsWithTypeArguments3
@@ -8365,6 +8399,7 @@ conformance/typeArgumentsWithStringLiteralTypes01
 conformance/typeAssertions
 conformance/typeAssertionsWithIntersectionTypes01
 conformance/typeAssertionsWithUnionTypes01
+conformance/typeFromJSConstructor
 conformance/typeFromJSInitializer2
 conformance/typeFromJSInitializer3
 conformance/typeFromPrivatePropertyAssignment
@@ -8374,6 +8409,7 @@ conformance/typeFromPropertyAssignment12
 conformance/typeFromPropertyAssignment17
 conformance/typeFromPropertyAssignment19
 conformance/typeFromPropertyAssignment20
+conformance/typeFromPropertyAssignment21
 conformance/typeFromPropertyAssignment27
 conformance/typeFromPropertyAssignment30
 conformance/typeFromPropertyAssignment31
@@ -8438,6 +8474,7 @@ conformance/typeInferenceWithTupleType
 conformance/typeOfThisGeneral
 conformance/typeOfThisInAccessor
 conformance/typeOfThisInConstructorParamList
+conformance/typeOfThisInFunctionExpression
 conformance/typeOfThisInInstanceMember
 conformance/typeOfThisInInstanceMember2
 conformance/typeOfThisInMemberFunctions
@@ -8455,6 +8492,9 @@ conformance/typeOfThisInStaticMembers5(target=esnext)
 conformance/typeOfThisInStaticMembers7(target=es2022)
 conformance/typeOfThisInStaticMembers7(target=es6)
 conformance/typeOfThisInStaticMembers7(target=esnext)
+conformance/typeOfThisInStaticMembers8(target=es2022)
+conformance/typeOfThisInStaticMembers8(target=es6)
+conformance/typeOfThisInStaticMembers8(target=esnext)
 conformance/typeOfThisInstanceMemberNarrowedWithLoopAntecedent
 conformance/typeOnlyESMImportFromCJS(module=node20)
 conformance/typeOnlyESMImportFromCJS(module=nodenext)
