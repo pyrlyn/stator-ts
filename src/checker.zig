@@ -50,7 +50,7 @@ fn implicitAny(c: *Checker, p: *Node, fnode: ?*Node) void {
     if (x.type != null or x.init != null) return;
     if (c.param_types.contains(p)) return;
     if (fnode) |f| if (f.data == .func) {
-        if (d.setterGetter(f) != null or privateWithinAmbient(c, f, f.data.func.name)) return;
+        if (d.setterGetter(c, f) != null or privateWithinAmbient(c, f, f.data.func.name)) return;
     };
     if (jsDocTyped(c, p)) return;
     if (x.name.data == .identifier) {

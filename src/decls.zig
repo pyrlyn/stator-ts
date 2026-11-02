@@ -2057,11 +2057,41 @@ fn padPattern(c: *Checker, t: *Type, init: *Node, pat: *Node) *Type {
 }
 
 /// A setter's parameter takes its type from the getter of the same property.
-pub fn setterGetter(fnode: *Node) ?*Node {
+pub fn setterGetter(c: *Checker, fnode: *Node) ?*Node {
     if (fnode.data.func.kind != .setter and fnode.data.func.kind != .setter_sig) return null;
+    return accessorPartner(c, fnode, isGetter);
+}
+
+pub fn getterSetter(c: *Checker, fnode: *Node) ?*Node {
+    if (!isGetter(fnode)) return null;
+    return accessorPartner(c, fnode, isSetter);
+}
+
+fn accessorPartner(c: *Checker, fnode: *Node, comptime wanted: fn (*Node) bool) ?*Node {
     const s = fnode.symbol() orelse return null;
-    for (s.decls) |x| if (x.data == .func and (x.data.func.kind == .getter or x.data.func.kind == .getter_sig)) return x;
+    for (s.decls) |x| if (wanted(x)) return x;
+    // A name like `[k]` is bound late, so each accessor has its own symbol until the name's value
+    // pairs them.
+    const name = fnode.data.func.name orelse return null;
+    if (name.data != .computed_name) return null;
+    const p = fnode.parent orelse return null;
+    if (p.data != .class) return null;
+    const want = expr.propNameOf(c, name) orelse return null;
+    for (p.data.class.members) |m| {
+        if (!wanted(m) or m.mods.static != fnode.mods.static) continue;
+        const mn = m.data.func.name orelse continue;
+        if (mn.data != .computed_name) continue;
+        if (std.mem.eql(u8, expr.propNameOf(c, mn) orelse continue, want)) return m;
+    }
     return null;
+}
+
+fn isGetter(n: *Node) bool {
+    return n.data == .func and (n.data.func.kind == .getter or n.data.func.kind == .getter_sig);
+}
+
+fn isSetter(n: *Node) bool {
+    return n.data == .func and (n.data.func.kind == .setter or n.data.func.kind == .setter_sig);
 }
 
 /// A getter that says nothing answers to what its setter says.
@@ -2086,7 +2116,7 @@ pub fn typeOfParam(c: *Checker, d: *Node) *Type {
     }
     if (c.param_types.get(d)) |t| return t;
     if (d.parent) |fnode| if (fnode.data == .func) {
-        if (setterGetter(fnode)) |g| return returnOf(c, sigOfDecl(c, g));
+        if (setterGetter(c, fnode)) |g| return returnOf(c, sigOfDecl(c, g));
         expr.assignContext(c, fnode);
         if (c.param_types.get(d)) |t| return t;
     };
@@ -2637,19 +2667,32 @@ fn resolveIface(c: *Checker, self: *Type, g: *Type, args: []*Type, this_arg: *Ty
 fn addLateMembers(c: *Checker, late: []*Symbol, m: *Members, mapper: ?*Mapper, owner: ?*Type, indexes: *std.ArrayList(T.Index), unnamed: bool) void {
     var computed = c.newList(expr.ComputedKey);
     var readonly = true;
-    for (late) |ls| {
+    var bound: std.StringHashMapUnmanaged(*Symbol) = .empty;
+    for (late) |ls0| {
+        var ls = ls0;
         const node = binder.nameNode(ls.decls[0]) orelse continue;
-        const p = propFromSymbol(c, ls, owner);
-        p.mapper = mapper;
         const name = expr.propNameOf(c, node) orelse {
+            const p = propFromSymbol(c, ls, owner);
+            p.mapper = mapper;
             const key = expr.computedKeyOf(c, node) orelse continue;
             computed.append(c.a, .{ .key = key, .ty = propType(c, p) }) catch oom();
             readonly = readonly and p.readonly;
             continue;
         };
-        if (m.props.contains(name)) continue;
+        if (m.props.contains(name)) {
+            // tsc's `lateBindMember` gives a getter and a setter of one late name a single symbol.
+            const first = bound.get(name) orelse continue;
+            if (!pairsAccessors(first, ls)) continue;
+            const merged = c.create(Symbol, first.*);
+            merged.decls = std.mem.concat(c.a, *Node, &.{ first.decls, ls.decls }) catch oom();
+            merged.flags |= ls.flags;
+            ls = merged;
+        }
+        const p = propFromSymbol(c, ls, owner);
+        p.mapper = mapper;
         p.name = name;
         m.props.put(c.a, name, p) catch oom();
+        bound.put(c.a, name, ls) catch oom();
     }
     if (computed.items.len == 0) return;
     outer: for ([_]*Type{ c.t_string, c.t_symbol, c.t_number }) |key| {
@@ -2669,6 +2712,10 @@ fn addLateMembers(c: *Checker, late: []*Symbol, m: *Members, mapper: ?*Mapper, o
         if (key == c.t_string and unnamed) parts.append(c.a, c.t_any) catch oom();
         indexes.append(c.a, .{ .key = key, .ty = if (parts.items.len > 0) expr.reduceSubtypes(c, parts.items) else c.t_undefined, .readonly = readonly }) catch oom();
     }
+}
+
+fn pairsAccessors(a: *Symbol, b: *Symbol) bool {
+    return (a.flags & F.getter != 0 and b.flags & F.setter != 0) or (a.flags & F.setter != 0 and b.flags & F.getter != 0);
 }
 
 fn inheritFrom(c: *Checker, m: *Members, b: *Type, calls: *std.ArrayList(*Sig), ctors: *std.ArrayList(*Sig), indexes: *std.ArrayList(T.Index), is_class: bool) void {
