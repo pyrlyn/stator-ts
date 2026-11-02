@@ -3374,6 +3374,7 @@ compiler/mixedStaticAndInstanceClassMembers
 compiler/mixedTypeEnumComparison
 compiler/mixinIntersectionIsValidbaseType
 compiler/mixinOverMappedTypeNoCrash
+compiler/mixinPrivateAndProtected
 compiler/mixingApparentTypeOverrides
 compiler/mixingFunctionAndAmbientModule1
 compiler/mixingStaticAndInstanceOverloads
@@ -7538,11 +7539,14 @@ conformance/methodSignaturesWithOverloads2
 conformance/methodsReturningThis
 conformance/missingDecoratorType(target=es2015)
 conformance/mixedPropertyElementAccessAssignmentDeclaration
+conformance/mixinAbstractClasses
 conformance/mixinAbstractClassesReturnTypeInference
 conformance/mixinAccessors1
 conformance/mixinAccessors2
 conformance/mixinAccessors4
 conformance/mixinAccessors5
+conformance/mixinClassesAnnotated
+conformance/mixinClassesAnonymous
 conformance/mixinWithBaseDependingOnSelfNoCrash1
 conformance/modifierOnClassDeclarationMemberInFunction
 conformance/modifierOnClassExpressionMemberInFunction
@@ -7896,6 +7900,7 @@ conformance/override18(target=es2015)
 conformance/override18(target=esnext)
 conformance/override19
 conformance/override2
+conformance/override20
 conformance/override21
 conformance/override3
 conformance/override4
