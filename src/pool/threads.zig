@@ -4,6 +4,7 @@ const sm = @import("coroutines").state_machine;
 /// Checkers recurse deeply on real type graphs; the default thread stack is far too small.
 pub const stack_size = 256 * 1024 * 1024;
 
+/// `requested` when positive, else the CPU count (4 when it cannot be read).
 pub fn jobCount(requested: usize) usize {
     if (requested > 0) return requested;
     return std.Thread.getCpuCount() catch 4;

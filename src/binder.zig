@@ -1,3 +1,5 @@
+//! The binder: builds symbols, symbol tables and control-flow nodes for each file, so the
+//! checker can resolve names and narrow types.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
@@ -65,6 +67,7 @@ pub const F = struct {
     pub const alias_ex = alias;
 };
 
+/// A named entity: a variable, function, class, interface, module or the like.
 pub const Symbol = struct {
     name: []const u8,
     flags: u32 = 0,
@@ -216,6 +219,7 @@ const HashedContext = struct {
 
 pub const FlowKind = enum { start, unreachable_end, assign, true_cond, false_cond, branch, loop, switch_clause, call, reduce };
 
+/// One node of the control-flow graph that `flow.zig` walks backwards to narrow references.
 pub const FlowNode = struct {
     kind: FlowKind,
     node: ?*Node = null,

@@ -1,3 +1,5 @@
+//! The `check` and `build` commands: loads the program, collects syntax, bind, config and
+//! checker diagnostics, prints them sorted in tsc's format, and for `build` emits JavaScript.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -16,6 +18,7 @@ fn oom() noreturn {
     @panic("out of memory");
 }
 
+/// What `run` checks and whether it writes output.
 pub const Options = struct {
     cfg: *const project.Config,
     tp: *pool.ThreadPool,
@@ -33,6 +36,8 @@ fn isTypeAlias(ctx: *anyopaque, s: *Symbol) bool {
     return t.flags & binder.F.value == 0;
 }
 
+/// Emitter options taken from the program's compiler options, with React's defaults for the
+/// JSX factory, fragment and import source.
 pub fn emitOptions(p: *Program) emit.Options {
     const o = p.cfg.options;
     return .{
@@ -47,6 +52,7 @@ pub fn emitOptions(p: *Program) emit.Options {
     };
 }
 
+/// The deepest directory that holds every path in `paths`; the output base when no `rootDir` is set.
 pub fn commonDir(a: Allocator, paths: []const []const u8) []const u8 {
     if (paths.len == 0) return ".";
     var common: []const u8 = fspath.dirname(paths[0]) orelse ".";
@@ -58,6 +64,8 @@ pub fn commonDir(a: Allocator, paths: []const []const u8) []const u8 {
     return common;
 }
 
+/// One parallel emit pass. `outs` is filled by `emitFiles`; `failed` counts files that could not
+/// be written.
 pub const EmitJob = struct {
     io: Io,
     prog: *Program,
@@ -97,6 +105,8 @@ pub fn emitFiles(a: Allocator, j: *EmitJob) void {
     pool.parallelFor(j.prog.tp, j.files.len, j, emitOne);
 }
 
+/// Program files that produce output: not libs, not `.d.ts`, not under `node_modules`, and only
+/// root files when `only_roots` is set.
 pub fn emittable(a: Allocator, p: *Program, only_roots: bool) []const *SourceFile {
     var out: std.ArrayList(*SourceFile) = .empty;
     for (p.files.items) |sf| {
@@ -127,6 +137,8 @@ fn lessDiag(_: void, l: Printed, r: Printed) bool {
     return std.mem.lessThan(u8, l.msg, r.msg);
 }
 
+/// Runs `check` or `build` and writes diagnostics to `w`. Returns 0 when clean, 2 when any
+/// diagnostic was reported, 1 when no lib could be found or output could not be written.
 pub fn run(a: Allocator, io: Io, o: Options, w: *Io.Writer) !u8 {
     const fs = project.FsCache.create(a, io);
     const roots = project.projectFiles(a, fs, o.tp, o.cfg);

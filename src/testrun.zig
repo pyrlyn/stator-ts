@@ -1,3 +1,5 @@
+//! The `test` command: finds `*.test.*`, `*.spec.*` and `*_test.*` files, compiles them and runs
+//! them in parallel on Node or Bun through the embedded `harness.mjs`.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -12,6 +14,7 @@ fn oom() noreturn {
     @panic("out of memory");
 }
 
+/// What `run` runs: `filters` are path substrings, `name_filter` a test-name regex.
 pub const Options = struct {
     cfg: *const project.Config,
     tp: *pool.ThreadPool,
@@ -25,6 +28,7 @@ pub const Options = struct {
 
 const harness = @embedFile("harness.mjs");
 
+/// True for a non-declaration file whose name contains `.test.`, `.spec.` or `_test.`.
 pub fn isTestFile(path: []const u8) bool {
     const base = fspath.basename(path);
     if (std.mem.endsWith(u8, base, ".d.ts")) return false;
@@ -175,6 +179,8 @@ fn copyAssets(a: Allocator, io: Io, prog: *project.Program, base: []const u8, ou
     }
 }
 
+/// Runs the matching test files and returns the process exit code. Rejects runtimes other than
+/// `node` and `bun`.
 pub fn run(a: Allocator, io: Io, base_env: *const std.process.Environ.Map, o: Options, w: *Io.Writer) !u8 {
     if (!std.mem.eql(u8, o.runtime, "node") and !std.mem.eql(u8, o.runtime, "bun")) {
         try w.print("error: unknown runtime '{s}'; use node or bun\n", .{o.runtime});

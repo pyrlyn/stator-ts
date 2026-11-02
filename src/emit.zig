@@ -1,3 +1,5 @@
+//! The JavaScript emitter: strips types and TS-only syntax from a bound file by editing its
+//! source text in place, and rewrites JSX and import extensions as configured.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
@@ -10,8 +12,10 @@ fn oom() noreturn {
     @panic("out of memory");
 }
 
+/// The `jsx` compiler option.
 pub const Jsx = enum { preserve, react, react_jsx, react_jsxdev };
 
+/// Emit settings, filled from the program's compiler options by `driver.emitOptions`.
 pub const Options = struct {
     jsx: Jsx = .preserve,
     jsx_factory: []const u8 = "React.createElement",
@@ -1079,6 +1083,8 @@ fn collectNames(a: Allocator, pat: *Node, ns: []const u8, out: *std.ArrayList(u8
     }
 }
 
+/// A relative import path with its `.ts`/`.tsx`/`.mts`/`.cts` extension swapped for the
+/// JavaScript one, or null when the path is not relative, is a `.d.ts`, or has no such extension.
 pub fn rewrittenPath(a: Allocator, v: []const u8, jsx: Jsx) ?[]const u8 {
     if (!(std.mem.startsWith(u8, v, "./") or std.mem.startsWith(u8, v, "../") or std.mem.startsWith(u8, v, "/"))) return null;
     if (std.mem.endsWith(u8, v, ".d.ts")) return null;
@@ -1094,6 +1100,8 @@ pub fn rewrittenPath(a: Allocator, v: []const u8, jsx: Jsx) ?[]const u8 {
     return null;
 }
 
+/// The output file name for a source path: `.ts` becomes `.js`, `.mts` `.mjs`, `.cts` `.cjs`, and
+/// `.tsx` `.jsx` when JSX is preserved, else `.js`.
 pub fn outputPath(a: Allocator, path: []const u8, jsx: Jsx) []const u8 {
     return rewrittenExt(a, path, jsx);
 }

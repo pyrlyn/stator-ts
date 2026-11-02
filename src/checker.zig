@@ -1096,6 +1096,8 @@ fn spreadTurns(a: std.mem.Allocator, runs: []const []*ast.File, workers: usize) 
     return turns;
 }
 
+/// Type-checks every non-lib file of `p` on the program's thread pool and returns the
+/// diagnostics. Skips `.d.ts` files under `skipLibCheck`.
 pub fn checkProgram(a: std.mem.Allocator, p: *project.Program) []Diag {
     var files: std.ArrayList(*ast.File) = .empty;
     const skip_lib = p.cfg.options.skipLibCheck orelse false;
