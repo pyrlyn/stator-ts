@@ -164,3 +164,11 @@ TS7 suite (`microsoft/TypeScript` at 6161772c1370bdd4a82f808e6823bd755eb1870d, `
 
 Facts from upstream at that commit: TS7's tests moved from the archived `microsoft/typescript-go` to `tsc/` in `microsoft/TypeScript`; `v7.0.2` has the older layout, which is why the pin is a commit. TS7 defaults differ from 5.9 (`strict`, `types: []`) and its messages put missing-property text on TS2345 and TS2344.
 
+
+### T21
+
+After the first T21 iteration the TS7 suite at the same commit passes 8,532 of 13,737 (62.1%), with no crashes; the task started at 8,233. The gains come from tsc's JavaScript rules (plain JS keeps only tsgo's `plainJSErrors`, `// @ts-check` and `// @ts-nocheck` decide the rest), tsc's `tryAddingExtensions` table in module resolution, JSDoc-typed parameters not reporting TS7006, and the binder's strict-mode checks (TS1100, TS1101, TS1102, TS1210, TS1212-TS1215, TS1262, TS1344).
+
+`conformance/nodeAllowJsPackageSelfName` (4 variants) left `passing.txt`. tsc's harness runs it without a config file, so tsc reports TS2209 ("project root is ambiguous") next to TS2307, while `run.mjs` always writes `tsconfig.stator.json`. The gap is in the runner, not the checker.
+
+Largest gaps left: `.js` files picked up by `include` under `allowJs`, the untyped-JS fallback (TS7016), ESM-mode and node16 resolution, import attributes on `declare module ... with {}`, top-level `await` followed by a newline in modules, JSDoc types and CommonJS checking, and a long tail of extra TS2339 and TS2304.
