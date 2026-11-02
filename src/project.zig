@@ -475,6 +475,7 @@ pub const FsCache = struct {
         mutex: Io.Mutex = .init,
         dirs: std.StringHashMapUnmanaged(*Listing) = .empty,
         bare: std.StringHashMapUnmanaged(?[]const u8) = .empty,
+        packages: std.StringHashMapUnmanaged(?[]const u8) = .empty,
     };
 
     fn shardOf(f: *FsCache, key: []const u8) *Shard {
@@ -503,14 +504,11 @@ pub const FsCache = struct {
     fn listing(f: *FsCache, path: []const u8) *Listing {
         const shard = f.shardOf(path);
         shard.mutex.lockUncancelable(f.io);
-        const known = shard.dirs.get(path);
-        shard.mutex.unlock(f.io);
-        if (known) |l| return l;
-        // Two workers may list one directory at once; the second result just replaces the first.
+        defer shard.mutex.unlock(f.io);
+        if (shard.dirs.get(path)) |known| return known;
+        // Concurrent misses must share one snapshot instead of retaining duplicate listings.
         const fresh = f.list(path);
         const key = std.heap.smp_allocator.dupe(u8, path) catch oom();
-        shard.mutex.lockUncancelable(f.io);
-        defer shard.mutex.unlock(f.io);
         shard.dirs.put(std.heap.smp_allocator, key, fresh) catch oom();
         return fresh;
     }
@@ -543,6 +541,20 @@ pub const FsCache = struct {
         shard.mutex.lockUncancelable(f.io);
         defer shard.mutex.unlock(f.io);
         return shard.bare.get(key);
+    }
+
+    /// Different subpath imports share a manifest even when their resolutions differ. Keep the
+    /// bytes outside resolver scratch arenas; parsing still belongs to the individual resolver.
+    fn readPackage(f: *FsCache, path: []const u8) ?[]const u8 {
+        const shard = f.shardOf(path);
+        shard.mutex.lockUncancelable(f.io);
+        defer shard.mutex.unlock(f.io);
+        if (shard.packages.get(path)) |known| return known;
+        const a = std.heap.smp_allocator;
+        const text = readFile(a, f.io, path) catch null;
+        const key = a.dupe(u8, path) catch oom();
+        shard.packages.put(a, key, text) catch oom();
+        return text;
     }
 
     /// The strings come from a resolver's scratch arena, so the table keeps its own copies.
@@ -689,7 +701,7 @@ const Resolver = struct {
     fn tryPackageDir(r: Resolver, dir: []const u8, sub: []const u8) ?[]const u8 {
         const pkg = fspath.join(r.a, &.{ dir, "package.json" }) catch oom();
         if (r.fs.isFile(pkg)) blk: {
-            const text = readFile(r.a, r.io, pkg) catch break :blk;
+            const text = r.fs.readPackage(pkg) orelse break :blk;
             const v = json.parseFromSliceLeaky(json.Value, r.a, text, .{}) catch break :blk;
             if (v != .object) break :blk;
             if (v.object.get("exports")) |e| {
@@ -733,7 +745,7 @@ const Resolver = struct {
             const pkg = fspath.join(r.a, &.{ d, "package.json" }) catch oom();
             if (r.fs.isFile(pkg)) break pkg;
         } else return null;
-        const text = readFile(r.a, r.io, scope) catch return null;
+        const text = r.fs.readPackage(scope) orelse return null;
         const v = json.parseFromSliceLeaky(json.Value, r.a, text, .{}) catch return null;
         if (v != .object) return null;
         const exports = v.object.get("exports") orelse return null;
@@ -1392,6 +1404,49 @@ test "a root that cannot be read is reported, not dropped" {
     try std.testing.expectEqual(@as(usize, 1), p.missing_roots.items.len);
     try std.testing.expectEqualStrings("/nonexistent-stator-ts-test/missing.ts", p.missing_roots.items[0]);
     try std.testing.expectEqual(@as(usize, 0), p.files.items.len);
+}
+
+test "filesystem snapshots share package bytes and concurrent directory reads" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(dir);
+    const path = try fspath.join(a, &.{ dir, "package.json" });
+    defer a.free(path);
+    const first = "{\"types\":\"first.d.ts\"}";
+    const second = "{\"types\":\"second.d.ts\"}";
+    var missing = FsCache{ .io = io };
+    try std.testing.expect(missing.readPackage(path) == null);
+    try tmp.dir.writeFile(io, .{ .sub_path = "package.json", .data = first });
+    try std.testing.expect(missing.readPackage(path) == null);
+    var cache = FsCache{ .io = io };
+    const saved = cache.readPackage(path).?;
+    try std.testing.expectEqualStrings(first, saved);
+    try tmp.dir.writeFile(io, .{ .sub_path = "package.json", .data = second });
+    try std.testing.expectEqual(saved.ptr, cache.readPackage(path).?.ptr);
+    try std.testing.expectEqualStrings(first, cache.readPackage(path).?);
+    var fresh = FsCache{ .io = io };
+    try std.testing.expectEqualStrings(second, fresh.readPackage(path).?);
+
+    const workers = 8;
+    const Readers = struct {
+        cache: *FsCache,
+        path: []const u8,
+        ready: std.atomic.Value(usize) = .init(0),
+        listings: [workers]*FsCache.Listing = undefined,
+
+        fn read(r: *@This(), _: usize, i: usize) void {
+            _ = r.ready.fetchAdd(1, .acq_rel);
+            while (r.ready.load(.acquire) < workers) std.atomic.spinLoopHint();
+            r.listings[i] = r.cache.listing(r.path);
+        }
+    };
+    var readers = Readers{ .cache = &fresh, .path = dir };
+    var tp = pool.ThreadPool.init(workers);
+    pool.parallelForEach(&tp, workers, &readers, Readers.read);
+    for (readers.listings) |listing| try std.testing.expectEqual(readers.listings[0], listing);
 }
 
 test "stripJsonc removes comments and trailing commas" {
