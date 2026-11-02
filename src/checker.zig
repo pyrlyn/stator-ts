@@ -478,6 +478,12 @@ fn checkExportAssign(c: *Checker, n: *Node) void {
         }
         return;
     }
+    // Exporting a name that is only a type or a namespace is fine; tsc checks it as a value
+    // only when it is one or does not resolve.
+    if (x.expr.data == .identifier) if (d.resolveName(c, x.expr, x.expr.data.identifier, F.value | F.@"type" | F.namespace | F.alias)) |s| {
+        const target = d.targetOf(c, s) orelse s;
+        if (target.flags & F.value == 0) return;
+    };
     _ = expr.checkExpression(c, x.expr);
 }
 

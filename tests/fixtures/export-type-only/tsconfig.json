@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "es2022",
+    "module": "commonjs",
+    "lib": ["es2022"],
+    "types": []
+  },
+  "files": ["iface.ts", "both.ts", "missing.ts", "user.ts"]
+}
