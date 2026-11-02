@@ -774,7 +774,69 @@ fn checkClass(c: *Checker, n: *Node) void {
             }
         }
     }
+    checkIndexConstraints(c, this_t, s, n, false);
+    checkIndexConstraints(c, d.typeOfSymbol(c, s), s, n, true);
     checkPropInit(c, n);
+}
+
+// ---- index signatures: tsc's checkIndexConstraints ----
+
+/// Declared directly in the type being checked rather than inherited.
+fn declaredIn(decl: ?*Node, owner: ?*Symbol, node: *Node) bool {
+    const p = (decl orelse return false).parent orelse return false;
+    if (p == node) return true;
+    const o = owner orelse return false;
+    const s = p.symbol() orelse return false;
+    return s.resolve() == o.resolve();
+}
+
+/// The index signatures whose key a property name falls under.
+fn appliesTo(c: *Checker, key: *Type, name: []const u8) bool {
+    if (key == c.t_string) return true;
+    if (key == c.t_number) return expr.isNumericName(c, name);
+    if (key.data == .tmpl or key.data == .strmap) return relate.isAssignable(c, c.strLit(name), key);
+    return false;
+}
+
+fn appliesToIndex(c: *Checker, key: *Type, other: *Type) bool {
+    return relate.isAssignable(c, other, key) or (key == c.t_string and relate.isAssignable(c, other, c.t_number));
+}
+
+/// The interface can stand as the error site only when no single base brought both sides along.
+fn interfaceSite(c: *Checker, t: *Type, node: *Node, prop: ?[]const u8, key: *Type, other: *Type) ?*Node {
+    if (node.data != .interface) return null;
+    for (d.basesOf(c, t)) |b| {
+        const has_left = if (prop) |name| d.getProp(c, b, name) != null else d.indexValue(c, b, key) != null;
+        if (has_left and d.indexValue(c, b, other) != null) return null;
+    }
+    return node.data.interface.name;
+}
+
+fn checkIndexConstraints(c: *Checker, t: *Type, owner: ?*Symbol, node: *Node, is_static: bool) void {
+    const infos = d.indexesOf(c, t);
+    if (infos.len == 0) return;
+    for (d.propsOf(c, t)) |p| {
+        if (is_static and std.mem.eql(u8, p.name, "prototype")) continue;
+        if (p.name.len > 0 and (p.name[0] == '#' or std.mem.startsWith(u8, p.name, "__@"))) continue;
+        const local_prop = declaredIn(p.decl, owner, node);
+        const pt = d.propType(c, p);
+        for (infos) |info| {
+            if (!appliesTo(c, info.key, p.name)) continue;
+            const site = if (local_prop) binder.nameNode(p.decl.?) orelse p.decl.? else if (declaredIn(info.decl, owner, node)) info.decl.? else interfaceSite(c, t, node, p.name, info.key, info.key) orelse continue;
+            if (relate.isAssignable(c, pt, info.ty)) continue;
+            err(c, site, 2411, c.fmt("Property '{s}' of type '{s}' is not assignable to '{s}' index type '{s}'.", .{ p.name, expr.show(c, pt), expr.show(c, info.key), expr.show(c, info.ty) }));
+        }
+    }
+    if (infos.len < 2) return;
+    for (infos) |check| {
+        const local_check = declaredIn(check.decl, owner, node);
+        for (infos) |info| {
+            if (info.key == check.key or !appliesToIndex(c, info.key, check.key)) continue;
+            const site = if (local_check) check.decl.? else if (declaredIn(info.decl, owner, node)) info.decl.? else interfaceSite(c, t, node, null, check.key, info.key) orelse continue;
+            if (relate.isAssignable(c, check.ty, info.ty)) continue;
+            err(c, site, 2413, c.fmt("'{s}' index type '{s}' is not assignable to '{s}' index type '{s}'.", .{ expr.show(c, check.key), expr.show(c, check.ty), expr.show(c, info.key), expr.show(c, info.ty) }));
+        }
+    }
 }
 
 /// What `override` is judged against, and whether a member that overrides has to say so.
@@ -994,6 +1056,11 @@ fn checkInterface(c: *Checker, n: *Node) void {
     const s = n.symbol() orelse return;
     const t = d.declaredType(c, s);
     if (t.data != .obj) return;
+    // tsc checks a merged interface once, at its first declaration.
+    const first = for (s.resolve().decls) |x| {
+        if (x.data == .interface) break x;
+    } else n;
+    if (first == n) checkIndexConstraints(c, if (t.data.obj.thisType()) |x| d.withThis(c, t, x) else t, s, n, false);
     for (d.basesOf(c, t)) |b0| {
         const tt = t.data.obj.thisType() orelse t;
         const base = d.withThis(c, b0, tt);
@@ -1027,7 +1094,10 @@ fn walkTypes(c: *Checker, n: *Node) void {
     }
     if (isAsConst(n)) return;
     checkStrictMode(c, n);
-    if (isTypeNode(n)) _ = d.typeFromNode(c, n);
+    if (isTypeNode(n)) {
+        const t = d.typeFromNode(c, n);
+        if (n.data == .type_literal) checkIndexConstraints(c, t, null, n, false);
+    }
     if (n.data == .func) {
         // Also covers signature-only declarations, which have no body to check.
         const f = n.data.func;
