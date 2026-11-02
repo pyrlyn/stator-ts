@@ -1236,18 +1236,43 @@ fn checkAbstract(c: *Checker, n: *Node, t: *Type, base: *Type) void {
     }
 }
 
-fn hasDefiniteInit(c: *Checker, cls: *Node, name: []const u8) bool {
+fn hasDefiniteInit(c: *Checker, cls: *Node, name: *Node) bool {
     for (cls.data.class.members) |m| {
         if (m.data != .func or m.data.func.kind != .ctor) continue;
         const body = d.bodyOf(c, m) orelse continue;
-        var s = InitScan{ .c = c, .name = name };
+        var s = InitScan{ .c = c, .name = if (name.data == .computed_name) "" else ast.memberText(name) };
+        if (name.data == .computed_name) s.key = constKey(c, name.data.computed_name.expr) orelse return false;
         ast.forEachChild(body.block, &s, scanInit);
         return s.found;
     }
     return false;
 }
 
-const InitScan = struct { c: *Checker, name: []const u8, found: bool = false };
+/// tsc matches `this[key]` only when the key names a property statically: a literal, or a
+/// constant or enum member reached by name. `Symbol.iterator` is a plain property, so assigning
+/// it never counts, and neither does a key in parentheses.
+const Key = union(enum) { text: []const u8, sym: *Symbol };
+
+fn constKey(c: *Checker, n: *Node) ?Key {
+    switch (n.data) {
+        .string_lit, .numeric_lit => |v| return .{ .text = v },
+        .identifier, .prop_access => {},
+        else => return null,
+    }
+    const named = d.entitySymbol(c, n, F.value | F.alias) orelse return null;
+    const s = c.prog.resolveAlias(named, 0) orelse named;
+    if (!expr.isConstVar(s) and s.flags & F.enum_member == 0) return null;
+    return .{ .sym = s };
+}
+
+fn sameKey(a: Key, b: Key) bool {
+    return switch (a) {
+        .text => |x| b == .text and std.mem.eql(u8, x, b.text),
+        .sym => |x| b == .sym and x == b.sym,
+    };
+}
+
+const InitScan = struct { c: *Checker, name: []const u8, key: ?Key = null, found: bool = false };
 
 /// Any `this.x = …` counts: tsc proves it by flow, but only a miss would be a wrong error.
 fn scanInit(s: *InitScan, n: *Node) void {
@@ -1260,8 +1285,13 @@ fn scanInit(s: *InitScan, n: *Node) void {
 fn scanTarget(s: *InitScan, n: *Node) void {
     const l = binder.stripParens(n);
     switch (l.data) {
-        .prop_access => |x| if (x.expr.data == .this_expr and std.mem.eql(u8, ast.memberText(x.name), s.name)) {
+        .prop_access => |x| if (s.key == null and x.expr.data == .this_expr and std.mem.eql(u8, ast.memberText(x.name), s.name)) {
             s.found = true;
+        },
+        .elem_access => |x| if (s.key) |k| if (x.expr.data == .this_expr) {
+            if (constKey(s.c, x.index)) |other| if (sameKey(k, other)) {
+                s.found = true;
+            };
         },
         .array_lit => |x| for (x.elems) |e| scanTarget(s, e),
         .object_lit => |x| for (x.props) |p| switch (p.data) {
@@ -1277,20 +1307,23 @@ fn scanTarget(s: *InitScan, n: *Node) void {
 fn checkPropInit(c: *Checker, n: *Node) void {
     if (!c.strict_prop_init) return;
     if (n.mods.declare) return;
-    if (d.fileOf(c, n)) |f| if (f.is_dts) return;
+    const f = d.fileOf(c, n) orelse return;
+    if (f.is_dts) return;
     for (n.data.class.members) |m| {
         if (m.data != .property_decl) continue;
         const p = m.data.property_decl;
         if (m.mods.static or m.mods.abstract or m.mods.declare) continue;
         if (p.init != null or p.question or p.excl) continue;
-        const ann = p.type orelse continue;
-        const ty = d.typeFromNode(c, ann);
+        // tsc leaves string and numeric names alone.
+        switch (p.name.data) {
+            .identifier, .private_name, .computed_name => {},
+            else => continue,
+        }
+        const ty = d.typeFromNode(c, p.type orelse continue);
         if (T.isAny(ty) or ty.data == .unknown) continue;
         if (hasUndefinedType(c, ty)) continue;
-        const name = ast.memberText(p.name);
-        if (name.len == 0) continue;
-        if (hasDefiniteInit(c, n, name)) continue;
-        err(c, p.name, 2564, c.fmt("Property '{s}' has no initializer and is not definitely assigned in the constructor.", .{name}));
+        if (hasDefiniteInit(c, n, p.name)) continue;
+        err(c, p.name, 2564, c.fmt("Property '{s}' has no initializer and is not definitely assigned in the constructor.", .{f.src[p.name.start..p.name.end]}));
     }
 }
 
