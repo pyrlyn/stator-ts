@@ -4767,7 +4767,7 @@ fn isSettled(c: *Checker, s: *Type) bool {
 }
 
 /// tsc looks for a common property before comparing anything, so this message has no head.
-fn reportWeak(c: *Checker, s: *Type, t: *Type, n: *Node) bool {
+pub fn reportWeak(c: *Checker, s: *Type, t: *Type, n: *Node) bool {
     if (!relate.isWeak(c, t)) return false;
     const a = d.getApparent(c, s);
     if ((a.data != .obj and a.data != .inter) or relate.hasCommonProp(c, a, t)) return false;

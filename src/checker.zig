@@ -1210,6 +1210,24 @@ fn isOverrideOk(c: *Checker, p: *T.Prop, b: *T.Prop) bool {
     return relate.isAssignable(c, d.propType(c, p), d.propType(c, b));
 }
 
+/// tsc's `issueMemberSpecificError`: each member the class declares against the same one in
+/// `base`, before falling back to an error on the class as a whole.
+fn memberErrors(c: *Checker, n: *Node, t: *Type, this_t: *Type, base: *Type, shown: *Type) bool {
+    var any = false;
+    for (d.propsOf(c, base)) |bp| {
+        // A private name is its class's own: a subclass's `#x` is another member.
+        if (bp.name.len > 0 and bp.name[0] == '#') continue;
+        const p = d.ownProp(c, this_t, bp.name) orelse continue;
+        if (p == bp or p.decl == bp.decl) continue;
+        if (!isOverrideOk(c, p, bp)) {
+            const at = if (p.decl) |dn| nameOfMember(dn) else n;
+            err(c, at, 2416, c.fmt("Property '{s}' in type '{s}' is not assignable to the same property in base type '{s}'.", .{ p.name, expr.show(c, t), expr.show(c, shown) }));
+            any = true;
+        }
+    }
+    return any;
+}
+
 fn checkClass(c: *Checker, n: *Node) void {
     const x = n.data.class;
     for (x.decorators) |dn| _ = expr.checkExpression(c, dn.data.decorator.expr);
@@ -1236,15 +1254,9 @@ fn checkClass(c: *Checker, n: *Node) void {
     for (d.basesOf(c, t)) |b0| {
         const base = d.withThis(c, b0, t.data.obj.thisType() orelse t);
         if (base.data != .obj) continue;
-        for (d.propsOf(c, base)) |bp| {
-            // A private name is its class's own: a subclass's `#x` is another member.
-            if (bp.private or (bp.name.len > 0 and bp.name[0] == '#')) continue;
-            const p = d.ownProp(c, this_t, bp.name) orelse continue;
-            if (p == bp or p.decl == bp.decl) continue;
-            if (!isOverrideOk(c, p, bp)) {
-                const at = if (p.decl) |dn| nameOfMember(dn) else n;
-                err(c, at, 2416, c.fmt("Property '{s}' in type '{s}' is not assignable to the same property in base type '{s}'.", .{ p.name, expr.show(c, t), expr.show(c, b0) }));
-            }
+        // A class instance here leaves out the construct signatures tsc inherits.
+        if (!memberErrors(c, n, t, this_t, base, b0) and d.membersOf(c, base).ctors.len == 0 and !relate.isAssignable(c, this_t, base)) {
+            if (!expr.reportWeak(c, this_t, base, x.name orelse n)) err(c, x.name orelse n, 2415, c.fmt("Class '{s}' incorrectly extends base class '{s}'.", .{ expr.show(c, t), expr.show(c, b0) }));
         }
         checkAbstract(c, n, t, base);
     }
@@ -1253,8 +1265,15 @@ fn checkClass(c: *Checker, n: *Node) void {
         for (h.data.heritage_clause.types) |e| {
             const it = d.typeFromNode(c, e);
             if (T.isAny(it) or it.data != .obj) continue;
-            if (!relate.isAssignable(c, this_t, d.withThis(c, it, t.data.obj.thisType() orelse t))) {
-                err(c, e, 2420, c.fmt("Class '{s}' incorrectly implements interface '{s}'.", .{ s.name, expr.show(c, it) }));
+            const base = d.withThis(c, it, t.data.obj.thisType() orelse t);
+            if (!relate.isAssignable(c, this_t, base) and !memberErrors(c, n, t, this_t, base, it) and !expr.reportWeak(c, this_t, base, x.name orelse n)) {
+                const shown = expr.show(c, it);
+                const of_class = if (it.data.obj.sym) |cs| cs.flags & F.class != 0 else false;
+                if (of_class) {
+                    err(c, x.name orelse n, 2720, c.fmt("Class '{s}' incorrectly implements class '{s}'. Did you mean to extend '{s}' and inherit its members as a subclass?", .{ s.name, shown, shown }));
+                } else {
+                    err(c, x.name orelse n, 2420, c.fmt("Class '{s}' incorrectly implements interface '{s}'.", .{ s.name, shown }));
+                }
             }
         }
     }

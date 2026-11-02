@@ -820,6 +820,12 @@ fn propsRelated(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
             return false;
         };
         if (sp == tp) continue;
+        if (tp.name.len > 0 and tp.name[0] == '#' and sp.decl != tp.decl) {
+            // tsc keys a private name by its class: a source has this one only by inheriting it,
+            // and a subclass's own `#x` merely hides it in the member table.
+            if (validOverride(c, sp, tp)) continue;
+            return false;
+        }
         if (tp.private or tp.protected or sp.private or sp.protected) {
             if (tp.private or sp.private) {
                 if (tp.decl != sp.decl) return false;
