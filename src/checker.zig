@@ -632,6 +632,119 @@ fn varDeclGrammar(c: *Checker, n: *Node) void {
 }
 
 /// The `!` half of tsc's `checkGrammarProperty`.
+/// tsc's `checkGrammarAwaitOrAwaitUsing`, the `for await` half of `checkGrammarForInOrForOfStatement`
+/// and the static block check in `checkForOfStatement`.
+fn awaitGrammar(c: *Checker, n: *Node) void {
+    const Form = enum { expr, using, loop };
+    const form: Form = switch (n.data) {
+        .await_expr => .expr,
+        // tsc reports these declarations for where they are first.
+        .var_list => |x| if (x.kind == .await_using and !isAmbient(c, n) and !misplacedUsing(n)) .using else return,
+        .for_of => |x| if (x.is_await) .loop else return,
+        else => return,
+    };
+    const f = d.fileOf(c, n) orelse return;
+    var at = n.start;
+    if (form == .loop) {
+        var lx = lexer.Lexer{ .src = f.src, .a = c.a, .pos = n.start };
+        _ = lx.next();
+        _ = lx.next();
+        at = lx.start;
+    }
+    if (form == .expr and inParamInitializer(n)) err(c, n, 2524, "'await' expressions cannot be used in a parameter initializer.");
+    var in_await = false;
+    var prev = n;
+    var cur = n.parent;
+    while (cur) |x| : ({
+        prev = x;
+        cur = x.parent;
+    }) switch (x.data) {
+        // A method's computed name is parsed in the context around it.
+        .func => |fx| if (fx.name != prev) {
+            in_await = x.mods.async;
+            break;
+        },
+        .static_block => return switch (form) {
+            .expr => err(c, n, 18037, "'await' expression cannot be used inside a class static block."),
+            .using => err(c, n, 18054, "'await using' statements cannot be used inside a class static block."),
+            .loop => grammarErrSpan(c, n, at, at + 5, 18038, "'for await' loops cannot be used inside a class static block."),
+        },
+        // tsc parses a property initializer outside the await context of its class.
+        .property_decl => |px| if (px.init == prev) break,
+        // tsc's parser gives an exported top-level class the await context of the module.
+        .class => if (x.mods.@"export" and x.parent != null and x.parent.?.data == .source_file) {
+            in_await = true;
+            break;
+        },
+        else => {},
+    } else {
+        // Outside any function tsc reparses a module's `await (x)` in an await context, and in a
+        // script it is a call: only the `await x` form stays an operator without one.
+        if (form == .expr) {
+            var lx = lexer.Lexer{ .src = f.src, .a = c.a, .pos = n.data.await_expr.expr.start };
+            const t = lx.next();
+            if (!(t == .identifier or t.isKeyword() or t == .numeric or t == .bigint or t == .string)) return;
+        }
+    }
+    if (in_await or f.diags.len > 0) return;
+    if (!inTopLevelContext(n)) return d.reportSpan(c, n, at, at + 5, switch (form) {
+        .expr => 1308,
+        .using => 2852,
+        .loop => 1103,
+    }, switch (form) {
+        .expr => "'await' expressions are only allowed within async functions and at the top levels of modules.",
+        .using => "'await using' statements are only allowed within async functions and at the top levels of modules.",
+        .loop => "'for await' loops are only allowed within async functions and at the top levels of modules.",
+    });
+    if (!f.is_module) d.reportSpan(c, n, at, at + 5, switch (form) {
+        .expr => 1375,
+        .using => 2853,
+        .loop => 1431,
+    }, switch (form) {
+        .expr => "'await' expressions are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.",
+        .using => "'await using' statements are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.",
+        .loop => "'for await' loops are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.",
+    });
+    const o = c.prog.cfg.options;
+    const eql = std.ascii.eqlIgnoreCase;
+    const m = o.module orelse "";
+    const format = o.moduleFormat();
+    if (format == .node and f.implied_cjs) return d.reportSpan(c, n, at, at + 5, 1309, "The current file is a CommonJS module and cannot use 'await' at the top level.");
+    const allowed = format == .node or eql(m, "es2022") or eql(m, "esnext") or eql(m, "preserve") or eql(m, "system");
+    if (allowed and d.targetYear(o.target orelse "esnext") >= 2017) return;
+    d.reportSpan(c, n, at, at + 5, switch (form) {
+        .expr => 1378,
+        .using => 2854,
+        .loop => 1432,
+    }, switch (form) {
+        .expr => "Top-level 'await' expressions are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.",
+        .using => "Top-level 'await using' statements are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.",
+        .loop => "Top-level 'for await' loops are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.",
+    });
+}
+
+fn misplacedUsing(list: *Node) bool {
+    const p = list.parent orelse return false;
+    if (p.data == .for_in) return true;
+    const pp = p.parent orelse return false;
+    return p.data == .var_stmt and (pp.data == .case_clause or pp.data == .default_clause);
+}
+
+/// tsc's `isInParameterInitializerBeforeContainingFunction`.
+fn inParamInitializer(n0: *Node) bool {
+    var n = n0;
+    var in_binding = false;
+    while (n.parent) |p| : (n = p) switch (p.data) {
+        .func => return false,
+        .param => |x| if (in_binding or x.init == n) return true,
+        .binding_elem => |x| if (x.init == n) {
+            in_binding = true;
+        },
+        else => {},
+    };
+    return false;
+}
+
 fn propertyExclGrammar(c: *Checker, n: *Node) void {
     const p = n.data.property_decl;
     if (!p.excl) return;
@@ -1585,7 +1698,10 @@ fn walkTypesIn(c: *Checker, n: *Node) void {
         if (f.kind == .method_sig) overloads.check(c, n);
     }
     modifiers.check(c, n);
-    if (!statementInAmbient(c, n)) jumpGrammar(c, n);
+    if (!statementInAmbient(c, n)) {
+        jumpGrammar(c, n);
+        awaitGrammar(c, n);
+    }
     if (n.data == .var_decl) varDeclGrammar(c, n);
     if (n.data == .property_decl) propertyExclGrammar(c, n);
     if (n.data == .computed_name) checkComputedNameType(c, n);
@@ -1852,10 +1968,17 @@ fn inTopLevelContext(n0: *Node) bool {
         else => {},
     };
     var x = n.parent;
-    while (x) |y| : (x = y.parent) switch (y.data) {
-        .func, .property_decl, .static_block, .module_decl => return false,
-        else => {},
-    };
+    while (x) |y| {
+        x = y.parent;
+        switch (y.data) {
+            .func, .property_decl, .static_block, .module_decl => return false,
+            // tsc's `getThisContainer`: a computed name belongs to the scope around its member.
+            .computed_name => if (x) |member| {
+                x = member.parent;
+            },
+            else => {},
+        }
+    }
     return true;
 }
 

@@ -1390,9 +1390,12 @@ const Parser = struct {
         if (p.t() == .assign) {
             p.next();
             const save_f = p.in_func;
+            const save_a = p.in_async;
             p.in_func = true;
+            p.in_async = false;
             d.init = p.parseAssignmentAllowIn();
             p.in_func = save_f;
+            p.in_async = save_a;
         }
         p.semiAfterProperty(&d);
         return p.mk(s, .{ .property_decl = p.box(d) });
@@ -2000,12 +2003,14 @@ const Parser = struct {
 
     fn isAwaitExpr(p: *Parser) bool {
         if (p.in_async) return true;
-        // Top-level await: outside any function, `await` followed by an expression start is the operator.
-        if (p.in_func) return false;
         const st = p.save();
         defer p.restore(st);
         p.next();
         if (p.lx.nl_before) return false;
+        // tsc's `nextTokenIsIdentifierOrKeywordOrLiteralOnSameLine`: the operator outside an await
+        // context, which the checker then reports.
+        if (p.in_func) return p.t() == .identifier or p.t().isKeyword() or p.t() == .numeric or p.t() == .bigint or p.t() == .string;
+        // Top-level await: outside any function, `await` followed by an expression start is the operator.
         return switch (p.t()) {
             .identifier, .kw_new, .kw_this, .string, .numeric, .l_paren, .l_bracket, .kw_import, .no_subst_template, .template_head, .kw_await, .lt => true,
             else => p.t().isIdentifierLike(),

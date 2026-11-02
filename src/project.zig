@@ -1249,6 +1249,7 @@ fn loadOne(l: *const Loading, worker: usize, i: usize) void {
     const scratch = &l.scratch[worker];
     defer scratch.reset();
     const r = Resolver{ .io = l.io, .a = scratch.allocator(), .fs = l.fs, .cfg = l.cfg };
+    f.implied_cjs = l.cfg.options.moduleFormat() == .node and r.impliedMode(path) == .require;
     var untyped: std.ArrayList(SourceFile.Untyped) = .empty;
     for (f.module_specs, 0..) |s, n| {
         var by_mode = r;

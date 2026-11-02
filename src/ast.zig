@@ -443,6 +443,8 @@ pub const File = struct {
     directives: []lexer.Lexer.TsDirective,
     is_dts: bool,
     is_module: bool,
+    /// Under Node's module modes, the file's format is CommonJS.
+    implied_cjs: bool = false,
     references: []Reference,
     symbol: ?*binder.Symbol = null,
     bind_diags: []lexer.Diag = &.{},
