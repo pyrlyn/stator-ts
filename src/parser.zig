@@ -285,6 +285,22 @@ const Parser = struct {
         p.lx.err(e.start, span, 1434, "Unexpected keyword or identifier.");
     }
 
+    /// tsc's `parseSemicolonAfterPropertyName`.
+    fn semiAfterProperty(p: *Parser, d: *const ast.Property) void {
+        if (p.t() == .at and !p.lx.nl_before) return p.errHere(1436, "Decorators must precede the name and all keywords of property declarations.");
+        if (p.t() == .l_paren) {
+            p.errHere(1441, "Cannot start a function call in a type annotation.");
+            return p.next();
+        }
+        if (d.type != null and !p.canSemi()) {
+            if (d.init != null) return p.errHere(1005, "';' expected.");
+            return p.errHere(1442, "Expected '=' for property initializer.");
+        }
+        if (p.eat(.semi) or p.canSemi()) return;
+        if (d.init != null or d.name.data != .identifier) return p.errHere(1005, "';' expected.");
+        p.semiAfterWord(d.name);
+    }
+
     fn badName(p: *Parser, blank: Tok, code: u32, comptime fmt: []const u8, blank_code: u32, blank_msg: []const u8) void {
         if (p.t() == blank) return p.errHere(blank_code, blank_msg);
         p.errHere(code, std.fmt.allocPrint(p.a, fmt, .{p.lx.src[p.lx.start..p.lx.pos]}) catch oom());
@@ -909,6 +925,8 @@ const Parser = struct {
                 .kw_export, .kw_default, .kw_declare, .kw_abstract, .kw_public, .kw_private, .kw_protected, .kw_static, .kw_readonly, .kw_override, .kw_async, .kw_const, .kw_accessor, .kw_in, .kw_out => {},
                 else => break,
             }
+            // tsc's `tryParseModifier`: a second `static` is the member's name.
+            if (tok == .kw_static and m.static) break;
             if (!p.modifierApplies(tok)) break;
             switch (tok) {
                 .kw_export => m.@"export" = true,
@@ -1374,7 +1392,7 @@ const Parser = struct {
             d.init = p.parseAssignmentAllowIn();
             p.in_func = save_f;
         }
-        p.semi();
+        p.semiAfterProperty(&d);
         return p.mk(s, .{ .property_decl = p.box(d) });
     }
 

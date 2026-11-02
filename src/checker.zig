@@ -13,6 +13,7 @@ const relate = @import("relate.zig");
 const flow = @import("flow.zig");
 const unused = @import("unused.zig");
 const overloads = @import("overloads.zig");
+const modifiers = @import("modifiers.zig");
 const Node = ast.Node;
 const Symbol = binder.Symbol;
 const F = binder.F;
@@ -493,7 +494,7 @@ fn misplaced(c: *Checker, n: *Node, code: u32, msg: []const u8) bool {
     return true;
 }
 
-fn isAmbientModule(n: *Node) bool {
+pub fn isAmbientModule(n: *Node) bool {
     const x = n.data.module_decl;
     return x.is_global or x.name.data == .string_lit;
 }
@@ -603,21 +604,6 @@ fn canBeDecorated(c: *Checker, n: *Node) bool {
     }
 }
 
-/// `export` and `declare` mean something only at the top of a file or a module.
-fn checkStatementMods(c: *Checker, n: *Node) void {
-    const p = n.parent orelse return;
-    if (p.data == .source_file or p.data == .module_block) return;
-    var m = n.mods;
-    m.decorated = false;
-    switch (n.data) {
-        .func => m.async = false,
-        .class => m.abstract = false,
-        .enum_decl => m.@"const" = false,
-        else => {},
-    }
-    if (m != ast.Mods{}) grammarErr(c, n, 1184, "Modifiers cannot appear here.");
-}
-
 fn isSideEffectImport(n: *Node) bool {
     return n.data == .import_decl and n.data.import_decl.clause == null;
 }
@@ -719,7 +705,6 @@ fn checkStmt(c: *Checker, n: *Node) void {
     switch (n.data) {
         .block => |x| checkBlock(c, x.stmts),
         .var_stmt => |x| {
-            checkStatementMods(c, n);
             checkStmt(c, x.list);
         },
         .var_list => |x| for (x.decls) |v| checkVarDecl(c, v),
@@ -798,24 +783,19 @@ fn checkStmt(c: *Checker, n: *Node) void {
             if (x.finally) |f| checkStmt(c, f);
         },
         .func => {
-            checkStatementMods(c, n);
             overloads.check(c, n);
             checkFuncBody(c, n);
         },
         .class => {
-            checkStatementMods(c, n);
             checkClass(c, n);
         },
         .interface => {
-            checkStatementMods(c, n);
             checkInterface(c, n);
         },
         .type_alias => |x| {
-            checkStatementMods(c, n);
             _ = d.typeFromNode(c, x.type);
         },
         .enum_decl => |x| {
-            checkStatementMods(c, n);
             if (n.symbol()) |s| _ = d.declaredType(c, s);
             for (x.members) |m| {
                 const member = m.data.enum_member;
@@ -1232,6 +1212,7 @@ fn walkTypes(c: *Checker, n: *Node) void {
         if (f.body == null) for (f.params) |p| implicitAny(c, p, n);
         if (f.kind == .method_sig) overloads.check(c, n);
     }
+    modifiers.check(c, n);
     if (n.data == .param) checkParameter(c, n);
     if (n.data == .index_sig) checkIndexSignatureGrammar(c, n);
     if (n.data == .property_decl or n.data == .property_sig) implicitAnyMember(c, n);
@@ -1426,7 +1407,7 @@ fn isIdentifierName(n: *Node) bool {
     };
 }
 
-fn isAmbient(c: *Checker, n: *Node) bool {
+pub fn isAmbient(c: *Checker, n: *Node) bool {
     if (d.fileOf(c, n)) |f| if (f.is_dts) return true;
     var x: ?*Node = n;
     while (x) |y| : (x = y.parent) if (y.mods.declare) return true;
