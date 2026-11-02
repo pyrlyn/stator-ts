@@ -835,11 +835,16 @@ const Resolver = struct {
             has_sub = true;
         };
         if (!has_sub) return if (sub.len == 0) r.tryTarget(dir, exp, null) else null;
-        if (exp.object.get(key)) |v| return r.tryTarget(dir, v, null);
+        return r.tryMapKey(dir, exp.object, key);
+    }
+
+    /// An exact key wins; otherwise the `*` pattern with the longest prefix, as in Node.
+    fn tryMapKey(r: Resolver, dir: []const u8, map: json.ObjectMap, key: []const u8) ?[]const u8 {
+        if (map.get(key)) |v| return r.tryTarget(dir, v, null);
         var best: ?json.Value = null;
         var best_pre: usize = 0;
         var stem: []const u8 = "";
-        var it = exp.object.iterator();
+        var it = map.iterator();
         while (it.next()) |e| {
             const star = std.mem.indexOfScalar(u8, e.key_ptr.*, '*') orelse continue;
             const pre = e.key_ptr.*[0..star];
@@ -898,8 +903,8 @@ const Resolver = struct {
         return std.mem.concat(r.a, u8, &.{ "@types/", name }) catch oom();
     }
 
-    /// A package can import itself by name, and only through its own exports map.
-    fn trySelfName(r: Resolver, from: []const u8, spec: []const u8) ?[]const u8 {
+    /// The nearest package.json above `from`, with the directory that holds it.
+    fn packageScope(r: Resolver, from: []const u8) ?struct { []const u8, json.ObjectMap } {
         var dir: ?[]const u8 = from;
         const scope = while (dir) |d| : (dir = fspath.dirname(d)) {
             const pkg = fspath.join(r.a, &.{ d, "package.json" }) catch oom();
@@ -908,12 +913,28 @@ const Resolver = struct {
         const text = r.fs.readPackage(scope) orelse return null;
         const v = json.parseFromSliceLeaky(json.Value, r.a, text, .{}) catch return null;
         if (v != .object) return null;
-        const exports = v.object.get("exports") orelse return null;
-        const name = v.object.get("name") orelse return null;
+        return .{ dir.?, v.object };
+    }
+
+    /// `#name` goes through the `imports` map of the package the importing file belongs to.
+    fn tryImports(r: Resolver, from: []const u8, spec: []const u8) ?[]const u8 {
+        // tsc rejects `#` and `#/…` before looking.
+        if (spec.len < 2 or spec[1] == '/') return null;
+        const dir, const pkg = r.packageScope(from) orelse return null;
+        const imports = pkg.get("imports") orelse return null;
+        if (imports != .object) return null;
+        return r.tryMapKey(dir, imports.object, spec);
+    }
+
+    /// A package can import itself by name, and only through its own exports map.
+    fn trySelfName(r: Resolver, from: []const u8, spec: []const u8) ?[]const u8 {
+        const dir, const v = r.packageScope(from) orelse return null;
+        const exports = v.get("exports") orelse return null;
+        const name = v.get("name") orelse return null;
         if (name != .string or !std.mem.startsWith(u8, spec, name.string)) return null;
         const sub = spec[name.string.len..];
         if (sub.len > 0 and sub[0] != '/') return null;
-        return r.tryExports(dir.?, exports, sub);
+        return r.tryExports(dir, exports, sub);
     }
 
     fn tryNodeModules(r: Resolver, from: []const u8, spec: []const u8) ?[]const u8 {
@@ -967,6 +988,7 @@ const Resolver = struct {
     }
 
     fn resolveBare(r: Resolver, dir: []const u8, spec: []const u8) ?[]const u8 {
+        if (spec[0] == '#') return r.tryImports(dir, spec);
         if (std.mem.startsWith(u8, spec, "node:")) return r.tryNodeModules(dir, spec[5..]) orelse r.tryNodeModules(dir, spec);
         if (r.tryPaths(spec)) |p| return p;
         if (r.cfg.options.baseUrl) |b| {
