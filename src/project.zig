@@ -59,6 +59,7 @@ pub const Options = struct {
     jsxFactory: ?[]const u8 = null,
     jsxFragmentFactory: ?[]const u8 = null,
     jsxImportSource: ?[]const u8 = null,
+    experimentalDecorators: ?bool = null,
     reactNamespace: ?[]const u8 = null,
     outDir: ?[]const u8 = null,
     rootDir: ?[]const u8 = null,
@@ -157,7 +158,7 @@ const plain_js_errors = [_]u32{
     1174,  18006, 1312,  1114, 1450,  18038, 17000, 17001, 18007, 2633, 1107,  1200,  1184,  18112, 1091, 1188,
     18114, 18016, 1451,  18013, 18115, 18113, 1358, 1106,  1189,  1190, 1009,  1123,  5076,  1005,  18061, 17012,
     1097,  1030,  1089,  1044, 1090,  1031,  1042,  1029, 1156,  1155,  1172,  2480,  1368,  1341,  1308, 2852,
-    1111,  2839,
+    1111,  2839,  1206,
 };
 
 pub const PathMapping = struct { pattern: []const u8, targets: []const []const u8 };

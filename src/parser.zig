@@ -971,6 +971,7 @@ const Parser = struct {
         };
         n.start = s;
         n.mods = @bitCast(@as(u16, @bitCast(n.mods)) | @as(u16, @bitCast(mods)));
+        if (decorators.len > 0 and n.data != .func and n.data != .class) n.mods.decorated = true;
         return n;
     }
 
@@ -1143,11 +1144,15 @@ const Parser = struct {
     }
 
     fn parseParam(p: *Parser) *Node {
+        // tsc places this error at the full start of the modifiers, leading trivia included.
+        const full = p.prev_end;
         const s = p.lx.start;
         const decorators = p.parseDecorators();
         const mods = p.parseModifiers();
         var d = ast.Param{ .decorators = decorators, .name = undefined };
         d.dotdotdot = p.eat(.dot3);
+        if (p.t() == .kw_this and (decorators.len > 0 or mods != Mods{}))
+            p.lx.err(full, p.lx.start - full, 1433, "Neither decorators nor modifiers may be applied to 'this' parameters.");
         d.name = if (p.t() == .kw_this) p.identNode() else p.parseBindingName();
         d.ann_span.start = p.lx.start;
         d.ann_span.end = p.lx.start;
@@ -1291,6 +1296,8 @@ const Parser = struct {
         const mods = p.parseModifiers();
         const n = p.parseClassMemberRest(s, decorators, mods);
         n.mods = mods;
+        // Only methods, accessors and properties keep their decorators.
+        n.mods.decorated = decorators.len > 0 and n.data == .static_block;
         n.start = s;
         return n;
     }

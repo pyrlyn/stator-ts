@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "experimentalDecorators": true,
+    "noEmit": true,
+    "target": "es2022",
+    "module": "esnext",
+    "lib": ["es2022"],
+    "types": []
+  }
+}

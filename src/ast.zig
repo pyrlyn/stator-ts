@@ -19,7 +19,8 @@ pub const Mods = packed struct(u16) {
     accessor: bool = false,
     in: bool = false,
     out: bool = false,
-    _pad: u1 = 0,
+    /// Decorators were written on a declaration that has nowhere to keep them.
+    decorated: bool = false,
 };
 
 pub const Span = struct { start: u32 = 0, end: u32 = 0 };

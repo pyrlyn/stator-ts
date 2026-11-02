@@ -504,11 +504,84 @@ fn checkExportAssign(c: *Checker, n: *Node) void {
     _ = expr.checkExpression(c, x.expr);
 }
 
+/// tsc's `nodeCanBeDecorated`, reported as `checkGrammarModifiers` does: at the declaration's
+/// first token, which is its first decorator.
+fn checkDecorators(c: *Checker, n: *Node) void {
+    // The parser has reported a decorated `this` parameter.
+    if (n.data == .param and n.parent.?.data == .func and d.thisParam(n.parent.?) == n) {} else if (n.data == .export_assign and n.mods.decorated and decoratedClass(n.data.export_assign.expr)) {
+        grammarErr(c, n.data.export_assign.expr, 8038, "Decorators may not appear after 'export' or 'export default' if they also appear before 'export'.");
+    } else if (decorated(n) and !canBeDecorated(c, n)) {
+        if (n.data == .func and n.data.func.kind == .method and n.data.func.body == null) {
+            grammarErr(c, n, 1249, "A decorator can only decorate a method implementation, not an overload.");
+        } else {
+            grammarErr(c, n, 1206, "Decorators are not valid here.");
+        }
+    }
+    if (n.data == .func) if (n.data.func.body) |b| if (b.data == .lazy_body) {
+        for (n.data.func.params) |p| checkDecorators(c, p);
+        if (d.bodyOf(c, n)) |body| checkDecorators(c, body.block);
+        return;
+    };
+    ast.forEachChild(n, c, checkDecorators);
+}
+
+fn decorated(n: *Node) bool {
+    if (n.mods.decorated) return true;
+    return switch (n.data) {
+        .func => |x| x.decorators.len > 0,
+        .class => |x| x.decorators.len > 0,
+        .param => |x| x.decorators.len > 0,
+        .property_decl => |x| x.decorators.len > 0,
+        else => false,
+    };
+}
+
+fn decoratedClass(n: *Node) bool {
+    return n.data == .class and n.data.class.decorators.len > 0;
+}
+
+fn canBeDecorated(c: *Checker, n: *Node) bool {
+    const parent = n.parent orelse return false;
+    // `export default class` is a declaration, whichever side of `export` its decorators sit.
+    if (n.data == .export_assign) return !n.data.export_assign.is_equals and n.data.export_assign.expr.data == .class;
+    if (n.mods.decorated) return false;
+    const legacy = c.prog.cfg.options.experimentalDecorators orelse false;
+    if (n.data == .class and parent.data == .export_assign) return true;
+    const in_class_decl = parent.data == .class and !parent.data.class.is_expr;
+    switch (n.data) {
+        .class => |x| return !x.is_expr or !legacy,
+        .property_decl => |x| {
+            // Private names cannot be decorated yet under the legacy proposal.
+            if (legacy) return x.name.data != .private_name and in_class_decl;
+            return parent.data == .class and !n.mods.abstract and !n.mods.declare;
+        },
+        .func => |x| switch (x.kind) {
+            .method, .getter, .setter => {
+                if (legacy and x.name != null and x.name.?.data == .private_name) return false;
+                if (x.body == null) return false;
+                return if (legacy) in_class_decl else parent.data == .class;
+            },
+            else => return false,
+        },
+        .param => {
+            // Parameter decorators wait on the proposal to be standardized.
+            if (!legacy or parent.data != .func) return false;
+            const f = parent.data.func;
+            if (f.body == null or !(f.kind == .ctor or f.kind == .method or f.kind == .setter)) return false;
+            if (d.thisParam(parent) == n) return false;
+            const owner = parent.parent orelse return false;
+            return owner.data == .class and !owner.data.class.is_expr;
+        },
+        else => return false,
+    }
+}
+
 /// `export` and `declare` mean something only at the top of a file or a module.
 fn checkStatementMods(c: *Checker, n: *Node) void {
     const p = n.parent orelse return;
     if (p.data == .source_file or p.data == .module_block) return;
     var m = n.mods;
+    m.decorated = false;
     switch (n.data) {
         .func => m.async = false,
         .class => m.abstract = false,
@@ -1263,6 +1336,7 @@ fn checkFile(c: *Checker, f: *ast.File) void {
     checkBlock(c, f.root.data.source_file.stmts);
     drainDeferred(c);
     walkTypes(c, f.root);
+    if (std.mem.indexOfScalar(u8, f.src, '@') != null) checkDecorators(c, f.root);
     unused.checkFile(c, f);
     forgetBodies(c);
 }
