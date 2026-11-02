@@ -288,6 +288,38 @@ fn hasReturn(body: *Node) bool {
 }
 
 /// tsc's `checkAccessorDeclaration`: a getter whose end is reachable must have some `return`.
+/// tsc's `getTypeOfAccessors`: with no annotation on either accessor and no getter body to infer
+/// from, the property is `any`. The setter takes the blame when there is one.
+fn implicitAnyAccessor(c: *Checker, n: *Node) void {
+    if (!c.no_implicit_any) return;
+    const f = n.data.func;
+    const getter, const setter = switch (f.kind) {
+        .getter, .getter_sig => .{ n, d.getterSetter(c, n) },
+        .setter, .setter_sig => .{ d.setterGetter(c, n), n },
+        else => return,
+    };
+    // The pair is judged once, from the setter if there is one.
+    if (setter != null and setter != n) return;
+    // A literal written to, as in `({ set s(v) {} } = o)`, is never typed.
+    if (n.parent) |p| if (p.data == .object_lit and expr.isPatternTarget(p)) return;
+    if (getter) |g| if (g.data.func.ret != null or g.data.func.body != null) return;
+    if (setter) |x| {
+        const ps = x.data.func.params;
+        if (ps.len > 0 and ps[0].data.param.type != null) return;
+    }
+    const file = d.fileOf(c, n) orelse return;
+    // JSDoc may type it, and is not modeled.
+    if (project.isJs(file.path)) return;
+    const name = f.name orelse return;
+    if (privateWithinAmbient(c, n, name)) return;
+    const shown = file.src[name.start..name.end];
+    if (setter != null) {
+        err(c, name, 7032, c.fmt("Property '{s}' implicitly has type 'any', because its set accessor lacks a parameter type annotation.", .{shown}));
+    } else {
+        err(c, name, 7033, c.fmt("Property '{s}' implicitly has type 'any', because its get accessor lacks a return type annotation.", .{shown}));
+    }
+}
+
 fn checkGetterReturns(c: *Checker, n: *Node) void {
     const f = n.data.func;
     if (f.kind != .getter or f.body == null or isAmbient(c, n)) return;
@@ -1404,6 +1436,7 @@ fn walkTypesIn(c: *Checker, n: *Node) void {
         // tsc's `checkGrammarAccessor`.
         if (f.kind == .getter_sig or f.kind == .setter_sig) if (f.body) |b| grammarErr(c, b, 1183, "An implementation cannot be declared in ambient contexts.");
         checkGetterReturns(c, n);
+        implicitAnyAccessor(c, n);
         if (f.kind == .method_sig) overloads.check(c, n);
     }
     modifiers.check(c, n);

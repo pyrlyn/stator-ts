@@ -276,7 +276,7 @@ fn isAssignTarget(n0: *Node) bool {
     return false;
 }
 
-fn isPatternTarget(n0: *Node) bool {
+pub fn isPatternTarget(n0: *Node) bool {
     var n = n0;
     while (n.parent) |p| {
         switch (p.data) {
