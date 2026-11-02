@@ -1260,6 +1260,34 @@ pub fn verifyConstraints(c: *Checker, p: T.PendingConstraint) void {
     }
 }
 
+/// tsc's `instantiateAliasOrInterfaceWithDefaults`: `given` in front, defaults for the rest.
+pub fn instantiateWithDefaults(c: *Checker, s: *Symbol, given: []const *Type) ?*Type {
+    if (s.flags & F.type_alias != 0) {
+        const params = aliasParams(c, s);
+        if (params.len < given.len) return null;
+        if (params.len == 0) return declaredType(c, s);
+        return instantiateAlias(c, s, params, withDefaults(c, params, given));
+    }
+    const g = declaredType(c, s);
+    if (g.data != .obj or g.data.obj.kind != .iface) return null;
+    const params = g.data.obj.tparams();
+    if (params.len < given.len) return null;
+    if (params.len == 0) return g;
+    return c.internRef(g, withDefaults(c, params, given), null);
+}
+
+fn withDefaults(c: *Checker, params: []*Type, given: []const *Type) []*Type {
+    const out = c.a.alloc(*Type, params.len) catch oom();
+    @memcpy(out[0..given.len], given);
+    @memset(out[given.len..], c.t_unknown);
+    const m = arrayMapper(c, params, out);
+    for (given.len..params.len) |i| {
+        const x = defaultOf(c, params[i]) orelse continue;
+        out[i] = instantiate(c, x, m);
+    }
+    return out;
+}
+
 pub fn instantiateAlias(c: *Checker, s: *Symbol, params: []*Type, args: []*Type) *Type {
     const key = c.keyOf('A', args.len + 1);
     key[1] = @truncate(@intFromPtr(s) >> 3);

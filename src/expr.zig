@@ -1304,7 +1304,14 @@ fn rawContext(c: *Checker, n: *Node) ?*Type {
         },
         .call => |x| return argContext(c, p, n, x.args),
         .new_expr => |x| return argContext(c, p, n, x.args),
-        .jsx_expr, .jsx_attr, .jsx_spread_attr => return c.t_err,
+        .jsx_attr => return jsxAttrContext(c, p) orelse c.t_err,
+        .jsx_expr => {
+            const a = p.parent orelse return c.t_err;
+            if (a.data == .jsx_attr) return jsxAttrContext(c, a) orelse c.t_err;
+            if (a.data == .jsx_element) return jsxChildContext(c, p, a) orelse c.t_err;
+            return c.t_err;
+        },
+        .jsx_spread_attr => return c.t_err,
         else => return null,
     }
 }
@@ -4477,6 +4484,10 @@ fn reportNotAssignable(c: *Checker, s: *Type, t0: *Type, n: *Node, value: ?*Node
     const t = reportedTarget(c, s, t0);
     if (relate.excessProp(c, s, t)) |p| {
         const at = if (p.decl) |x| propNameNode(x) else n;
+        if (relate.isJsxAttributes(s)) {
+            err(c, at, 2322, c.fmt("Type '{s}' is not assignable to type '{s}'.", .{ show(c, s), show(c, t) }));
+            return;
+        }
         err(c, at, 2353, c.fmt("Object literal may only specify known properties, and '{s}' does not exist in type '{s}'.", .{ p.name, show(c, t) }));
         return;
     }
@@ -5701,8 +5712,14 @@ fn checkJsx(c: *Checker, n: *Node) void {
             return;
         },
         .identifier, .prop_access, .this_expr => return,
-        .jsx_opening => |x| checkIntrinsicTag(c, n, x.tag),
-        .jsx_self_closing => |x| checkIntrinsicTag(c, n, x.tag),
+        .jsx_opening => |x| {
+            checkIntrinsicTag(c, n, x.tag);
+            if (checkJsxAttributes(c, n, x.tag, x.attrs)) return;
+        },
+        .jsx_self_closing => |x| {
+            checkIntrinsicTag(c, n, x.tag);
+            if (checkJsxAttributes(c, n, x.tag, x.attrs)) return;
+        },
         .jsx_closing => |x| checkIntrinsicTag(c, n, x.tag),
         else => {},
     }
@@ -5718,6 +5735,288 @@ fn checkIntrinsicTag(c: *Checker, n: *Node, tag: *Node) void {
     const ns = jsxNamespace(c, n) orelse return;
     if (ns) |x| if (x.exports) |e| if (e.get("IntrinsicElements")) |ie| if (ie.resolve().flags & F.type != 0) return;
     err(c, n, 7026, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
+}
+
+fn isIntrinsicTag(tag: *Node) bool {
+    if (tag.data != .identifier) return false;
+    const name = tag.data.identifier;
+    return name.len > 0 and (std.ascii.isLower(name[0]) or std.mem.indexOfAny(u8, name, "-:") != null);
+}
+
+/// tsc's `getIntrinsicAttributesTypeFromJsxOpeningLikeElement`: `JSX.IntrinsicElements[tag]`, or
+/// its string index. Null when there is nothing to check against.
+fn intrinsicProps(c: *Checker, el: *Node, tag: *Node, report: bool) ?*Type {
+    if (!isIntrinsicTag(tag)) return null;
+    const ns = (jsxNamespace(c, el) orelse return null) orelse return null;
+    const ie = (ns.exports orelse return null).get("IntrinsicElements") orelse return null;
+    if (ie.resolve().flags & F.type == 0) return null;
+    const t = d.declaredType(c, ie.resolve());
+    if (T.isAny(t)) return null;
+    const name = tag.data.identifier;
+    if (d.getProp(c, t, name)) |p| return d.propType(c, p);
+    if (d.indexValue(c, t, c.t_string)) |v| return v;
+    if (report) err(c, el, 2339, c.fmt("Property '{s}' does not exist on type 'JSX.IntrinsicElements'.", .{name}));
+    return null;
+}
+
+fn jsxTag(el: *Node) ?*Node {
+    return switch (el.data) {
+        .jsx_opening => |x| x.tag,
+        .jsx_self_closing => |x| x.tag,
+        else => null,
+    };
+}
+
+/// tsc's `getContextualTypeForJsxAttribute`: the attribute's property in what the element takes.
+fn jsxAttrContext(c: *Checker, attr: *Node) ?*Type {
+    const el = attr.parent orelse return null;
+    const targets = jsxTargets(c, el, jsxTag(el) orelse return null, false) orelse return null;
+    if (targets.len != 1) return null;
+    const name = attr.data.jsx_attr.name;
+    if (name.data != .identifier) return null;
+    const attrs = switch (el.data) {
+        .jsx_opening => |x| x.attrs,
+        .jsx_self_closing => |x| x.attrs,
+        else => return null,
+    };
+    return targetProp(c, discriminateJsx(c, attrs, targets[0]), name.data.identifier);
+}
+
+/// tsc's `discriminateContextualTypeByJSXAttributes`, as `discriminate` does for object literals.
+fn discriminateJsx(c: *Checker, attrs: []*Node, t: *Type) *Type {
+    if (t.data != .union_) return t;
+    const types = t.data.union_;
+    const keep = c.a.alloc(Keep, types.len) catch oom();
+    for (types, keep) |m, *k| k.* = if (m.data == .obj or m.data == .inter or m.data == .param or m.data == .access) .yes else .no;
+    for (attrs) |a| {
+        if (a.data != .jsx_attr) continue;
+        const x = a.data.jsx_attr;
+        if (x.name.data != .identifier or !relate.isDiscriminant(c, types, x.name.data.identifier)) continue;
+        const value = if (x.value) |v| blk: {
+            const e = if (v.data == .jsx_expr) v.data.jsx_expr.expr orelse continue else v;
+            if (!possiblyDiscriminant(e)) continue;
+            break :blk contextFree(c, e);
+        } else c.t_true;
+        keepMatching(c, types, keep, x.name.data.identifier, value);
+    }
+    // An attribute left out reads as `undefined`, and that discriminates too.
+    outer: for (d.propsOf(c, types[0])) |x| {
+        for (attrs) |a| if (a.data == .jsx_attr and a.data.jsx_attr.name.data == .identifier and std.mem.eql(u8, a.data.jsx_attr.name.data.identifier, x.name)) continue :outer;
+        if (partlyOptional(c, types, x.name) and relate.isDiscriminant(c, types, x.name)) keepMatching(c, types, keep, x.name, c.t_undefined);
+    }
+    if (std.mem.indexOfScalar(Keep, keep, .no) == null) return t;
+    var rest = c.newList(*Type);
+    for (types, keep) |m, k| if (k == .yes) rest.append(c.a, m) catch oom();
+    return if (rest.items.len == 0) t else c.getUnion(rest.items);
+}
+
+/// tsc's `getContextualTypeForChildJsxExpression`: the children property, or its element at the
+/// child's place when there are several.
+fn jsxChildContext(c: *Checker, child: *Node, elem: *Node) ?*Type {
+    const open = elem.data.jsx_element.open;
+    const name = jsxChildrenName(c, open) orelse return null;
+    const targets = jsxTargets(c, open, jsxTag(open) orelse return null, false) orelse return null;
+    if (targets.len != 1) return null;
+    const ct = targetProp(c, discriminateJsx(c, open.data.jsx_opening.attrs, targets[0]), name) orelse return null;
+    var count: usize = 0;
+    var index: usize = 0;
+    for (elem.data.jsx_element.children) |k| {
+        if (!isSemanticChild(k)) continue;
+        if (k == child) index = count;
+        count += 1;
+    }
+    if (count == 1) return ct;
+    return elemOfCtx(c, child, ct, index);
+}
+
+/// tsc's `getSemanticJsxChildren`: whitespace-only text and empty `{}` are not children.
+fn isSemanticChild(k: *Node) bool {
+    return switch (k.data) {
+        .jsx_text => |text| std.mem.indexOfNone(u8, text, " \t\r\n") != null,
+        .jsx_expr => |x| x.expr != null,
+        else => true,
+    };
+}
+
+fn jsxExport(ns: ?*Symbol, name: []const u8) ?*Symbol {
+    const s = ((ns orelse return null).exports orelse return null).get(name) orelse return null;
+    const r = s.resolve();
+    return if (r.flags & F.type != 0) r else null;
+}
+
+/// tsc's `getNameFromJsxElementAttributesContainer`: the one member of a `JSX` interface such as
+/// `ElementAttributesProperty`. Null without the interface, empty when it has no members.
+fn jsxContainerName(c: *Checker, ns: ?*Symbol, container: []const u8) ?[]const u8 {
+    const s = jsxExport(ns, container) orelse return null;
+    const props = d.propsOf(c, d.declaredType(c, s));
+    if (props.len == 0) return "";
+    return if (props.len == 1) props[0].name else null;
+}
+
+fn jsxChildrenName(c: *Checker, el: *Node) ?[]const u8 {
+    const ns = jsxNamespace(c, el) orelse return null;
+    const name = jsxContainerName(c, ns, "ElementChildrenAttribute") orelse return null;
+    return if (name.len > 0) name else null;
+}
+
+/// What the element's attributes are checked against: one type per signature the tag can be
+/// called with (tsc's `getEffectiveFirstArgumentForJsxSignature`). Null when that cannot be told
+/// here, which leaves the attributes unchecked.
+fn jsxTargets(c: *Checker, el: *Node, tag: *Node, report: bool) ?[]*Type {
+    if (isIntrinsicTag(tag)) {
+        const t = intrinsicProps(c, el, tag, report) orelse return null;
+        return c.a.dupe(*Type, &.{t}) catch oom();
+    }
+    const ns = jsxNamespace(c, el) orelse return null;
+    const tt = checkExpr(c, tag);
+    // A class's static side mentions its `this` type, so `vars` alone does not mean generic; the
+    // props are checked for type variables below.
+    if (T.isAny(tt) or tt.data == .param) return null;
+    const ap = d.getApparent(c, tt);
+    const ctors = d.ctorSigs(c, ap);
+    const is_class = ctors.len > 0;
+    const sigs = if (is_class) ctors else d.callSigs(c, ap);
+    if (sigs.len == 0) return null;
+    const out = c.a.alloc(*Type, sigs.len) catch oom();
+    for (sigs, out) |sig, *o| {
+        if (sig.tparams.len > 0) return null;
+        var props = if (is_class) jsxClassProps(c, ns, sig) orelse return null else relate.typeAt(c, sig, 0) orelse c.t_unknown;
+        if (jsxExport(ns, "LibraryManagedAttributes")) |lma| props = d.instantiateWithDefaults(c, lma, &.{ tt, props }) orelse props;
+        if (T.isAny(props) or props.vars) return null;
+        if (is_class) if (jsxExport(ns, "IntrinsicClassAttributes")) |ica| {
+            const host = d.instantiateWithDefaults(c, ica, &.{d.returnOf(c, sig)}) orelse return null;
+            props = c.getIntersection(&.{ host, props });
+        };
+        if (jsxExport(ns, "IntrinsicAttributes")) |ia| props = c.getIntersection(&.{ d.declaredType(c, ia), props });
+        o.* = props;
+    }
+    return out;
+}
+
+/// tsc's `getJsxPropsTypeFromClassType`: where `JSX.ElementAttributesProperty` says the props are.
+fn jsxClassProps(c: *Checker, ns: ?*Symbol, sig: *Sig) ?*Type {
+    const name = jsxContainerName(c, ns, "ElementAttributesProperty") orelse return relate.typeAt(c, sig, 0) orelse c.t_unknown;
+    const instance = d.returnOf(c, sig);
+    if (name.len == 0 or T.isAny(instance)) return instance;
+    const p = d.getProp(c, instance, name) orelse return null;
+    return d.propType(c, p);
+}
+
+/// tsc's `createJsxAttributesTypeFromAttributesProperty` and the check `resolveJsxOpeningLikeElement`
+/// makes of it. False when the attributes are left to the generic walk.
+fn checkJsxAttributes(c: *Checker, el: *Node, tag: *Node, attrs: []*Node) bool {
+    const targets = jsxTargets(c, el, tag, true) orelse return false;
+    var m = c.membersFor(attrs.len);
+    var open = false;
+    var vars = false;
+    var written = false;
+    var unknown = false;
+    for (attrs) |a| switch (a.data) {
+        .jsx_attr => |x| {
+            const v = if (x.value) |val| blk: {
+                const e = if (val.data == .jsx_expr) val.data.jsx_expr.expr orelse break :blk c.t_err else val;
+                break :blk mutableLocation(c, e, checkExpr(c, e));
+            } else c.t_true;
+            if (x.name.data != .identifier) {
+                unknown = true;
+                continue;
+            }
+            if (v.vars) vars = true;
+            written = true;
+            const name = x.name.data.identifier;
+            m.props.put(c.a, name, c.create(Prop, .{ .name = name, .ty = v, .decl = a })) catch oom();
+        },
+        .jsx_spread_attr => |x| {
+            const s = checkExpr(c, x.expr);
+            if (s.data != .obj or s.vars) {
+                unknown = true;
+                continue;
+            }
+            m = spreadInto(c, m, s, false, false, &open);
+        },
+        else => {},
+    };
+    if (jsxChildrenName(c, el)) |name| if (el.parent) |p| if (p.data == .jsx_element and p.data.jsx_element.open == el) {
+        var kids = c.newList(*Type);
+        for (p.data.jsx_element.children) |k| {
+            if (!isSemanticChild(k)) continue;
+            kids.append(c.a, switch (k.data) {
+                .jsx_text => c.t_string,
+                .jsx_expr => |x| checkSilent(c, x.expr.?),
+                else => c.t_err,
+            }) catch oom();
+        }
+        if (kids.items.len > 0) {
+            const v = if (kids.items.len == 1) kids.items[0] else d.arrayOf(c, c.getUnion(kids.items));
+            m.props.put(c.a, name, c.create(Prop, .{ .name = name, .ty = v })) catch oom();
+        }
+    };
+    if (unknown) return true;
+    // Attributes are fresh, spreads and all, once one of them is written out.
+    const s = c.newObj(.{ .kind = .anon, .members = m, .lit = written, .literal = el, .open = open });
+    s.vars = vars;
+    for (targets) |t| if (relate.isAssignable(c, s, t)) return true;
+    if (quiet(c)) return true;
+    const last = targets[targets.len - 1];
+    if (targets.len > 1) {
+        err(c, jsxBlame(c, s, last, attrs, tag), 2769, "No overload matches this call.");
+        return true;
+    }
+    // tsc's `elaborateJsxComponents`: an attribute that does not fit takes the blame.
+    var blamed = false;
+    for (attrs) |a| {
+        const x = mismatchedAttr(c, s, last, a) orelse continue;
+        blamed = true;
+        if (x.value) |val| if (val.data == .jsx_expr) if (val.data.jsx_expr.expr) |e| if (elaborate(c, e, x.st, x.tt)) continue;
+        reportNotAssignable(c, x.st, x.tt, x.name, null);
+    }
+    if (blameJsxChildren(c, el, s, last)) blamed = true;
+    if (!blamed) reportNotAssignable(c, s, last, tag, null);
+    return true;
+}
+
+/// The children half of tsc's `elaborateJsxComponents`: a child expression that does not fit the
+/// children property, or its element when there are several, takes the blame.
+fn blameJsxChildren(c: *Checker, el: *Node, s: *Type, t: *Type) bool {
+    const p = el.parent orelse return false;
+    if (p.data != .jsx_element or p.data.jsx_element.open != el) return false;
+    const name = jsxChildrenName(c, el) orelse return false;
+    const sp = d.getProp(c, s, name) orelse return false;
+    const tt = targetProp(c, t, name) orelse return false;
+    if (relate.isAssignable(c, d.propType(c, sp), tt)) return false;
+    var kids = c.newList(*Node);
+    for (p.data.jsx_element.children) |k| if (isSemanticChild(k)) kids.append(c.a, k) catch oom();
+    var blamed = false;
+    for (kids.items, 0..) |k, i| {
+        if (k.data != .jsx_expr) continue;
+        const e = k.data.jsx_expr.expr.?;
+        const want = if (kids.items.len == 1) tt else elemOfCtx(c, k, tt, i) orelse continue;
+        const got = checkSilent(c, e);
+        if (relate.isAssignable(c, got, want)) continue;
+        blamed = true;
+        if (!elaborate(c, e, got, want)) reportNotAssignable(c, got, want, e, null);
+    }
+    return blamed;
+}
+
+const AttrMismatch = struct { name: *Node, value: ?*Node, st: *Type, tt: *Type };
+
+fn mismatchedAttr(c: *Checker, s: *Type, t: *Type, a: *Node) ?AttrMismatch {
+    if (a.data != .jsx_attr) return null;
+    const x = a.data.jsx_attr;
+    if (x.name.data != .identifier or std.mem.indexOfScalar(u8, x.name.data.identifier, '-') != null) return null;
+    const sp = d.getProp(c, s, x.name.data.identifier) orelse return null;
+    const tt = targetProp(c, t, x.name.data.identifier) orelse return null;
+    const st = d.propType(c, sp);
+    if (relate.isAssignable(c, st, tt)) return null;
+    return .{ .name = x.name, .value = x.value, .st = st, .tt = tt };
+}
+
+/// Where the check against `t` would report, which is where tsc puts a failed overload set.
+fn jsxBlame(c: *Checker, s: *Type, t: *Type, attrs: []*Node, tag: *Node) *Node {
+    for (attrs) |a| if (mismatchedAttr(c, s, t, a)) |x| return x.name;
+    if (relate.excessProp(c, s, t)) |p| if (p.decl) |x| return propNameNode(x);
+    return tag;
 }
 
 /// tsc's `getJsxNamespaceAt`: `JSX` under the factory's namespace, else the global one. Null when

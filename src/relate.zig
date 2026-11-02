@@ -755,7 +755,12 @@ pub fn hasCommonProp(c: *Checker, s: *Type, t: *Type) bool {
     }
     const props = d.propsOf(c, s);
     if (props.len == 0) return true;
-    for (props) |p| if (d.ownProp(c, t, p.name) != null) return true;
+    const jsx = isJsxAttributes(s);
+    for (props) |p| {
+        if (d.ownProp(c, t, p.name) != null) return true;
+        // Hyphenated attributes are known to every element, so they count as shared.
+        if (jsx and std.mem.indexOfScalar(u8, p.name, '-') != null) return true;
+    }
     return false;
 }
 
@@ -1296,10 +1301,22 @@ fn isObjectGlobal(c: *Checker, t: *Type) bool {
 pub fn excessProp(c: *Checker, s: *Type, t: *Type) ?*Prop {
     if (s.data != .obj or !s.data.obj.lit or s.data.obj.open or s.data.obj.spread) return null;
     if (!excessTarget(c, t)) return null;
+    const jsx = isJsxAttributes(s);
     for (d.membersOf(c, s).props.values()) |p| {
+        // tsc's `isKnownProperty`: `data-*` and other hyphenated attributes are always allowed.
+        if (jsx and std.mem.indexOfScalar(u8, p.name, '-') != null) continue;
+        // tsc's `shouldCheckAsExcessProperty`: only what was written on this element, not what a
+        // spread brought in.
+        if (jsx and (p.decl == null or p.decl.?.parent != s.data.obj.literal)) continue;
         if (!isKnown(c, t, p.name)) return p;
     }
     return null;
+}
+
+pub fn isJsxAttributes(s: *Type) bool {
+    if (s.data != .obj) return false;
+    const n = s.data.obj.literal orelse return false;
+    return n.data == .jsx_opening or n.data == .jsx_self_closing;
 }
 
 pub fn missingProps(c: *Checker, s: *Type, t: *Type) []const []const u8 {
