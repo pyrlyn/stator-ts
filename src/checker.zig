@@ -802,6 +802,8 @@ fn checkImport(c: *Checker, n: *Node) void {
 }
 
 fn moduleName(m: *Symbol) []const u8 {
+    // An ambient module is named by its declaration, not by the file that holds it.
+    if (m.decls.len > 0 and m.decls[0].data == .module_decl) return m.name;
     return if (m.file) |f| f.path else m.name;
 }
 
