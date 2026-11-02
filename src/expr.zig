@@ -90,7 +90,7 @@ fn quickType(c: *Checker, n: *Node) ?*Type {
         .as_expr => |y| if (isConstRef(y.type)) null else d.typeFromNode(c, y.type),
         .type_assertion => |y| if (isConstRef(y.type)) null else d.typeFromNode(c, y.type),
         .call => |y| blk: {
-            const special = y.callee.data == .import_kw or y.callee.data == .super_expr or namesSymbol(y.callee) or isRequireCall(x);
+            const special = y.callee.data == .import_kw or y.callee.data == .super_expr or namesSymbol(y.callee) or isRequireCall(x, true);
             if (special or y.optional or flow.isOptionalChain(y.callee)) break :blk null;
             const t = nonNull(c, checkSilent(c, y.callee));
             if (t.data != .obj) break :blk null;
@@ -109,10 +109,12 @@ fn quickType(c: *Checker, n: *Node) ?*Type {
     };
 }
 
-fn isRequireCall(n: *Node) bool {
+/// tsc's `isRequireCall`, which asks for a string argument only where the module is resolved.
+fn isRequireCall(n: *Node, string_arg: bool) bool {
+    if (n.data != .call) return false;
     const x = n.data.call;
     if (x.callee.data != .identifier or !std.mem.eql(u8, x.callee.data.identifier, "require")) return false;
-    return x.args.len == 1 and (x.args[0].data == .string_lit or x.args[0].data == .no_subst_template);
+    return x.args.len == 1 and (!string_arg or x.args[0].data == .string_lit or x.args[0].data == .no_subst_template);
 }
 
 /// Types an expression without reporting: narrowing reads operands the statement walker visits anyway.
@@ -204,6 +206,13 @@ fn unresolved(c: *Checker, n: *Node, name: []const u8) *Type {
     if (d.resolveName(c, n, name, F.namespace) != null) {
         err(c, n, 2708, c.fmt("Cannot use namespace '{s}' as a value.", .{name}));
         return c.t_err;
+    }
+    if (commonJsName(c, n, name)) {
+        if (!std.mem.eql(u8, name, "module")) return c.t_any;
+        // tsc gives `module` a single member; the module's own shape is not modelled yet.
+        const m = c.membersFor(1);
+        m.props.put(c.a, "exports", c.create(Prop, .{ .name = "exports", .ty = c.t_any })) catch oom();
+        return c.newObj(.{ .kind = .anon, .members = m });
     }
     if (hints.get(name)) |code| {
         const sweep = sweepsTypes(c);
@@ -2785,6 +2794,72 @@ fn declaredInJs(c: *Checker, s: *Symbol) bool {
 pub fn inJs(c: *Checker, n: *Node) bool {
     const f = d.fileOf(c, n) orelse return false;
     return project.isJs(f.path);
+}
+
+/// tsc's binder declares `module` and `exports` in a JavaScript file it saw export through
+/// CommonJS, and its name resolver takes `require` in `require(x)` as the module loader.
+fn commonJsName(c: *Checker, n: *Node, name: []const u8) bool {
+    if (!inJs(c, n)) return false;
+    if (std.mem.eql(u8, name, "require")) {
+        const p = n.parent orelse return false;
+        return isRequireCall(p, false) and p.data.call.callee == n;
+    }
+    if (!std.mem.eql(u8, name, "module") and !std.mem.eql(u8, name, "exports")) return false;
+    const f = d.fileOf(c, n) orelse return false;
+    // An ES module never becomes CommonJS.
+    if (f.is_module) return false;
+    if (c.commonjs_files.get(f.root)) |known| return known;
+    const found = hasCommonJsIndicator(c, f.root);
+    c.commonjs_files.put(c.a, f.root, found) catch oom();
+    return found;
+}
+
+fn isIdent(n: *Node, name: []const u8) bool {
+    return n.data == .identifier and std.mem.eql(u8, n.data.identifier, name);
+}
+
+fn isModuleExports(n: *Node) bool {
+    return n.data == .prop_access and isIdent(n.data.prop_access.expr, "module") and isIdent(n.data.prop_access.name, "exports");
+}
+
+fn isExportsRef(n: *Node) bool {
+    return isIdent(n, "exports") or isModuleExports(n);
+}
+
+/// What sets tsc's `CommonJSModuleIndicator`: `require(x)`, `module.exports = …`,
+/// `exports.x = …`, `module.exports.x = …` and `Object.defineProperty(exports, …)`.
+fn hasCommonJsIndicator(c: *Checker, n: *Node) bool {
+    switch (n.data) {
+        .lazy_body => {
+            const b = d.bodyOf(c, n.parent.?) orelse return false;
+            return hasCommonJsIndicator(c, b.block);
+        },
+        .call => |x| {
+            if (isRequireCall(n, false)) return true;
+            if (x.args.len > 0 and isExportsRef(x.args[0]) and x.callee.data == .prop_access and
+                isIdent(x.callee.data.prop_access.expr, "Object") and isIdent(x.callee.data.prop_access.name, "defineProperty")) return true;
+        },
+        .binary => |x| if (x.op == .assign) {
+            if (isModuleExports(x.left)) return true;
+            const target = switch (x.left.data) {
+                .prop_access => |p| p.expr,
+                .elem_access => |p| p.expr,
+                else => null,
+            };
+            if (target) |t| if (isExportsRef(t)) return true;
+        },
+        else => {},
+    }
+    const Search = struct {
+        c: *Checker,
+        found: bool = false,
+        fn visit(s: *@This(), child: *Node) void {
+            if (!s.found) s.found = hasCommonJsIndicator(s.c, child);
+        }
+    };
+    var search: Search = .{ .c = c };
+    ast.forEachChild(n, &search, Search.visit);
+    return search.found;
 }
 
 /// `import * as f from 'cjs'` under interop: the module comes back as `default`.

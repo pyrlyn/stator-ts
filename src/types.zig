@@ -486,6 +486,8 @@ pub const Checker = struct {
     assigned_syms: IdMap(*Symbol, u32) = .empty,
     /// Functions and files already searched for assignments.
     assigned_scopes: IdMap(*Node, void) = .empty,
+    /// JavaScript files, by root, already searched for a CommonJS export or `require`.
+    commonjs_files: IdMap(*Node, bool) = .empty,
     /// The function blocks this checker has parsed for itself.
     bodies: IdMap(*Node, binder.Body) = .empty,
     /// Contextual types pushed for an expression that is being checked against a candidate.
