@@ -2994,7 +2994,7 @@ pub fn extendsClause(cls: *Node) ?*Node {
     return null;
 }
 
-fn classBaseValue(c: *Checker, s: *Symbol) ?*Type {
+pub fn classBaseValue(c: *Checker, s: *Symbol) ?*Type {
     const e = classExtends(s) orelse return null;
     return expr.checkExpression(c, e.data.expr_with_type_args.expr);
 }

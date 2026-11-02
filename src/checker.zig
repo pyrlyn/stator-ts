@@ -1210,6 +1210,21 @@ fn isOverrideOk(c: *Checker, p: *T.Prop, b: *T.Prop) bool {
     return relate.isAssignable(c, d.propType(c, p), d.propType(c, b));
 }
 
+/// tsc's `getTypeWithoutSignatures`.
+/// tsc's `getTypeWithoutSignatures` for the static side of a class's base: properties only.
+fn staticBaseShape(c: *Checker, t: *Type) *Type {
+    if (t.data != .obj) return t;
+    const out = c.create(T.Members, .{});
+    for (d.propsOf(c, t)) |p| {
+        // Static private names are not inherited, and `prototype` repeats the instance-side
+        // check with `any` type arguments.
+        if (p.name.len > 0 and p.name[0] == '#') continue;
+        if (std.mem.eql(u8, p.name, "prototype")) continue;
+        out.props.put(c.a, p.name, p) catch oom();
+    }
+    return c.newObj(.{ .kind = .anon, .members = out });
+}
+
 /// tsc's `issueMemberSpecificError`: each member the class declares against the same one in
 /// `base`, before falling back to an error on the class as a whole.
 fn memberErrors(c: *Checker, n: *Node, t: *Type, this_t: *Type, base: *Type, shown: *Type) bool {
@@ -1254,9 +1269,18 @@ fn checkClass(c: *Checker, n: *Node) void {
     for (d.basesOf(c, t)) |b0| {
         const base = d.withThis(c, b0, t.data.obj.thisType() orelse t);
         if (base.data != .obj) continue;
-        // A class instance here leaves out the construct signatures tsc inherits.
-        if (!memberErrors(c, n, t, this_t, base, b0) and d.membersOf(c, base).ctors.len == 0 and !relate.isAssignable(c, this_t, base)) {
-            if (!expr.reportWeak(c, this_t, base, x.name orelse n)) err(c, x.name orelse n, 2415, c.fmt("Class '{s}' incorrectly extends base class '{s}'.", .{ expr.show(c, t), expr.show(c, b0) }));
+        const at = x.name orelse n;
+        if (memberErrors(c, n, t, this_t, base, b0)) {
+            // tsc reports the static side only for a class whose instance side fits.
+        } else if (d.membersOf(c, base).ctors.len == 0 and !relate.isAssignable(c, this_t, base)) {
+            // A class instance here leaves out the construct signatures tsc inherits.
+            if (!expr.reportWeak(c, this_t, base, at)) err(c, at, 2415, c.fmt("Class '{s}' incorrectly extends base class '{s}'.", .{ expr.show(c, t), expr.show(c, b0) }));
+        } else if (d.classBaseValue(c, s)) |ctor| {
+            const static_t = d.typeOfSymbol(c, s);
+            const static_base = staticBaseShape(c, d.getApparent(c, ctor));
+            if (!T.isAny(static_base) and !relate.isAssignable(c, static_t, static_base)) {
+                err(c, at, 2417, c.fmt("Class static side '{s}' incorrectly extends base class static side '{s}'.", .{ expr.show(c, static_t), expr.show(c, ctor) }));
+            }
         }
         checkAbstract(c, n, t, base);
     }

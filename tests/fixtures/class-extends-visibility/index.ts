@@ -61,3 +61,18 @@ interface Weak {
 class NothingInCommon implements Weak {
     other = 1;
 }
+
+class StaticBase {
+    static make(): number { return 1; }
+    static label = "base";
+    static get size() { return 1; }
+}
+class StaticRetyped extends StaticBase {
+    static make(): string { return ""; }
+}
+class StaticNarrowed extends StaticBase {
+    static label = "child";
+}
+class StaticPrivate extends StaticBase {
+    private static label = "hidden";
+}
