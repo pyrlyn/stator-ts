@@ -754,7 +754,7 @@ pub fn thisAccess(c: *Checker, name: *Node, ctor: *Node) ?*Node {
     return thisAccessAt(c, name, ctor, end);
 }
 
-fn thisAccessAt(c: *Checker, name: *Node, owner: *Node, end: *binder.FlowNode) *Node {
+pub fn thisAccessAt(c: *Checker, name: *Node, owner: *Node, end: *binder.FlowNode) *Node {
     const this = c.a.create(Node) catch oom();
     const ref = c.a.create(Node) catch oom();
     this.* = .{ .start = owner.start, .end = owner.start, .parent = ref, .data = .this_expr };

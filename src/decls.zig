@@ -1917,25 +1917,47 @@ pub fn addOptional(c: *Checker, t: *Type) *Type {
 
 fn propDecl(c: *Checker, d: *Node, ann: ?*Node, init: ?*Node, question: bool) *Type {
     var t = if (ann) |n| typeFromNode(c, n) else if (init) |i| expr.widenInit(c, i, expr.checkInit(c, i), d.mods.readonly) else typeFromConstructor(c, d) orelse c.t_any;
+    if (t == c.t_auto) t = c.t_any;
     if (question) t = addOptional(c, t);
     return t;
 }
 
-/// A property with neither type nor initializer takes what the constructor leaves in `this.x`,
-/// unless it only ever gets `null` or `undefined`.
-fn typeFromConstructor(c: *Checker, d: *Node) ?*Type {
-    if (!c.no_implicit_any or d.mods.static or d.mods.declare) return null;
+/// tsc's `getFlowTypeInConstructor` and `getFlowTypeInStaticBlocks`: a property with neither type
+/// nor initializer takes what the constructor (or a static block) leaves in `this.x`, unless it only
+/// ever gets `null` or `undefined`. `t_auto` means nothing was assigned on some path.
+pub fn typeFromConstructor(c: *Checker, d: *Node) ?*Type {
+    if (!c.no_implicit_any or d.mods.declare) return null;
     const cls = d.parent orelse return null;
     if (cls.data != .class) return null;
-    const ctor = for (cls.data.class.members) |m| {
-        if (m.data == .func and m.data.func.kind == .ctor and m.data.func.body != null) break m;
-    } else return null;
-    const ref = expr.thisAccess(c, d.data.property_decl.name, ctor) orelse return null;
-    const t = flow.flowType(c, ref, c.t_auto, c.t_undefined, ctor);
-    if (t == c.t_auto) return c.t_any;
-    const members_of = if (t.data == .union_) t.data.union_ else @as([]const *Type, &.{t});
-    for (members_of) |m| if (m.data != .null and m.data != .undefined) return t;
+    const name = thisRefName(c, d.data.property_decl.name) orelse return null;
+    if (!d.mods.static) {
+        const ctor = for (cls.data.class.members) |m| {
+            if (m.data == .func and m.data.func.kind == .ctor and m.data.func.body != null) break m;
+        } else return null;
+        const ref = expr.thisAccess(c, name, ctor) orelse return null;
+        return inferredFromFlow(c, flow.flowType(c, ref, c.t_auto, c.t_undefined, ctor));
+    }
+    for (cls.data.class.members) |m| {
+        if (m.data != .static_block) continue;
+        const end = m.data.static_block.end_flow orelse continue;
+        const ref = expr.thisAccessAt(c, name, m, end);
+        if (inferredFromFlow(c, flow.flowType(c, ref, c.t_auto, c.t_undefined, m))) |t| return t;
+    }
     return null;
+}
+
+/// `this.x` needs an identifier, so `0` and `"x"` members are referenced by their symbol name,
+/// which `this[0]` and `this["x"]` match.
+fn thisRefName(c: *Checker, n: *Node) ?*Node {
+    if (n.data == .identifier or n.data == .private_name) return n;
+    const id = c.a.create(Node) catch oom();
+    id.* = .{ .start = n.start, .end = n.end, .parent = n.parent, .data = .{ .identifier = expr.propNameOf(c, n) orelse return null } };
+    return id;
+}
+
+fn inferredFromFlow(c: *Checker, t: *Type) ?*Type {
+    if (t == c.t_auto) return t;
+    return if (everyNullable(t)) null else t;
 }
 
 fn accessorType(c: *Checker, s: *Symbol) *Type {

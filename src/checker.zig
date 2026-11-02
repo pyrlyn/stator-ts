@@ -62,6 +62,27 @@ fn implicitAny(c: *Checker, p: *Node, fnode: ?*Node) void {
     }
 }
 
+/// tsc's `widenTypeForVariableLikeDeclaration` for a property with neither a type nor an initializer.
+fn implicitAnyMember(c: *Checker, n: *Node) void {
+    if (!c.no_implicit_any) return;
+    const name, const typed = switch (n.data) {
+        .property_decl => |x| .{ x.name, x.type != null or x.init != null },
+        .property_sig => |x| .{ x.name, x.type != null },
+        else => return,
+    };
+    if (typed) return;
+    const f = d.fileOf(c, n) orelse return;
+    // JSDoc may type it, and is not modeled.
+    if (project.isJs(f.path)) return;
+    if ((n.mods.private or name.data == .private_name) and isAmbient(c, n)) return;
+    if (n.data == .property_decl) {
+        if (d.typeFromConstructor(c, n)) |t| if (t != c.t_auto) return;
+        // tsc takes a `declare`d member's type from the base class, which this does not look up.
+        if (n.mods.declare and n.parent.?.data == .class and n.parent.?.data.class.heritage.len > 0) return;
+    }
+    err(c, name, 7008, c.fmt("Member '{s}' implicitly has an 'any' type.", .{f.src[name.start..name.end]}));
+}
+
 /// JSDoc types are not modeled, so a JavaScript parameter that JSDoc may type stays `any`, silently:
 /// a `@param` naming it, or a `@type` or `@overload` on it or on what holds its function.
 fn jsDocTyped(c: *Checker, p: *Node) bool {
@@ -1203,6 +1224,7 @@ fn walkTypes(c: *Checker, n: *Node) void {
     }
     if (n.data == .param) checkParameter(c, n);
     if (n.data == .index_sig) checkIndexSignatureGrammar(c, n);
+    if (n.data == .property_decl or n.data == .property_sig) implicitAnyMember(c, n);
     ast.forEachChild(n, c, walkTypes);
 }
 
