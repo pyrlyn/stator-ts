@@ -1020,6 +1020,7 @@ fn walkTypes(c: *Checker, n: *Node) void {
         return;
     }
     if (isAsConst(n)) return;
+    checkStrictMode(c, n);
     if (isTypeNode(n)) _ = d.typeFromNode(c, n);
     if (n.data == .func) {
         // Also covers signature-only declarations, which have no body to check.
@@ -1027,6 +1028,131 @@ fn walkTypes(c: *Checker, n: *Node) void {
         if (f.body == null) for (f.params) |p| implicitAny(c, p, n);
     }
     ast.forEachChild(n, c, walkTypes);
+}
+
+// ---- strict mode, which TypeScript 7 code is always in: tsc's binder checks ----
+
+const future_reserved = std.StaticStringMap(void).initComptime(.{
+    .{"implements"}, .{"interface"}, .{"let"}, .{"package"}, .{"private"}, .{"protected"}, .{"public"}, .{"static"}, .{"yield"},
+});
+
+fn checkStrictMode(c: *Checker, n: *Node) void {
+    switch (n.data) {
+        .identifier => |name| if (future_reserved.has(name) or std.mem.eql(u8, name, "await")) reservedWord(c, n, name),
+        .func => |f| if (f.kind == .decl or f.kind == .expr) if (f.name) |x| if (!isAmbient(c, n)) evalOrArguments(c, n, x),
+        .param => |x| if (!isAmbient(c, n)) evalOrArguments(c, n, x.name),
+        .var_decl => |x| evalOrArguments(c, n, x.name),
+        .binding_elem => |x| evalOrArguments(c, n, x.name),
+        .binary => |x| if (x.op.isAssignment()) evalOrArguments(c, n, x.left),
+        .prefix => |x| if (x.op == .plus2 or x.op == .minus2) evalOrArguments(c, n, x.expr),
+        .postfix => |x| evalOrArguments(c, n, x.expr),
+        // A missing operand is already a syntax error.
+        .delete_expr => |x| if (x.expr.data == .identifier and x.expr.data.identifier.len > 0) {
+            err(c, x.expr, 1102, "'delete' cannot be called on an identifier in strict mode.");
+        },
+        .with_stmt => if (!isAmbient(c, n)) d.reportSpan(c, n, n.start, n.start + 4, 1101, "'with' statements are not allowed in strict mode."),
+        .labeled => |x| if (isDeclarationStatement(x.stmt)) err(c, x.label, 1344, "A label is not allowed here."),
+        else => {},
+    }
+}
+
+fn evalOrArguments(c: *Checker, context: *Node, name: *Node) void {
+    if (name.data != .identifier) return;
+    const text = name.data.identifier;
+    if (!std.mem.eql(u8, text, "eval") and !std.mem.eql(u8, text, "arguments")) return;
+    if (containingClass(context)) {
+        err(c, name, 1210, c.fmt("Code contained in a class is evaluated in JavaScript's strict mode which does not allow this use of '{s}'. For more information, see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Strict_mode.", .{text}));
+    } else if (inModule(c, name)) {
+        err(c, name, 1215, c.fmt("Invalid use of '{s}'. Modules are automatically in strict mode.", .{text}));
+    } else {
+        err(c, name, 1100, c.fmt("Invalid use of '{s}' in strict mode.", .{text}));
+    }
+}
+
+/// tsc's `checkContextualIdentifier`, which keeps quiet in a file that does not parse.
+fn reservedWord(c: *Checker, n: *Node, name: []const u8) void {
+    const f = d.fileOf(c, n) orelse return;
+    if (f.diags.len != 0 or f.bad_body or isIdentifierName(n) or isAmbient(c, n)) return;
+    if (std.mem.eql(u8, name, "await")) {
+        if (f.is_module and inTopLevelContext(n)) err(c, n, 1262, "Identifier expected. 'await' is a reserved word at the top-level of a module.");
+        return;
+    }
+    if (containingClass(n)) {
+        err(c, n, 1213, c.fmt("Identifier expected. '{s}' is a reserved word in strict mode. Class definitions are automatically in strict mode.", .{name}));
+    } else if (f.is_module) {
+        err(c, n, 1214, c.fmt("Identifier expected. '{s}' is a reserved word in strict mode. Modules are automatically in strict mode.", .{name}));
+    } else {
+        err(c, n, 1212, c.fmt("Identifier expected. '{s}' is a reserved word in strict mode.", .{name}));
+    }
+}
+
+/// Names that are not bindings or references: property names, and what JSX and exports spell out.
+fn isIdentifierName(n: *Node) bool {
+    const p = n.parent orelse return false;
+    return switch (p.data) {
+        .property_decl => |x| x.name == n,
+        .property_sig => |x| x.name == n,
+        .enum_member => |x| x.name == n,
+        .property_assign => |x| x.name == n,
+        .prop_access => |x| x.name == n,
+        .qualified_name => |x| x.right == n,
+        .binding_elem => |x| x.prop_name == n,
+        .import_spec => |x| x.prop_name == n,
+        .func => |x| x.name == n and switch (x.kind) {
+            .method, .method_sig, .getter, .setter, .getter_sig, .setter_sig => true,
+            else => false,
+        },
+        .export_spec, .jsx_attr, .jsx_self_closing, .jsx_opening, .jsx_closing => true,
+        else => false,
+    };
+}
+
+fn isAmbient(c: *Checker, n: *Node) bool {
+    if (d.fileOf(c, n)) |f| if (f.is_dts) return true;
+    var x: ?*Node = n;
+    while (x) |y| : (x = y.parent) if (y.mods.declare) return true;
+    return false;
+}
+
+fn inModule(c: *Checker, n: *Node) bool {
+    const f = d.fileOf(c, n) orelse return false;
+    return f.is_module;
+}
+
+fn containingClass(n: *Node) bool {
+    var x = n.parent;
+    while (x) |y| : (x = y.parent) if (y.data == .class) return true;
+    return false;
+}
+
+/// tsc's `isInTopLevelContext`: no function, class property, static block or namespace between
+/// `n` and its file.
+fn inTopLevelContext(n0: *Node) bool {
+    var n = n0;
+    if (n.parent) |p| switch (p.data) {
+        .func => |x| if (x.kind == .decl and x.name == n) {
+            n = p;
+        },
+        .class => |x| if (!x.is_expr and x.name == n) {
+            n = p;
+        },
+        else => {},
+    };
+    var x = n.parent;
+    while (x) |y| : (x = y.parent) switch (y.data) {
+        .func, .property_decl, .static_block, .module_decl => return false,
+        else => {},
+    };
+    return true;
+}
+
+fn isDeclarationStatement(n: *Node) bool {
+    return switch (n.data) {
+        .func => |x| x.kind == .decl,
+        .class => |x| !x.is_expr,
+        .var_stmt, .interface, .type_alias, .enum_decl, .module_decl, .import_equals, .namespace_export_decl => true,
+        else => false,
+    };
 }
 
 fn isAsConst(n: *Node) bool {
