@@ -1557,12 +1557,18 @@ const Parser = struct {
                 type_only = true;
                 p.next();
             }
+            // An import binds its local name, which a reserved word cannot be.
+            var local_start = p.lx.start;
+            var local_reserved = p.t().isReserved();
             var first = p.parseModuleExportName();
             var prop: ?*Node = null;
             if (p.eat(.kw_as)) {
                 prop = first;
+                local_start = p.lx.start;
+                local_reserved = p.t().isReserved();
                 first = p.parseModuleExportName();
             }
+            if (is_import and local_reserved) p.lx.err(local_start, first.end - local_start, 1003, "Identifier expected.");
             const d: Data = if (is_import)
                 .{ .import_spec = .{ .prop_name = prop, .name = first, .type_only = type_only } }
             else
@@ -1970,7 +1976,7 @@ const Parser = struct {
         p.next();
         if (p.lx.nl_before) return false;
         return switch (p.t()) {
-            .identifier, .kw_new, .kw_this, .string, .numeric, .l_paren, .l_bracket, .kw_import, .no_subst_template, .template_head, .kw_await => true,
+            .identifier, .kw_new, .kw_this, .string, .numeric, .l_paren, .l_bracket, .kw_import, .no_subst_template, .template_head, .kw_await, .lt => true,
             else => p.t().isIdentifierLike(),
         };
     }
