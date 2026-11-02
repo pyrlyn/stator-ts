@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "esnext",
+    "module": "esnext",
+    "types": [],
+    "noEmit": true
+  },
+  "files": ["a.ts"]
+}

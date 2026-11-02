@@ -8,5 +8,9 @@ class S {
     this.fs[type]?.indexOf(f);
     this.fs[type].length;
     this.fs[type]!.nope;
+    this.fs[type]?.nope;
+    const present = this.fs[type]!;
+    present.length;
+    present.nope;
   }
 }
