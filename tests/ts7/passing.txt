@@ -588,6 +588,7 @@ compiler/classSideInheritance1
 compiler/classSideInheritance2
 compiler/classSideInheritance3
 compiler/classStaticInitializersUsePropertiesBeforeDeclaration
+compiler/classStaticPropertyAccess(target=es2015)
 compiler/classStaticPropertyTypeGuard(target=es2015)
 compiler/classUsedBeforeInitializedVariables(target=es2015)
 compiler/classVarianceCircularity
@@ -2705,6 +2706,7 @@ compiler/indexWithoutParamType
 compiler/indexedAccessAndNullableNarrowing
 compiler/indexedAccessCanBeHighOrder
 compiler/indexedAccessConstraints
+compiler/indexedAccessImplicitlyAny
 compiler/indexedAccessKeyofNestedSimplifiedSubstituteUnwrapped
 compiler/indexedAccessNormalization
 compiler/indexedAccessRetainsIndexSignature
@@ -3635,6 +3637,7 @@ compiler/newAbstractInstance
 compiler/newAbstractInstance2
 compiler/newArrays
 compiler/newExpressionCalleeParentheses
+compiler/newExpressionCalleeParenthesesDownlevel
 compiler/newExpressionWithCast
 compiler/newExpressionWithTypeParameterConstrainedToOuterTypeParameter
 compiler/newFunctionImplicitAny
@@ -6619,7 +6622,11 @@ conformance/esDecorators-classDeclaration-accessors-static(target=esnext)
 conformance/esDecorators-classDeclaration-accessors-staticPrivate(target=es2015)
 conformance/esDecorators-classDeclaration-accessors-staticPrivate(target=es2022)
 conformance/esDecorators-classDeclaration-accessors-staticPrivate(target=esnext)
+conformance/esDecorators-classDeclaration-classSuper.1
 conformance/esDecorators-classDeclaration-classSuper.2
+conformance/esDecorators-classDeclaration-classSuper.3
+conformance/esDecorators-classDeclaration-classSuper.4
+conformance/esDecorators-classDeclaration-classSuper.5
 conformance/esDecorators-classDeclaration-classSuper.6
 conformance/esDecorators-classDeclaration-classSuper.7
 conformance/esDecorators-classDeclaration-classThisReference(target=es2015)
@@ -6709,7 +6716,11 @@ conformance/esDecorators-classDeclaration-simpleTransformation(target=esnext)
 conformance/esDecorators-classDeclaration-sourceMap(target=es2015)
 conformance/esDecorators-classDeclaration-sourceMap(target=es2022)
 conformance/esDecorators-classDeclaration-sourceMap(target=esnext)
+conformance/esDecorators-classExpression-classSuper.1
 conformance/esDecorators-classExpression-classSuper.2
+conformance/esDecorators-classExpression-classSuper.3
+conformance/esDecorators-classExpression-classSuper.4
+conformance/esDecorators-classExpression-classSuper.5
 conformance/esDecorators-classExpression-classSuper.6
 conformance/esDecorators-classExpression-commentPreservation(target=es2015)
 conformance/esDecorators-classExpression-commentPreservation(target=es2022)
