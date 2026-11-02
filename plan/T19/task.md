@@ -26,3 +26,9 @@ The verified fixes and resource improvements are recorded in `report.md`. The cr
 Continue from merged commit `69986bf` as the new baseline. Keep the earlier report intact. Inspect allocation and filesystem profiles on the selected workloads; prioritize duplicated work and ownership bugs. Keep the parallel T20 library-API work isolated. Record regressions before fixes, compare identical commands against a retained baseline, and run unit, differential and TS7 checks before reporting the new measurements.
 
 The follow-up fixes directory-cycle traversal, prunes excluded subtrees, and diagnoses private names in type queries. Its measurements and verification are in `followup-report.md`: the additional excluded-output stress case improves RSS by 41.2% and wall time by 80.1%, while the selected original workloads are essentially unchanged. The original acceptance target remains open.
+
+## Allocation-profile iteration
+
+Use `5d04486` as the baseline for another comparison on the same original workloads. Profile allocation sites inside each checking run, distinguish retained types from temporary lists, and reuse existing standard-library allocation helpers where they fit. Investigate the two remaining diagnostic misses without weakening the no-false-positive rule. Keep temporary instrumentation out of the final patch; validate ownership changes with unit tests, differential checks, the TS7 ratchet, and alternating resource measurements.
+
+The verified changes and raw samples are in `allocation-report.md` and `allocation-benchmark.json`. Two generic-constraint property diagnostics are now reported, depth limits mark provisional answers, and temporary binder/type-analysis storage is released earlier. Peak RSS measured 2.5–2.9% lower; wall-time results are inconclusive on the loaded host. The 30% target remains unmet and the task stays open.
