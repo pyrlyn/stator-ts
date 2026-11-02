@@ -3265,14 +3265,18 @@ fn canBeUndefined(t: *Type) bool {
     return false;
 }
 
-fn checkSuperProp(c: *Checker, n: *Node, name: []const u8) *Type {
+/// In static code `super` is the base class's constructor, elsewhere an instance of it.
+fn superType(c: *Checker, n: *Node) *Type {
     const info = superBase(c, n) orelse return c.t_err;
+    if (!info.is_static) return info.base;
+    const s = if (info.base.data == .obj) info.base.data.obj.sym else null;
+    return d.typeOfSymbol(c, s orelse return c.t_err);
+}
+
+fn checkSuperProp(c: *Checker, n: *Node, name: []const u8) *Type {
     const x = n.data.prop_access;
-    var base = info.base;
-    if (info.is_static) {
-        const s = if (base.data == .obj) base.data.obj.sym else null;
-        base = d.typeOfSymbol(c, s orelse return c.t_err);
-    }
+    const base = superType(c, n);
+    if (base == c.t_err) return base;
     if (T.isAny(base)) return base;
     const p = d.getProp(c, base, name) orelse {
         if (isOpen(c, base)) return c.t_err;
@@ -6200,7 +6204,7 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
             if (n.flow() == null or T.isAny(t)) break :blk t;
             break :blk flow.flowType(c, n, t, t, containingFunc(n));
         },
-        .super_expr => if (superBase(c, n)) |x| x.base else c.t_err,
+        .super_expr => superType(c, n),
         .paren => |x| checkExpr(c, x.expr),
         .template_expr => checkTemplate(c, n),
         .tagged_template => checkTagged(c, n),
