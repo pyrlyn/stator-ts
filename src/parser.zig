@@ -1461,6 +1461,7 @@ const Parser = struct {
         while (p.t() != .r_brace and p.t() != .eof) {
             const ms = p.lx.start;
             const mn = p.parsePropertyName();
+            if (mn.data == .computed_name) p.lx.err(mn.start, mn.end - mn.start, 1164, "Computed property names are not allowed in enums.");
             const in = if (p.eat(.assign)) p.parseAssignmentAllowIn() else null;
             p.push(&members, p.mk(ms, .{ .enum_member = .{ .name = mn, .init = in } }));
             if (!p.eat(.comma)) break;
@@ -2982,7 +2983,9 @@ const Parser = struct {
         var e = if (p.t() == .kw_this) p.identNode() else p.parseIdent();
         while (p.t() == .dot) {
             p.next();
-            const r = if (p.t() == .private_name) p.parseMemberName() else p.parseIdentName();
+            const private = p.t() == .private_name;
+            const r = if (private) p.parseMemberName() else p.parseIdentName();
+            if (private) p.errHere(1003, "Identifier expected.");
             e = p.mk(s, .{ .qualified_name = .{ .left = e, .right = r } });
         }
         return e;

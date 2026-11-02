@@ -845,6 +845,7 @@ fn contextualThis(c: *Checker, fnode: *Node) ?*Type {
 /// An object-literal method sees the literal, or the `ThisType` its context promises.
 fn objectThis(c: *Checker, fnode: *Node) *Type {
     if (contextualThis(c, fnode)) |t| return t;
+    if (!c.no_implicit_this and !inJs(c, fnode)) return c.t_any;
     var cur: ?*Node = fnode;
     while (cur) |x| : (cur = x.parent) {
         if (x.data == .object_lit) {
@@ -1747,7 +1748,7 @@ fn widenAmong(c: *Checker, t: *Type, among: ?*Widening) *Type {
     if (c.isArrayType(t)) {
         const e = t.data.obj.args.?[0];
         const r = widenObjectLiterals(c, e);
-        return if (r == e) t else c.internRef(t.data.obj.target.?, c.dupe(*Type, &.{r}), null);
+        return if (r == e) t else c.internRef(t.data.obj.target.?, &.{r}, null);
     }
     if (t.data == .obj) {
         if (!t.data.obj.lit) return t;
@@ -2977,12 +2978,18 @@ fn isOpen(c: *Checker, t: *Type) bool {
             return false;
         },
         .inter, .union_ => |x| {
+            if (t.data == .inter) {
+                // An intersection can remove the nullable part of an indexed-access constraint.
+                const apparent = d.getApparent(c, t);
+                if (apparent != t) return isOpen(c, apparent);
+            }
             for (x) |m| if (isOpen(c, m)) return true;
             return false;
         },
         .param, .access, .cond => {
             const k = d.baseConstraint(c, t);
-            return k != t and k.data != .unknown and (k.vars or isOpen(c, k));
+            // Nullable generic constraints still lack the flow facts of their indexed access.
+            return k != t and k.data != .unknown and ((k.vars and maybeNullable(k)) or isOpen(c, k));
         },
         else => return false,
     }

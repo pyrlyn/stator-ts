@@ -351,6 +351,7 @@ const Walk = struct {
     fs: *FsCache,
     level: []const []const u8,
     out: []WalkItem,
+    excludes: []const []const u8 = &.{},
 };
 
 fn walkOne(w: *const Walk, worker: usize, i: usize) void {
@@ -368,7 +369,8 @@ fn walkOne(w: *const Walk, worker: usize, i: usize) void {
         const kind = e.value_ptr.*;
         if (kind == .directory) {
             if (std.mem.eql(u8, name, "node_modules") or std.mem.eql(u8, name, ".git") or std.mem.eql(u8, name, "bower_components") or std.mem.eql(u8, name, "jspm_packages")) continue;
-            item.dirs.append(a, fspath.join(a, &.{ path, name }) catch oom()) catch oom();
+            const child = fspath.join(a, &.{ path, name }) catch oom();
+            if (!excludedDir(w.excludes, child)) item.dirs.append(a, child) catch oom();
         } else if (kind == .file and isSourceFile(name)) {
             item.files.append(a, fspath.join(a, &.{ path, name }) catch oom()) catch oom();
         }
@@ -377,13 +379,42 @@ fn walkOne(w: *const Walk, worker: usize, i: usize) void {
 
 /// Breadth-first, one parallel pass per directory level; no queue or lock needed.
 pub fn walkDirs(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, roots: []const []const u8) []const []const u8 {
+    return walkFiltered(a, fs, tp, roots, &.{});
+}
+
+fn excludedDir(patterns: []const []const u8, path: []const u8) bool {
+    for (patterns) |pattern| {
+        const prefix = if (std.mem.endsWith(u8, pattern, "/**/*")) pattern[0..@max(1, pattern.len - 5)] else continue;
+        var dir: ?[]const u8 = path;
+        while (dir) |d| : (dir = fspath.dirname(d)) if (globMatch(prefix, d)) return true;
+    }
+    return false;
+}
+
+fn pathLessThan(_: void, l: []const u8, r: []const u8) bool {
+    return std.mem.lessThan(u8, l, r);
+}
+
+fn walkFiltered(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, roots: []const []const u8, excludes: []const []const u8) []const []const u8 {
     var files: std.ArrayList([]const u8) = .empty;
     var level: std.ArrayList([]const u8) = .empty;
     level.appendSlice(a, roots) catch oom();
+    var visited: std.StringHashMapUnmanaged(void) = .empty;
     while (level.items.len > 0) {
+        var count: usize = 0;
+        for (level.items) |path| {
+            if (excludedDir(excludes, path)) continue;
+            // Lexical paths preserve diagnostics; canonical directory identity stops symlink cycles.
+            const real = Io.Dir.cwd().realPathFileAlloc(fs.io, path, a) catch path;
+            if ((visited.getOrPut(a, real) catch oom()).found_existing) continue;
+            level.items[count] = path;
+            count += 1;
+        }
+        level.items.len = count;
+        if (count == 0) break;
         const items = a.alloc(WalkItem, tp.width()) catch oom();
         for (items) |*x| x.* = .{ .arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator) };
-        const w = Walk{ .fs = fs, .level = level.items, .out = items };
+        const w = Walk{ .fs = fs, .level = level.items, .out = items, .excludes = excludes };
         pool.parallelFor(tp, level.items.len, &w, walkOne);
         var next: std.ArrayList([]const u8) = .empty;
         for (items) |*x| {
@@ -391,13 +422,10 @@ pub fn walkDirs(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, roots: []const
             for (x.dirs.items) |d| next.append(a, a.dupe(u8, d) catch oom()) catch oom();
             x.arena.deinit();
         }
+        std.mem.sort([]const u8, next.items, {}, pathLessThan);
         level = next;
     }
-    std.mem.sort([]const u8, files.items, {}, struct {
-        fn f(_: void, l: []const u8, r: []const u8) bool {
-            return std.mem.lessThan(u8, l, r);
-        }
-    }.f);
+    std.mem.sort([]const u8, files.items, {}, pathLessThan);
     return files.items;
 }
 
@@ -412,6 +440,33 @@ test "isWithin needs a component boundary" {
     try std.testing.expect(isWithin("/p/src/a", "/p/src"));
     try std.testing.expect(!isWithin("/p/src2", "/p/src"));
     try std.testing.expect(isWithin("/p/src2", "/p/"));
+}
+
+test "project discovery prunes excluded subtrees and terminates directory cycles" {
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "generated/nested");
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.ts", .data = "export const value = 1;" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "generated/nested/ignored.ts", .data = "export {};" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const excluded = try fspath.join(a, &.{ root, "generated" });
+    const cfg = Config{ .root = root, .exclude = &.{excluded} };
+    var tp = pool.ThreadPool.init(2);
+    const fs = FsCache.create(a, io);
+    const files = projectFiles(a, fs, &tp, &cfg);
+    try std.testing.expectEqual(@as(usize, 1), files.len);
+    try std.testing.expect(!fs.shardOf(excluded).dirs.contains(excluded));
+    try std.testing.expect(excludedDir(&.{"/**/*"}, root));
+    try std.testing.expect(excludedDir(&.{expandInclude(a, excluded)}, try fspath.join(a, &.{ excluded, "nested" })));
+    if (@import("builtin").os.tag == .windows) return;
+    try tmp.dir.symLink(io, ".", "loop", .{ .is_directory = true });
+    const cyclic = projectFiles(a, FsCache.create(a, io), &tp, &cfg);
+    try std.testing.expectEqual(@as(usize, 1), cyclic.len);
+    try std.testing.expectEqualStrings(files[0], cyclic[0]);
 }
 
 pub fn projectFiles(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, cfg: *const Config) []const []const u8 {
@@ -442,7 +497,7 @@ pub fn projectFiles(a: Allocator, fs: *FsCache, tp: *pool.ThreadPool, cfg: *cons
         for (ex) |e| excludes.append(a, expandInclude(a, e)) catch oom();
     } else if (cfg.options.outDir) |d| excludes.append(a, expandInclude(a, d)) catch oom();
 
-    next: for (walkDirs(a, fs, tp, roots.items)) |f| {
+    next: for (walkFiltered(a, fs, tp, roots.items, excludes.items)) |f| {
         var hit = false;
         for (patterns.items) |p| {
             if (globMatch(p, f)) {
@@ -482,6 +537,7 @@ pub const FsCache = struct {
         mutex: Io.Mutex = .init,
         dirs: std.StringHashMapUnmanaged(*Listing) = .empty,
         bare: std.StringHashMapUnmanaged(?[]const u8) = .empty,
+        packages: std.StringHashMapUnmanaged(?[]const u8) = .empty,
     };
 
     fn shardOf(f: *FsCache, key: []const u8) *Shard {
@@ -510,14 +566,11 @@ pub const FsCache = struct {
     fn listing(f: *FsCache, path: []const u8) *Listing {
         const shard = f.shardOf(path);
         shard.mutex.lockUncancelable(f.io);
-        const known = shard.dirs.get(path);
-        shard.mutex.unlock(f.io);
-        if (known) |l| return l;
-        // Two workers may list one directory at once; the second result just replaces the first.
+        defer shard.mutex.unlock(f.io);
+        if (shard.dirs.get(path)) |known| return known;
+        // Concurrent misses must share one snapshot instead of retaining duplicate listings.
         const fresh = f.list(path);
         const key = std.heap.smp_allocator.dupe(u8, path) catch oom();
-        shard.mutex.lockUncancelable(f.io);
-        defer shard.mutex.unlock(f.io);
         shard.dirs.put(std.heap.smp_allocator, key, fresh) catch oom();
         return fresh;
     }
@@ -527,7 +580,11 @@ pub const FsCache = struct {
             const st = Io.Dir.cwd().statFile(f.io, path, .{}) catch return null;
             return st.kind;
         };
-        switch (f.listing(parent).*) {
+        return f.kindInListing(path, f.listing(parent));
+    }
+
+    fn kindInListing(f: *FsCache, path: []const u8, listing_: *const Listing) ?Io.File.Kind {
+        switch (listing_.*) {
             .missing => return null,
             .unreadable => {
                 const st = Io.Dir.cwd().statFile(f.io, path, .{}) catch return null;
@@ -550,6 +607,20 @@ pub const FsCache = struct {
         shard.mutex.lockUncancelable(f.io);
         defer shard.mutex.unlock(f.io);
         return shard.bare.get(key);
+    }
+
+    /// Different subpath imports share a manifest even when their resolutions differ. Keep the
+    /// bytes outside resolver scratch arenas; parsing still belongs to the individual resolver.
+    fn readPackage(f: *FsCache, path: []const u8) ?[]const u8 {
+        const shard = f.shardOf(path);
+        shard.mutex.lockUncancelable(f.io);
+        defer shard.mutex.unlock(f.io);
+        if (shard.packages.get(path)) |known| return known;
+        const a = std.heap.smp_allocator;
+        const text = readFile(a, f.io, path) catch null;
+        const key = a.dupe(u8, path) catch oom();
+        shard.packages.put(a, key, text) catch oom();
+        return text;
     }
 
     /// The strings come from a resolver's scratch arena, so the table keeps its own copies.
@@ -590,15 +661,19 @@ const Resolver = struct {
 
     fn tryFile(r: Resolver, base: []const u8) ?[]const u8 {
         const suffixes = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".d.mts", ".d.cts" };
-        if (isSourceFile(base) and r.fs.isFile(base)) return base;
+        // All extension candidates share one directory snapshot and its synchronization cost.
+        const dir = if (base.len > 0 and fspath.isSep(base[base.len - 1])) base else fspath.dirname(base) orelse ".";
+        const listing = r.fs.listing(dir);
+        if (listing.* == .missing) return null;
+        if (isSourceFile(base) and r.fs.kindInListing(base, listing) == .file) return base;
         if (std.mem.endsWith(u8, base, ".json")) {
             const p = std.mem.concat(r.a, u8, &.{ base[0 .. base.len - ".json".len], ".d.json.ts" }) catch oom();
-            if (r.fs.isFile(p)) return p;
+            if (r.fs.kindInListing(p, listing) == .file) return p;
         }
-        if (r.jsonModules() and std.mem.endsWith(u8, base, ".json") and r.fs.isFile(base)) return base;
+        if (r.jsonModules() and std.mem.endsWith(u8, base, ".json") and r.fs.kindInListing(base, listing) == .file) return base;
         for (suffixes) |s| {
             const p = std.mem.concat(r.a, u8, &.{ base, s }) catch oom();
-            if (r.fs.isFile(p)) return p;
+            if (r.fs.kindInListing(p, listing) == .file) return p;
         }
         // Source written for ESM imports `./a.js` while `./a.ts` is on disk, and a package's
         // declarations import `./a.ts` while only `./a.d.ts` shipped.
@@ -616,7 +691,7 @@ const Resolver = struct {
             const stem = base[0 .. base.len - m[0].len];
             for (m[1]) |x| {
                 const p = std.mem.concat(r.a, u8, &.{ stem, x }) catch oom();
-                if (r.fs.isFile(p)) return p;
+                if (r.fs.kindInListing(p, listing) == .file) return p;
             }
         };
         if (r.js) {
@@ -630,9 +705,11 @@ const Resolver = struct {
     }
 
     fn tryIndex(r: Resolver, dir: []const u8) ?[]const u8 {
+        const listing = r.fs.listing(dir);
+        if (listing.* == .missing) return null;
         for ([_][]const u8{ "index.ts", "index.tsx", "index.d.ts" }) |x| {
             const p = fspath.join(r.a, &.{ dir, x }) catch oom();
-            if (r.fs.isFile(p)) return p;
+            if (r.fs.kindInListing(p, listing) == .file) return p;
         }
         if (r.js) {
             for ([_][]const u8{ "index.js", "index.jsx" }) |x| {
@@ -735,7 +812,7 @@ const Resolver = struct {
     fn tryPackageDir(r: Resolver, dir: []const u8, sub: []const u8) ?[]const u8 {
         const pkg = fspath.join(r.a, &.{ dir, "package.json" }) catch oom();
         if (r.fs.isFile(pkg)) blk: {
-            const text = readFile(r.a, r.io, pkg) catch break :blk;
+            const text = r.fs.readPackage(pkg) orelse break :blk;
             const v = json.parseFromSliceLeaky(json.Value, r.a, text, .{}) catch break :blk;
             if (v != .object) break :blk;
             if (v.object.get("exports")) |e| {
@@ -781,7 +858,7 @@ const Resolver = struct {
             const pkg = fspath.join(r.a, &.{ d, "package.json" }) catch oom();
             if (r.fs.isFile(pkg)) break pkg;
         } else return null;
-        const text = readFile(r.a, r.io, scope) catch return null;
+        const text = r.fs.readPackage(scope) orelse return null;
         const v = json.parseFromSliceLeaky(json.Value, r.a, text, .{}) catch return null;
         return if (v == .object) .{ .dir = dir.?, .value = v.object } else null;
     }
@@ -1560,6 +1637,87 @@ test "a root that cannot be read is reported, not dropped" {
     try std.testing.expectEqual(@as(usize, 1), p.missing_roots.items.len);
     try std.testing.expectEqualStrings("/nonexistent-stator-ts-test/missing.ts", p.missing_roots.items[0]);
     try std.testing.expectEqual(@as(usize, 0), p.files.items.len);
+}
+
+test "filesystem snapshots share package bytes and concurrent directory reads" {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(dir);
+    const path = try fspath.join(a, &.{ dir, "package.json" });
+    defer a.free(path);
+    const first = "{\"types\":\"first.d.ts\"}";
+    const second = "{\"types\":\"second.d.ts\"}";
+    var missing = FsCache{ .io = io };
+    try std.testing.expect(missing.readPackage(path) == null);
+    try tmp.dir.writeFile(io, .{ .sub_path = "package.json", .data = first });
+    try std.testing.expect(missing.readPackage(path) == null);
+    var cache = FsCache{ .io = io };
+    const saved = cache.readPackage(path).?;
+    try std.testing.expectEqualStrings(first, saved);
+    try tmp.dir.writeFile(io, .{ .sub_path = "package.json", .data = second });
+    try std.testing.expectEqual(saved.ptr, cache.readPackage(path).?.ptr);
+    try std.testing.expectEqualStrings(first, cache.readPackage(path).?);
+    var fresh = FsCache{ .io = io };
+    try std.testing.expectEqualStrings(second, fresh.readPackage(path).?);
+
+    const workers = 8;
+    const Readers = struct {
+        cache: *FsCache,
+        path: []const u8,
+        ready: std.atomic.Value(usize) = .init(0),
+        listings: [workers]*FsCache.Listing = undefined,
+
+        fn read(r: *@This(), _: usize, i: usize) void {
+            _ = r.ready.fetchAdd(1, .acq_rel);
+            while (r.ready.load(.acquire) < workers) std.atomic.spinLoopHint();
+            r.listings[i] = r.cache.listing(r.path);
+        }
+    };
+    var readers = Readers{ .cache = &fresh, .path = dir };
+    var tp = pool.ThreadPool.init(workers);
+    pool.parallelForEach(&tp, workers, &readers, Readers.read);
+    for (readers.listings) |listing| try std.testing.expectEqual(readers.listings[0], listing);
+}
+
+test "resolver probes preserve extension order and unreadable-directory fallback" {
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(io, ".", a);
+    for ([_][]const u8{ "item.ts", "item.tsx", "mapped.ts", "view.tsx", "mod.mts", "common.cts", "data.json", "folder.tsx", "index.ts", "index.tsx" }) |name| {
+        try tmp.dir.writeFile(io, .{ .sub_path = name, .data = "" });
+    }
+    try tmp.dir.createDir(io, "folder.ts", .default_dir);
+    try tmp.dir.createDir(io, "trailing", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "trailing/.ts", .data = "" });
+    var fs = FsCache{ .io = io };
+    const cfg = Config{ .root = dir, .options = .{ .resolveJsonModule = true } };
+    const r = Resolver{ .io = io, .a = a, .fs = &fs, .cfg = &cfg };
+    for ([_][2][]const u8{
+        .{ "item", "item.ts" }, .{ "item.tsx", "item.tsx" },
+        .{ "mapped.js", "mapped.ts" }, .{ "view.jsx", "view.tsx" },
+        .{ "mod.mjs", "mod.mts" }, .{ "common.cjs", "common.cts" },
+        .{ "data.json", "data.json" }, .{ "folder", "folder.tsx" },
+        .{ "trailing/", "trailing/.ts" },
+    }) |pair| {
+        const base = try std.mem.concat(a, u8, &.{ dir, fspath.sep_str, pair[0] });
+        const expected = try fspath.join(a, &.{ dir, pair[1] });
+        try std.testing.expectEqualStrings(expected, r.tryFile(base).?);
+    }
+    try std.testing.expectEqualStrings(try fspath.join(a, &.{ dir, "index.ts" }), r.tryIndex(dir).?);
+    const missing = try fspath.join(a, &.{ dir, "absent", "item" });
+    try std.testing.expect(r.tryFile(missing) == null);
+    try std.testing.expect(r.tryIndex(missing) == null);
+    const unreadable: FsCache.Listing = .unreadable;
+    const file = try fspath.join(a, &.{ dir, "item.ts" });
+    try std.testing.expectEqual(Io.File.Kind.file, fs.kindInListing(file, &unreadable).?);
+    try std.testing.expect(fs.kindInListing(missing, &unreadable) == null);
 }
 
 test "stripJsonc removes comments and trailing commas" {

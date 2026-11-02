@@ -272,7 +272,7 @@ const Label = struct {
     kind: FlowKind,
     list: std.ArrayList(*FlowNode) = .empty,
     /// Loop labels exist before their back edges, so the flow node is shared and patched.
-    node: *FlowNode,
+    node: ?*FlowNode = null,
 };
 
 const NamedLabel = struct { name: []const u8, brk: *Label, cont: ?*Label, parent: ?*NamedLabel };
@@ -290,6 +290,8 @@ pub const Body = struct {
 
 pub const Binder = struct {
     a: Allocator,
+    /// Labels guide construction; only flow nodes and completed edge lists escape binding.
+    temps: Allocator,
     file: *ast.File,
     /// Nearest function-like scope: where `var` lands.
     container: *Node,
@@ -472,24 +474,30 @@ pub const Binder = struct {
     }
 
     fn newLabel(b: *Binder, kind: FlowKind) *Label {
-        const l = b.a.create(Label) catch oom();
-        l.* = .{ .kind = kind, .node = b.createFlow(kind, null, null) };
+        const l = b.temps.create(Label) catch oom();
+        l.* = .{ .kind = kind, .node = if (kind == .loop) b.createFlow(kind, null, null) else null };
         return l;
     }
 
     fn addAnte(b: *Binder, l: *Label, f: *FlowNode) void {
         if (f.kind == .unreachable_end) return;
         for (l.list.items) |e| if (e == f) return;
-        // The list ends up in the flow graph, so what it reserves stays for the whole run.
-        if (l.list.items.len == l.list.capacity) l.list.ensureTotalCapacityPrecise(b.a, @max(2, l.list.capacity * 2)) catch oom();
+        // Only a completed join copies its edges into the persistent graph.
+        if (l.list.items.len == l.list.capacity) l.list.ensureTotalCapacityPrecise(b.temps, @max(2, l.list.capacity * 2)) catch oom();
         l.list.appendAssumeCapacity(f);
     }
 
     fn finish(b: *Binder, l: *Label) *FlowNode {
-        if (l.list.items.len == 0) return if (l.kind == .loop) l.node else b.unreachable_flow;
+        if (l.list.items.len == 0) return if (l.kind == .loop) l.node.? else b.unreachable_flow;
         if (l.list.items.len == 1 and l.kind != .loop) return l.list.items[0];
-        l.node.antecedents = l.list.items;
-        return l.node;
+        const node = b.labelNode(l);
+        node.antecedents = b.a.dupe(*FlowNode, l.list.items) catch oom();
+        return node;
+    }
+
+    fn labelNode(b: *Binder, label: *Label) *FlowNode {
+        if (label.node == null) label.node = b.createFlow(label.kind, null, null);
+        return label.node.?;
     }
 
     fn condFlow(b: *Binder, kind: FlowKind, ante: *FlowNode, e: *Node) *FlowNode {
@@ -728,7 +736,8 @@ pub const Binder = struct {
         b.brk = null;
         b.cont = null;
         b.labels = null;
-        const ret = b.newLabel(.branch);
+        // Only an immediately invoked function rejoins its return paths in the enclosing flow.
+        const ret = if (in_place) b.newLabel(.branch) else null;
         b.ret = ret;
 
         b.enterTypeParams(n, f.type_params);
@@ -749,10 +758,10 @@ pub const Binder = struct {
                 f.end_flow = if (b.flow.kind == .unreachable_end) null else b.flow;
             }
         }
-        if (in_place) b.addAnte(ret, b.flow);
+        if (ret) |r| b.addAnte(r, b.flow);
         b.container = save[0];
         b.block = save[1];
-        b.flow = if (in_place) b.finish(ret) else save[2];
+        b.flow = if (ret) |r| b.finish(r) else save[2];
         b.brk = save[3];
         b.cont = save[4];
         b.ret = save[5];
@@ -897,6 +906,8 @@ pub const Binder = struct {
         for (d.members) |m| {
             m.parent = n;
             const md = m.data.enum_member;
+            // Invalid computed names can still contain functions visited by the checker.
+            b.bindComputed(md.name);
             if (b.propName(md.name)) |mn| {
                 if (s.exports == null) s.exports = b.table();
                 _ = b.declare(s.exports.?, s, m, mn, F.enum_member, F.enum_member_ex, md.name);
@@ -1273,7 +1284,7 @@ pub const Binder = struct {
                 b.addAnte(pre, b.flow);
                 const t = b.newLabel(.branch);
                 const post = b.newLabel(.branch);
-                b.flow = pre.node;
+                b.flow = pre.node.?;
                 b.bindCond(d.cond, t, post);
                 b.flow = b.finish(t);
                 const save = b.loopLabels(post, pre);
@@ -1289,7 +1300,7 @@ pub const Binder = struct {
                 b.addAnte(pre, b.flow);
                 const cont = b.newLabel(.branch);
                 const post = b.newLabel(.branch);
-                b.flow = pre.node;
+                b.flow = pre.node.?;
                 const save = b.loopLabels(post, cont);
                 b.bindLoopBody(d.body);
                 b.addAnte(cont, b.flow);
@@ -1309,7 +1320,7 @@ pub const Binder = struct {
                 const t = b.newLabel(.branch);
                 const post = b.newLabel(.branch);
                 const cont = b.newLabel(.branch);
-                b.flow = pre.node;
+                b.flow = pre.node.?;
                 b.bindCond(d.cond, t, post);
                 b.flow = b.finish(t);
                 const save = b.loopLabels(post, cont);
@@ -1365,7 +1376,7 @@ pub const Binder = struct {
             },
             .labeled => |d| {
                 const post = b.newLabel(.branch);
-                const nl = b.a.create(NamedLabel) catch oom();
+                const nl = b.temps.create(NamedLabel) catch oom();
                 nl.* = .{ .name = d.label.data.identifier, .brk = post, .cont = null, .parent = b.labels };
                 b.labels = nl;
                 b.pending_label = nl;
@@ -1481,7 +1492,7 @@ pub const Binder = struct {
         const pre = b.newLabel(.loop);
         b.addAnte(pre, b.flow);
         const post = b.newLabel(.branch);
-        b.flow = pre.node;
+        b.flow = pre.node.?;
         b.addAnte(post, b.flow);
         b.bind(init_node);
         if (init_node.data == .var_list) {
@@ -1553,13 +1564,13 @@ pub const Binder = struct {
 
     fn flowEffect(b: *Binder, kind: FlowKind, node: *Node) void {
         b.flow = b.createFlow(kind, node, b.flow);
-        if (b.exc) |x| x.list.append(b.a, b.flow) catch oom();
+        if (b.exc) |x| x.list.append(b.temps, b.flow) catch oom();
     }
 
     fn reduceFlow(b: *Binder, target: *FlowNode, list: []*FlowNode) *FlowNode {
         const f = b.createFlow(.reduce, null, b.flow);
         f.reduce_target = target;
-        f.antecedents = list;
+        f.antecedents = b.a.dupe(*FlowNode, list) catch oom();
         return f;
     }
 
@@ -1592,13 +1603,14 @@ pub const Binder = struct {
         for (normal.list.items) |x| b.addAnte(label, x);
         for (exc.list.items) |x| b.addAnte(label, x);
         for (returns.list.items) |x| b.addAnte(label, x);
-        label.node.antecedents = label.list.items;
-        b.flow = if (label.list.items.len > 0) label.node else b.unreachable_flow;
+        const join = b.labelNode(label);
+        join.antecedents = b.a.dupe(*FlowNode, label.list.items) catch oom();
+        b.flow = if (label.list.items.len > 0) join else b.unreachable_flow;
         b.bind(f);
         if (b.flow.kind == .unreachable_end) return;
-        if (b.ret) |r| if (returns.list.items.len > 0) b.addAnte(r, b.reduceFlow(label.node, returns.list.items));
-        if (b.exc) |x| if (exc.list.items.len > 0) b.addAnte(x, b.reduceFlow(label.node, exc.list.items));
-        b.flow = if (normal.list.items.len > 0) b.reduceFlow(label.node, normal.list.items) else b.unreachable_flow;
+        if (b.ret) |r| if (returns.list.items.len > 0) b.addAnte(r, b.reduceFlow(join, returns.list.items));
+        if (b.exc) |x| if (exc.list.items.len > 0) b.addAnte(x, b.reduceFlow(join, exc.list.items));
+        b.flow = if (normal.list.items.len > 0) b.reduceFlow(join, normal.list.items) else b.unreachable_flow;
     }
 
     /// `this.x = 1` in a JavaScript class declares `x` on it, on the class itself in a static
@@ -1952,12 +1964,15 @@ fn isExportsTarget(n: *const Node) bool {
 }
 
 pub fn bindFile(a: Allocator, f: *ast.File) void {
+    var temps = std.heap.ArenaAllocator.init(a);
+    defer temps.deinit();
     const unreachable_flow = a.create(FlowNode) catch oom();
     unreachable_flow.* = .{ .kind = .unreachable_end };
     const start = a.create(FlowNode) catch oom();
     start.* = .{ .kind = .start };
     var b = Binder{
         .a = a,
+        .temps = temps.allocator(),
         .file = f,
         .container = f.root,
         .block = f.root,
@@ -1975,10 +1990,13 @@ pub fn bindFile(a: Allocator, f: *ast.File) void {
 /// Binds a block `parser.parseBody` read, for one checker: everything it creates lives in `a`,
 /// and the file, the function and whatever else is outside the block stay as they are.
 pub fn bindBody(a: Allocator, f: *ast.File, n: *Node, block: *Node) struct { body: Body, diags: []lexer.Diag } {
+    var temps = std.heap.ArenaAllocator.init(a);
+    defer temps.deinit();
     const unreachable_flow = a.create(FlowNode) catch oom();
     unreachable_flow.* = .{ .kind = .unreachable_end };
     var b = Binder{
         .a = a,
+        .temps = temps.allocator(),
         .file = f,
         .container = n,
         .block = n,
@@ -1986,7 +2004,6 @@ pub fn bindBody(a: Allocator, f: *ast.File, n: *Node, block: *Node) struct { bod
         .unreachable_flow = unreachable_flow,
         .frozen = n,
     };
-    b.ret = b.newLabel(.branch);
     b.bindList(block.data.block.stmts);
     return .{
         .body = .{ .block = block, .end_flow = if (b.flow.kind == .unreachable_end) null else b.flow, .locals = b.scopeOf(n) },
@@ -2106,4 +2123,61 @@ test "a body cannot reach a file's module lists" {
     const n = f.root.data.source_file.stmts[0];
     _ = bindBody(a, f, n, parser.parseBody(a, f, n).block);
     try std.testing.expectEqual(@as(usize, 1), f.module_specs.len);
+}
+
+test "flow labels preserve loop identity and simplify branches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const file = parser.parse(a, "t.ts", "");
+    var dead = FlowNode{ .kind = .unreachable_end };
+    var first = FlowNode{ .kind = .start };
+    var second = FlowNode{ .kind = .assign, .antecedent = &first };
+    var b = Binder{ .a = a, .temps = a, .file = file, .container = file.root, .block = file.root, .flow = &first, .unreachable_flow = &dead };
+    const branch = b.newLabel(.branch);
+    try std.testing.expectEqual(&dead, b.finish(branch));
+    b.addAnte(branch, &first);
+    b.addAnte(branch, &first);
+    try std.testing.expectEqual(&first, b.finish(branch));
+    try std.testing.expect(branch.node == null);
+    b.addAnte(branch, &second);
+    const join = b.finish(branch);
+    try std.testing.expectEqual(FlowKind.branch, join.kind);
+    try std.testing.expectEqualSlices(*FlowNode, &.{ &first, &second }, join.antecedents);
+    const loop = b.newLabel(.loop);
+    const head = loop.node.?;
+    try std.testing.expectEqual(head, b.finish(loop));
+    b.addAnte(loop, &first);
+    b.addAnte(loop, head);
+    try std.testing.expectEqual(head, b.finish(loop));
+    try std.testing.expectEqualSlices(*FlowNode, &.{ &first, head }, head.antecedents);
+}
+
+test "flow edges survive reuse of temporary binding storage" {
+    const Bump = @import("bump.zig").Bump;
+    var bump = Bump.init(std.testing.allocator);
+    defer bump.deinit();
+    const a = bump.allocator();
+    const f = parser.parse(a, "t.ts", "function f(x: number) { let y = 0; while (x > 0) { try { if (x === 2) break; y = x; } finally { x--; } } return y; }");
+    bindFile(a, f);
+    const stmts = f.root.data.source_file.stmts[0].data.func.body.?.data.block.stmts;
+    const root = stmts[stmts.len - 1].data.return_stmt.expr.?.flow().?;
+    for (0..128) |_| @memset(try a.alloc(u8, 256), 0);
+    var seen: std.AutoHashMapUnmanaged(*FlowNode, void) = .empty;
+    defer seen.deinit(std.testing.allocator);
+    var pending: std.ArrayList(*FlowNode) = .empty;
+    defer pending.deinit(std.testing.allocator);
+    try pending.append(std.testing.allocator, root);
+    var loop = false;
+    var reduction = false;
+    while (pending.pop()) |node| {
+        if ((try seen.getOrPut(std.testing.allocator, node)).found_existing) continue;
+        loop = loop or node.kind == .loop;
+        reduction = reduction or node.kind == .reduce;
+        if (node.antecedent) |ante| try pending.append(std.testing.allocator, ante);
+        if (node.reduce_target) |target| try pending.append(std.testing.allocator, target);
+        try pending.appendSlice(std.testing.allocator, node.antecedents);
+    }
+    try std.testing.expect(loop and reduction);
+    try std.testing.expect(seen.count() > 8);
 }

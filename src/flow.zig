@@ -601,17 +601,24 @@ const St = struct {
     fn byDiscriminant(st: *St, t: *Type, name: []const u8, op: anytype) *Type {
         const c = st.c;
         const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
-        var parts = c.newList(*Type);
+        var small: [d.small_list]*Type = undefined;
+        const parts = d.smallList(c, &small, members.len);
+        defer if (parts.len > small.len) c.a.free(parts);
+        var count: usize = 0;
         for (members) |m| {
             const p = d.getProp(c, m, name) orelse {
-                parts.append(c.a, m) catch oom();
+                parts[count] = m;
+                count += 1;
                 continue;
             };
             const pt = d.propType(c, p);
             const narrowed = op.run(c, pt);
-            if (narrowed.data != .never) parts.append(c.a, m) catch oom();
+            if (narrowed.data != .never) {
+                parts[count] = m;
+                count += 1;
+            }
         }
-        return c.getUnion(parts.items);
+        return c.getUnion(parts[0..count]);
     }
 
     fn truthyAccess(st: *St, t: *Type, n: *Node, assume: bool) ?*Type {

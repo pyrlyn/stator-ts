@@ -832,14 +832,19 @@ pub const Checker = struct {
     /// from absorbing literals in a union. Everywhere else `{}` adds nothing to a non-nullable.
     pub fn intersect(c: *Checker, types: []const *Type, keep_empty: bool) *Type {
         if (types.len == 1) return types[0];
-        var list = c.newList(*Type);
+        var buffer: [512]u8 align(@alignOf(*Type)) = undefined;
+        var temp = std.heap.BufferFirstAllocator.init(&buffer, c.a);
+        const a = temp.allocator();
+        var list = std.ArrayList(*Type).initCapacity(a, 4) catch oom();
+        defer list.deinit(a);
         for (types) |t| {
             switch (t.data) {
-                .inter => |x| for (x) |y| list.append(c.a, y) catch oom(),
-                else => list.append(c.a, t) catch oom(),
+                .inter => |x| for (x) |y| list.append(a, y) catch oom(),
+                else => list.append(a, t) catch oom(),
             }
         }
-        var out = c.newList(*Type);
+        var out = std.ArrayList(*Type).initCapacity(a, 4) catch oom();
+        defer out.deinit(a);
         var has_union = false;
         for (list.items) |t| {
             switch (t.data) {
@@ -854,7 +859,7 @@ pub const Checker = struct {
             for (out.items) |x| if ((x.regular orelse x) == (t.regular orelse t)) {
                 dup = true;
             };
-            if (!dup) out.append(c.a, t) catch oom();
+            if (!dup) out.append(a, t) catch oom();
         }
         for (out.items) |t| for (out.items) |o| {
             if (t != o and c.disjointPrimitives(t, o)) return c.t_never;
@@ -877,13 +882,14 @@ pub const Checker = struct {
         }
         if (c.strict_null and nullable and (has_empty or object)) return c.t_never;
         const drop_empty = has_empty and (object or (definite and !keep_empty));
-        var reduced = c.newList(*Type);
+        var reduced = std.ArrayList(*Type).initCapacity(a, 4) catch oom();
+        defer reduced.deinit(a);
         for (out.items) |t| {
             const widens = for (out.items) |o| {
                 if (o != t and c.literalOfPrimitive(o, t)) break true;
             } else false;
             if (widens or (drop_empty and isEmptyAnon(c, t))) continue;
-            reduced.append(c.a, t) catch oom();
+            reduced.append(a, t) catch oom();
         }
         if (reduced.items.len == 0) return c.t_unknown;
         if (reduced.items.len == 1) return reduced.items[0];
@@ -907,11 +913,13 @@ pub const Checker = struct {
             };
             for (reduced.items, 0..) |t, i| {
                 if (t.data != .union_) continue;
-                var parts = c.newList(*Type);
+                var parts = std.ArrayList(*Type).initCapacity(a, t.data.union_.len) catch oom();
+                defer parts.deinit(a);
                 for (t.data.union_) |m| {
-                    const rest = c.dupe(*Type, reduced.items);
+                    const rest = a.dupe(*Type, reduced.items) catch oom();
+                    defer a.free(rest);
                     rest[i] = m;
-                    parts.append(c.a, c.getIntersection(rest)) catch oom();
+                    parts.append(a, c.getIntersection(rest)) catch oom();
                 }
                 return c.getUnion(parts.items);
             }
@@ -920,7 +928,7 @@ pub const Checker = struct {
         for (reduced.items, 1..) |t, i| key[i] = t.id;
         const gop = c.slot(key);
         if (gop.found_existing) return gop.value_ptr.*;
-        const u = c.mk(.{ .inter = reduced.items });
+        const u = c.mk(.{ .inter = c.dupe(*Type, reduced.items) });
         for (reduced.items) |t| if (t.vars) {
             u.vars = true;
         };
@@ -1077,7 +1085,7 @@ pub const Checker = struct {
         return c.t_err;
     }
 
-    pub fn internRef(c: *Checker, target: *Type, args: []*Type, this_arg: ?*Type) *Type {
+    pub fn internRef(c: *Checker, target: *Type, args: []const *Type, this_arg: ?*Type) *Type {
         const key = c.keyOf('r', args.len + 2);
         key[1] = target.id;
         key[2] = if (this_arg) |x| x.id else 0;
@@ -1252,4 +1260,26 @@ pub fn isUnion(t: *Type) bool {
 
 pub fn isTypeVar(t: *Type) bool {
     return t.data == .param or t.data == .access;
+}
+
+test "interned intersections outlive temporary buffers and preserve member order" {
+    const pool = @import("pool.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cfg = project.Config{ .root = "." };
+    var tp = pool.ThreadPool.init(1);
+    const p = project.loadProgram(a, std.testing.io, &tp, &cfg, &.{}, .{ .want_libs = false });
+    const c = Checker.new(a, p);
+    var members: [40]*Type = undefined;
+    for (&members) |*member| member.* = c.newObj(.{ .kind = .anon });
+    for ([_]usize{ 2, members.len }) |len| {
+        const result = c.getIntersection(members[0..len]);
+        var reversed: [40]*Type = undefined;
+        for (members[0..len], 0..) |member, i| reversed[len - i - 1] = member;
+        const other = c.getIntersection(reversed[0..len]);
+        try std.testing.expectEqualSlices(*Type, members[0..len], result.data.inter);
+        try std.testing.expectEqualSlices(*Type, reversed[0..len], other.data.inter);
+        try std.testing.expectEqual(result, c.getIntersection(members[0..len]));
+    }
 }

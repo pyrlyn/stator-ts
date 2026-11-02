@@ -35,10 +35,13 @@ if [ -n "${TSC:-}" ] && [ -z "${STATOR_TS_LIB:-}" ]; then
 		const fs = require("fs"), path = require("path");
 		const pkg = path.dirname(path.dirname(fs.realpathSync(process.argv[1])));
 		const js = path.join(pkg, "lib");
-		if (fs.existsSync(path.join(js, "lib.d.ts"))) return console.log(js);
-		const native = `@typescript/typescript-${process.platform}-${process.arch}/package.json`;
-		const load = require("module").createRequire(pkg + path.sep);
-		console.log(path.join(path.dirname(load.resolve(native)), "lib"));
+		if (fs.existsSync(path.join(js, "lib.d.ts"))) {
+			console.log(js);
+		} else {
+			const native = `@typescript/typescript-${process.platform}-${process.arch}/package.json`;
+			const load = require("module").createRequire(pkg + path.sep);
+			console.log(path.join(path.dirname(load.resolve(native)), "lib"));
+		}
 	' "$tsc") || exit 1
 	export STATOR_TS_LIB
 fi

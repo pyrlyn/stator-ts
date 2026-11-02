@@ -219,7 +219,7 @@ pub fn generic(c: *Checker, name: []const u8, args: []const *Type) *Type {
 
 fn refTo(c: *Checker, g: *Type, args: []const *Type) *Type {
     if (g.data != .obj or g.data.obj.tparams().len != args.len) return c.t_err;
-    return c.internRef(g, c.dupe(*Type, args), null);
+    return c.internRef(g, args, null);
 }
 
 pub fn arrayOf(c: *Checker, e: *Type) *Type {
@@ -1438,13 +1438,16 @@ pub fn mapType(c: *Checker, m: *Mapper, t: *Type) *Type {
             for (a.from, 0..) |f, i| if (f == t) return a.to[i];
             return t;
         },
-        .composite => |x| {
-            const t1 = mapType(c, x.m1, t);
-            return if (t1 != t) instantiate(c, t1, x.m2) else mapType(c, x.m2, t);
-        },
+        .composite => |x| return mapComposed(c, x.m1, x.m2, t),
         .infer => |ctx| return relate.inferMap(c, ctx, t, m),
         .erase => return if (t.data == .param and !t.data.param.is_this) c.t_any else t,
     }
+}
+
+/// Cache-key probes need the composed result, but never retain a composite mapper.
+fn mapComposed(c: *Checker, first: ?*Mapper, second: *Mapper, t: *Type) *Type {
+    const intermediate = if (first) |m| mapType(c, m, t) else t;
+    return if (intermediate != t) instantiate(c, intermediate, second) else mapType(c, second, t);
 }
 
 fn mapAll(c: *Checker, m: *Mapper, list: []*Type) []*Type {
@@ -1531,21 +1534,21 @@ fn instantiateAnon(c: *Checker, t: *Type, m: *Mapper) *Type {
     const decl = root.data.obj.node orelse root.data.obj.literal orelse (if (root.data.obj.sym) |s| (if (s.decls.len > 0) s.decls[0] else null) else null) orelse return if (t.vars) instantiatedSigs(c, t, m) else t;
     const outer = if (isWrittenType(decl)) referencedTParams(c, decl) else outerTParams(c, decl);
     if (outer.len == 0) return t;
-    const combined = compose(c, o.mapper, m).?;
     var small: [small_list]*Type = undefined;
     const mapped = smallList(c, &small, outer.len);
+    defer if (mapped.len > small.len) c.a.free(mapped);
     var same = o.target == null;
     for (outer, 0..) |p, i| {
-        mapped[i] = mapType(c, combined, p);
+        mapped[i] = mapComposed(c, o.mapper, m, p);
         if (mapped[i] != p) same = false;
     }
     if (same) return t;
     if (o.kind == .mapped) if (homomorphicParam(c, root)) |hp| {
-        const arg = mapType(c, combined, hp);
+        const arg = mapComposed(c, o.mapper, m, hp);
         if (arg != hp) if (instantiateHomomorphic(c, root, hp, arg, outer, mapped)) |r| {
             // Inference sees `Shape<A | B>` as one argument, not as `A` and `B` apart.
             if (root.alias != null and r.alias == null and allMapped(r)) {
-                r.alias = c.create(T.Alias, .{ .sym = root.alias.?.sym, .args = mapAll(c, combined, root.alias.?.args) });
+                r.alias = c.create(T.Alias, .{ .sym = root.alias.?.sym, .args = mapAll(c, compose(c, o.mapper, m).?, root.alias.?.args) });
             }
             return r;
         };
@@ -2557,6 +2560,7 @@ pub fn ownProp(c: *Checker, t: *Type, name: []const u8) ?*Prop {
         .declared => |x| declaredProp(c, x.owner, x.mapper, x.bases, name),
         .instance => |x| if (ownProp(c, x.root, name)) |q| instProp(c, q, x.mapper) else null,
     } orelse return null;
+    if (m.props.entries.capacity == 0) c.reserveProps(m, 2);
     m.props.put(c.a, p.name, p) catch oom();
     return p;
 }
@@ -3758,7 +3762,7 @@ pub fn baseConstraint(c: *Checker, t: *Type) *Type {
 }
 
 fn baseConstraintDepth(c: *Checker, t: *Type, depth: u32) *Type {
-    if (depth > 24) return c.t_err;
+    if (depth > 24) return c.metCycle();
     switch (t.data) {
         .param => {
             const k = constraintOf(c, t) orelse return c.t_unknown;
@@ -4152,12 +4156,12 @@ fn hasGenericTuple(c: *Checker, t: *Type) bool {
 
 fn instCond(c: *Checker, t: *Type, m: *Mapper) *Type {
     const root = t.data.cond;
-    const combined = compose(c, root.mapper, m).?;
     // Keyed on what the outer parameters became, and resolved under a flat mapper: composing
     // mappers instead grows them with every nesting level and is exponential on real code.
     var small: [small_list]*Type = undefined;
     const vals = smallList(c, &small, root.outer.len);
-    for (root.outer, 0..) |p, i| vals[i] = mapType(c, combined, p);
+    defer if (vals.len > small.len) c.a.free(vals);
+    for (root.outer, 0..) |p, i| vals[i] = mapComposed(c, root.mapper, m, p);
     const key = c.keyOf('C', vals.len + 1);
     key[1] = @truncate(@intFromPtr(root.node) >> 3);
     for (vals, 2..) |v, i| key[i] = v.id;
@@ -4323,4 +4327,22 @@ test "numeric property names normalize like tsc" {
     try std.testing.expectEqualStrings("16", numNameAlloc(a, 16));
     try std.testing.expectEqualStrings("1.5", numNameAlloc(a, 1.5));
     try std.testing.expectEqualStrings("-2", numNameAlloc(a, -2));
+}
+
+test "a constraint depth limit marks its answer provisional" {
+    const project = @import("project.zig");
+    const pool = @import("pool.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cfg = project.Config{ .root = "." };
+    var tp = pool.ThreadPool.init(1);
+    const p = project.loadProgram(a, std.testing.io, &tp, &cfg, &.{}, .{ .want_libs = false });
+    const c = Checker.new(a, p);
+    var ty = c.t_number;
+    for (0..25) |_| ty = c.mk(.{ .param = c.create(T.TParam, .{ .name = "T", .constraint = ty, .constraint_done = true }) });
+    const before = c.cycles;
+    try std.testing.expectEqual(c.t_err, baseConstraint(c, ty));
+    try std.testing.expectEqual(before + 1, c.cycles);
+    try std.testing.expectEqual(c.t_number, baseConstraint(c, ty.data.param.constraint.?));
 }
