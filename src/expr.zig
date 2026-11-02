@@ -4154,6 +4154,45 @@ fn hasUndefinedConstraint(c: *Checker, t: *Type) bool {
     };
 }
 
+/// tsc's `checkDeleteExpression`, past checking the operand itself.
+fn checkDeleteOperand(c: *Checker, e: *Node) void {
+    const left, const name = switch (e.data) {
+        .prop_access => |x| blk: {
+            if (x.name.data == .private_name) err(c, e, 18011, "The operand of a 'delete' operator cannot be a private identifier.");
+            break :blk .{ checkSilent(c, x.expr), ast.memberText(x.name) };
+        },
+        .elem_access => |x| blk: {
+            const idx = checkSilent(c, x.index);
+            break :blk .{ checkSilent(c, x.expr), d.literalName(c, idx.regular orelse idx) orelse return };
+        },
+        else => return err(c, e, 2703, "The operand of a 'delete' operator must be a property reference."),
+    };
+    if (T.isAny(left)) return;
+    const p = d.getProp(c, left, name) orelse return;
+    if (p.readonly) return err(c, e, 2704, "The operand of a 'delete' operator cannot be a read-only property.");
+    if (!c.strict_null) return;
+    const t = d.propType(c, p);
+    if (T.isAny(t) or t.data == .unknown or t.data == .never) return;
+    const optional = if (c.exact_optional) p.optional else p.optional or holdsUndefined(c, t);
+    if (!optional) err(c, e, 2790, "The operand of a 'delete' operator must be optional.");
+}
+
+/// tsc's `TypeFactsIsUndefined`: a generic type answers through its constraint, and tsc
+/// counts neither `void` nor a missing constraint.
+fn holdsUndefined(c: *Checker, t: *Type) bool {
+    return switch (t.data) {
+        .undefined => true,
+        .union_ => |x| for (x) |m| {
+            if (holdsUndefined(c, m)) break true;
+        } else false,
+        .param, .access, .cond => blk: {
+            const k = d.baseConstraint(c, t);
+            break :blk k != t and holdsUndefined(c, k);
+        },
+        else => false,
+    };
+}
+
 fn mayBeUndefined(t: *Type) bool {
     return switch (t.data) {
         .undefined => true,
@@ -6262,6 +6301,7 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         },
         .delete_expr => |x| blk: {
             _ = checkExpr(c, x.expr);
+            if (!quiet(c)) checkDeleteOperand(c, binder.stripParens(x.expr));
             break :blk c.t_boolean;
         },
         .await_expr => |x| awaitedOf(c, checkExpr(c, x.expr)),
