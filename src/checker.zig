@@ -727,9 +727,11 @@ fn checkStmt(c: *Checker, n: *Node) void {
             checkStmt(c, x.body);
         },
         .for_of => |x| {
-            forInit(c, x.init);
+            if (x.init.data == .var_list) checkStmt(c, x.init);
             const t = expr.checkExpression(c, x.expr);
-            _ = expr.iteratedOf(c, x.expr, expr.nonNullReport(c, t, x.expr), x.is_await);
+            const elem = expr.iteratedOf(c, x.expr, expr.nonNullReport(c, t, x.expr), x.is_await);
+            // An expression on the left is assigned each element, as `x.init = elem` would be.
+            if (x.init.data != .var_list) expr.destructureInto(c, binder.stripParens(x.init), elem);
             checkStmt(c, x.body);
         },
         .return_stmt => checkReturn(c, n),

@@ -2496,7 +2496,10 @@ pub fn iteratedOf(c: *Checker, n: *Node, t: *Type, is_await: bool) *Type {
             const v = d.getProp(c, m, "value") orelse continue;
             parts.append(c.a, d.propType(c, v)) catch oom();
         }
-        return if (parts.items.len == 0) c.t_err else c.getUnion(parts.items);
+        if (parts.items.len == 0) return c.t_err;
+        const v = c.getUnion(parts.items);
+        // `for await` over a sync iterable waits for each value it yields.
+        return if (is_await and std.mem.eql(u8, key, "__@iterator")) awaitedOf(c, v) else v;
     }
     if (t.data == .param or t.data == .access or t.data == .cond or t.data == .inter) {
         const k = d.baseConstraint(c, t);
@@ -2625,7 +2628,7 @@ fn isDestructuringTarget(n: *Node) bool {
     const p = n.parent orelse return false;
     return switch (p.data) {
         .binary => |x| x.op == .assign and x.left == n,
-        .array_lit => isDestructuringTarget(p),
+        .array_lit, .spread_elem => isDestructuringTarget(p),
         .property_assign => |x| x.value == n and if (p.parent) |o| isDestructuringTarget(o) else false,
         else => false,
     };
@@ -4200,8 +4203,73 @@ fn checkAssign(c: *Checker, n: *Node) *Type {
 }
 
 fn checkDestructuringAssign(c: *Checker, left: *Node, right: *Node) *Type {
-    _ = left;
-    return checkExpr(c, right);
+    const source = checkExpr(c, right);
+    destructureInto(c, binder.stripParens(left), source);
+    return source;
+}
+
+/// tsc's `checkDestructuringAssignment`: every target in the pattern takes the part of `source`
+/// it is written from.
+pub fn destructureInto(c: *Checker, target0: *Node, source0: *Type) void {
+    var target = target0;
+    var source = source0;
+    if (target.data == .shorthand_assign) {
+        const x = target.data.shorthand_assign;
+        if (x.init) |i| {
+            // A default that cannot be undefined fills in for a missing value.
+            if (c.strict_null and !hasUndefined(checkExpr(c, i))) source = removeUndefined(c, source);
+            const declared = checkExpr(c, x.name);
+            if (!T.isAny(declared)) checkAssignable(c, checkExpr(c, i), declared, i, x.name);
+        }
+        target = x.name;
+    }
+    if (target.data == .binary and target.data.binary.op == .assign) {
+        _ = checkExpr(c, target);
+        target = target.data.binary.left;
+        if (c.strict_null) source = removeUndefined(c, source);
+    }
+    switch (target.data) {
+        .object_lit => |x| for (x.props) |p| switch (p.data) {
+            .property_assign => |a| destructureInto(c, a.value, destructuredProp(c, source, a.name)),
+            .shorthand_assign => |a| destructureInto(c, p, destructuredProp(c, source, a.name)),
+            .spread_assign => |a| {
+                var skip = c.newList([]const u8);
+                for (x.props) |o| {
+                    const key = switch (o.data) {
+                        .property_assign => |q| q.name,
+                        .shorthand_assign => |q| q.name,
+                        else => continue,
+                    };
+                    skip.append(c.a, propNameOf(c, key) orelse return) catch oom();
+                }
+                destructureInto(c, a.expr, if (T.isAny(source)) source else restOf(c, source, skip.items));
+            },
+            else => {},
+        },
+        .array_lit => |x| for (x.elems, 0..) |e, i| switch (e.data) {
+            .omitted_expr => {},
+            .spread_elem => |s| {
+                const rest = if (T.isAny(source)) source else if (T.isTupleType(source)) restOfTuple(c, source, i) else d.arrayOf(c, destructuredElement(c, target, source, i));
+                destructureInto(c, s.expr, rest);
+            },
+            else => destructureInto(c, e, destructuredElement(c, target, source, i)),
+        },
+        else => {
+            const declared = checkExpr(c, target);
+            if (!T.isAny(source) and !T.isAny(declared) and !isReadonlyTarget(c, target)) checkAssignable(c, source, declared, target, target);
+        },
+    }
+}
+
+fn destructuredProp(c: *Checker, source: *Type, name: *Node) *Type {
+    const key = propNameOf(c, name) orelse return c.t_err;
+    return destructuredMember(c, nonNull(c, source), key) orelse c.t_err;
+}
+
+fn restOfTuple(c: *Checker, t: *Type, i: usize) *Type {
+    const o = t.data.obj;
+    if (i >= o.tuple.elems.len) return c.makeTuple(&.{}, &.{}, false, &.{});
+    return c.makeTuple(o.tuple.elems[i..], o.tuple.eflags[i..], false, &.{});
 }
 
 fn checkCompound(c: *Checker, n: *Node) *Type {
