@@ -70,7 +70,10 @@ pub fn parseBody(a: Allocator, file: *const ast.File, n: *Node) Body {
 
 /// Null when `lazy` could not skip a block; only then is there anything to do over.
 fn parseFile(a: Allocator, path: []const u8, src: []const u8, lazy: bool) ?*ast.File {
-    const is_dts = std.mem.endsWith(u8, path, ".d.ts") or std.mem.endsWith(u8, path, ".d.mts") or std.mem.endsWith(u8, path, ".d.cts") or std.mem.endsWith(u8, path, ".json");
+    const base = std.fs.path.basename(path);
+    // tsc's `isDeclarationFileName`, which also takes `a.d.html.ts` for an arbitrary extension.
+    const is_dts = std.mem.endsWith(u8, path, ".d.mts") or std.mem.endsWith(u8, path, ".d.cts") or std.mem.endsWith(u8, path, ".json") or
+        (std.mem.endsWith(u8, base, ".ts") and std.mem.indexOf(u8, base, ".d.") != null);
     var p = Parser{
         .a = a,
         .lx = .{ .src = src, .a = a },
