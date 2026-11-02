@@ -573,7 +573,11 @@ pub const FsCache = struct {
             const st = Io.Dir.cwd().statFile(f.io, path, .{}) catch return null;
             return st.kind;
         };
-        switch (f.listing(parent).*) {
+        return f.kindInListing(path, f.listing(parent));
+    }
+
+    fn kindInListing(f: *FsCache, path: []const u8, listing_: *const Listing) ?Io.File.Kind {
+        switch (listing_.*) {
             .missing => return null,
             .unreadable => {
                 const st = Io.Dir.cwd().statFile(f.io, path, .{}) catch return null;
@@ -638,11 +642,15 @@ const Resolver = struct {
 
     fn tryFile(r: Resolver, base: []const u8) ?[]const u8 {
         const suffixes = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".d.mts", ".d.cts" };
-        if (isSourceFile(base) and r.fs.isFile(base)) return base;
-        if (r.jsonModules() and std.mem.endsWith(u8, base, ".json") and r.fs.isFile(base)) return base;
+        // All extension candidates share one directory snapshot and its synchronization cost.
+        const dir = if (base.len > 0 and fspath.isSep(base[base.len - 1])) base else fspath.dirname(base) orelse ".";
+        const listing = r.fs.listing(dir);
+        if (listing.* == .missing) return null;
+        if (isSourceFile(base) and r.fs.kindInListing(base, listing) == .file) return base;
+        if (r.jsonModules() and std.mem.endsWith(u8, base, ".json") and r.fs.kindInListing(base, listing) == .file) return base;
         for (suffixes) |s| {
             const p = std.mem.concat(r.a, u8, &.{ base, s }) catch oom();
-            if (r.fs.isFile(p)) return p;
+            if (r.fs.kindInListing(p, listing) == .file) return p;
         }
         // Source written for ESM imports `./a.js` while `./a.ts` is on disk.
         const maps = [_]struct { []const u8, []const []const u8 }{
@@ -655,16 +663,18 @@ const Resolver = struct {
             const stem = base[0 .. base.len - m[0].len];
             for (m[1]) |x| {
                 const p = std.mem.concat(r.a, u8, &.{ stem, x }) catch oom();
-                if (r.fs.isFile(p)) return p;
+                if (r.fs.kindInListing(p, listing) == .file) return p;
             }
         };
         return null;
     }
 
     fn tryIndex(r: Resolver, dir: []const u8) ?[]const u8 {
+        const listing = r.fs.listing(dir);
+        if (listing.* == .missing) return null;
         for ([_][]const u8{ "index.ts", "index.tsx", "index.d.ts" }) |x| {
             const p = fspath.join(r.a, &.{ dir, x }) catch oom();
-            if (r.fs.isFile(p)) return p;
+            if (r.fs.kindInListing(p, listing) == .file) return p;
         }
         return null;
     }
@@ -1502,6 +1512,44 @@ test "filesystem snapshots share package bytes and concurrent directory reads" {
     var tp = pool.ThreadPool.init(workers);
     pool.parallelForEach(&tp, workers, &readers, Readers.read);
     for (readers.listings) |listing| try std.testing.expectEqual(readers.listings[0], listing);
+}
+
+test "resolver probes preserve extension order and unreadable-directory fallback" {
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(io, ".", a);
+    for ([_][]const u8{ "item.ts", "item.tsx", "mapped.ts", "view.tsx", "mod.mts", "common.cts", "data.json", "folder.tsx", "index.ts", "index.tsx" }) |name| {
+        try tmp.dir.writeFile(io, .{ .sub_path = name, .data = "" });
+    }
+    try tmp.dir.createDir(io, "folder.ts", .default_dir);
+    try tmp.dir.createDir(io, "trailing", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "trailing/.ts", .data = "" });
+    var fs = FsCache{ .io = io };
+    const cfg = Config{ .root = dir, .options = .{ .resolveJsonModule = true } };
+    const r = Resolver{ .io = io, .a = a, .fs = &fs, .cfg = &cfg };
+    for ([_][2][]const u8{
+        .{ "item", "item.ts" }, .{ "item.tsx", "item.tsx" },
+        .{ "mapped.js", "mapped.ts" }, .{ "view.jsx", "view.tsx" },
+        .{ "mod.mjs", "mod.mts" }, .{ "common.cjs", "common.cts" },
+        .{ "data.json", "data.json" }, .{ "folder", "folder.tsx" },
+        .{ "trailing/", "trailing/.ts" },
+    }) |pair| {
+        const base = try std.mem.concat(a, u8, &.{ dir, fspath.sep_str, pair[0] });
+        const expected = try fspath.join(a, &.{ dir, pair[1] });
+        try std.testing.expectEqualStrings(expected, r.tryFile(base).?);
+    }
+    try std.testing.expectEqualStrings(try fspath.join(a, &.{ dir, "index.ts" }), r.tryIndex(dir).?);
+    const missing = try fspath.join(a, &.{ dir, "absent", "item" });
+    try std.testing.expect(r.tryFile(missing) == null);
+    try std.testing.expect(r.tryIndex(missing) == null);
+    const unreadable: FsCache.Listing = .unreadable;
+    const file = try fspath.join(a, &.{ dir, "item.ts" });
+    try std.testing.expectEqual(Io.File.Kind.file, fs.kindInListing(file, &unreadable).?);
+    try std.testing.expect(fs.kindInListing(missing, &unreadable) == null);
 }
 
 test "stripJsonc removes comments and trailing commas" {
