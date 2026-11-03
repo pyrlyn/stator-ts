@@ -329,6 +329,9 @@ pub const InferInfo = struct {
     top_level: bool = true,
     fixed: bool = false,
     inferred: ?*Type = null,
+    /// How many arguments a rest parameter of this type took, which alone says where a target
+    /// `[...A, ...B]` divides what it is inferred from.
+    implied_arity: ?usize = null,
 };
 
 pub const InferCtx = struct {
@@ -341,6 +344,8 @@ pub const InferCtx = struct {
     is_return: bool = false,
     /// For `infer` in a conditional type, where a generic source is exact rather than a stopgap.
     conditional: bool = false,
+    /// A call in JavaScript: a parameter nothing spoke for is `any`, not `unknown`.
+    any_default: bool = false,
     return_mapper: ?*Mapper = null,
     /// The signature's return type: a parameter at its top keeps literals for the caller.
     ret: ?*Type = null,
@@ -364,6 +369,8 @@ pub const Checker = struct {
     enum_eval_depth: u32 = 0,
     strict_null: bool,
     no_implicit_any: bool,
+    js_follows_flow: bool,
+    strict_builtin_iterator: bool,
     strict_fn: bool,
     strict_prop_init: bool,
     no_implicit_this: bool,
@@ -379,6 +386,10 @@ pub const Checker = struct {
     t_any: *Type = undefined,
     /// The declared type of a property that only assignments in the constructor give a type.
     t_auto: *Type = undefined,
+    t_auto_array: ?*Type = null,
+    /// What an optional property holds when it is left out, which `exactOptionalPropertyTypes` tells
+    /// from an `undefined` written there. Without that option the two are the same type.
+    t_missing: *Type = undefined,
     t_err: *Type = undefined,
     /// A `t_err` that stands for a name already reported as missing, not for something the checker
     /// cannot model: it is known to say nothing, while the other one might have said something.
@@ -412,6 +423,10 @@ pub const Checker = struct {
     global_cache: std.StringHashMapUnmanaged(?*Type) = .empty,
 
     str_lits: std.StringHashMapUnmanaged(*Type) = .empty,
+    /// `Missing<number>` by its spelling, so that every mention of one is one type.
+    unresolved_refs: std.StringHashMapUnmanaged(*Type) = .empty,
+    unresolved_syms: std.StringHashMapUnmanaged(*Symbol) = .empty,
+    late_pairs: std.AutoHashMapUnmanaged(*Symbol, *Symbol) = .empty,
     big_lits: std.StringHashMapUnmanaged(*Type) = .empty,
     num_lits: IdMap(u64, *Type) = .empty,
     interned: InternMap = .empty,
@@ -497,7 +512,6 @@ pub const Checker = struct {
     /// Functions and files already searched for assignments.
     assigned_scopes: IdMap(*Node, void) = .empty,
     /// JavaScript files, by root, already searched for a CommonJS export or `require`.
-    commonjs_files: IdMap(*Node, bool) = .empty,
     /// The function blocks this checker has parsed for itself.
     bodies: IdMap(*Node, binder.Body) = .empty,
     /// Contextual types pushed for an expression that is being checked against a candidate.
@@ -508,6 +522,9 @@ pub const Checker = struct {
     flow_active: std.AutoHashMapUnmanaged(FlowKey, ActiveLoop) = .empty,
     /// The outermost unsettled loop read since the last reset; `flow_untouched` if none was.
     flow_touched: u32 = flow_untouched,
+    /// An array still being built has its own type for each thing it may hold so far.
+    evolving_arrays: IdMap(*Type, *Type) = .empty,
+    evolving_elements: IdMap(*Type, *Type) = .empty,
     flow_assigned: IdMap(*Node, Provisional) = .empty,
     flow_operands: IdMap(*Node, Provisional) = .empty,
     flow_depth: u32 = 0,
@@ -561,11 +578,13 @@ pub const Checker = struct {
             .prog = prog,
             .strict_null = o.flag("strictNullChecks"),
             .no_implicit_any = o.flag("noImplicitAny"),
+            .js_follows_flow = o.jsVariablesFollowFlow orelse false,
             .strict_fn = o.flag("strictFunctionTypes"),
             .strict_prop_init = o.flag("strictPropertyInitialization"),
             .no_implicit_this = o.flag("noImplicitThis"),
             .unknown_in_catch = o.flag("useUnknownInCatchVariables"),
             .bind_call_apply = o.flag("strictBindCallApply"),
+            .strict_builtin_iterator = o.flag("strictBuiltinIteratorReturn"),
             .exact_optional = o.exactOptionalPropertyTypes orelse false,
             .no_unchecked_index = o.noUncheckedIndexedAccess orelse false,
             .no_unused_locals = o.noUnusedLocals orelse false,
@@ -575,21 +594,28 @@ pub const Checker = struct {
         c.t_auto = c.mk(.any);
         c.t_err = c.mk(.err);
         c.t_unresolved = c.mk(.err);
+        // Unions list their members by id, so these keep tsc's order of creation for a union to read
+        // as it does there.
         c.t_unknown = c.mk(.unknown);
-        c.t_never = c.mk(.never);
-        c.t_silent_never = c.mk(.never);
-        c.t_void = c.mk(.void);
         c.t_undefined = c.mk(.undefined);
+        c.t_missing = if (c.exact_optional) c.mk(.undefined) else c.t_undefined;
         c.t_null = c.mk(.null);
         c.t_string = c.mk(.string);
         c.t_number = c.mk(.number);
         c.t_bigint = c.mk(.bigint);
-        c.t_symbol = c.mk(.symbol);
-        c.t_nonprim = c.mk(.nonprim);
-        c.t_true = c.mk(.{ .bool_lit = true });
         c.t_false = c.mk(.{ .bool_lit = false });
+        c.t_true = c.mk(.{ .bool_lit = true });
+        c.t_symbol = c.mk(.symbol);
+        c.t_void = c.mk(.void);
+        c.t_never = c.mk(.never);
+        c.t_silent_never = c.mk(.never);
+        c.t_nonprim = c.mk(.nonprim);
         c.t_boolean = c.getUnion(&.{ c.t_false, c.t_true });
         c.t_boolean.is_boolean = true;
+        // tsc keeps these three for itself, so they are older than any literal of a program.
+        _ = c.strLit("");
+        _ = c.numLit(0);
+        _ = c.bigLit("0");
         c.t_key = c.getUnion(&.{ c.t_string, c.t_number, c.t_symbol });
         c.t_empty = c.newObj(.{ .kind = .anon, .members = c.emptyMembers() });
         c.t_unreachable = c.mk(.never);
@@ -722,15 +748,22 @@ pub const Checker = struct {
     }
 
     pub fn getUnion(c: *Checker, types: []const *Type) *Type {
-        return c.unionOf(types, false);
+        return c.unionOf(types, .literal);
     }
 
     /// For contextual types: a literal beside its primitive still asks for literals to be kept.
     pub fn getContextUnion(c: *Checker, types: []const *Type) *Type {
-        return c.unionOf(types, true);
+        return c.unionOf(types, .keep_literals);
     }
 
-    fn unionOf(c: *Checker, types: []const *Type, keep_literals: bool) *Type {
+    /// `UnionReduction.None`, which is what mapping a context over a union comes to: `unknown` and
+    /// `any` stay beside what the other members asked for.
+    pub fn getMappedContext(c: *Checker, types: []const *Type) *Type {
+        return c.unionOf(types, .none);
+    }
+
+    fn unionOf(c: *Checker, types: []const *Type, reduction: enum { literal, keep_literals, none }) *Type {
+        const keep_literals = reduction != .literal;
         if (types.len == 1) return types[0];
         const list = &c.union_in;
         list.clearRetainingCapacity();
@@ -755,7 +788,7 @@ pub const Checker = struct {
         for (list.items) |t| switch (t.data) {
             .any => has_any = true,
             .err => if (err != c.t_err) {
-                err = t;
+                err = if (t.alias != null) c.t_unresolved else t;
             },
             .unknown => has_unknown = true,
             .string => has_string = true,
@@ -766,8 +799,10 @@ pub const Checker = struct {
             else => has_other = true,
         };
         if (err) |e| return e;
-        if (has_any) return c.t_any;
-        if (has_unknown) return c.t_unknown;
+        if (reduction != .none) {
+            if (has_any) return c.t_any;
+            if (has_unknown) return c.t_unknown;
+        }
         std.mem.sort(*Type, list.items, {}, struct {
             fn less(_: void, l: *Type, r: *Type) bool {
                 return l.id < r.id;
@@ -777,6 +812,8 @@ pub const Checker = struct {
         out.clearRetainingCapacity();
         for (list.items, 0..) |t, i| {
             if (i > 0 and list.items[i - 1] == t) continue;
+            // `undefined` says all that `missing` does, and more.
+            if (i > 0 and t == c.t_missing and list.items[i - 1] == c.t_undefined) continue;
             const drop = switch (t.data) {
                 .str_lit => has_string and !keep_literals,
                 .num_lit => has_number and !keep_literals,
@@ -795,7 +832,7 @@ pub const Checker = struct {
         }
         if (out.items.len == 0) return c.t_never;
         if (out.items.len == 1) return out.items[0];
-        const key = c.keyOf(if (keep_literals) 'U' else 'u', out.items.len);
+        const key = c.keyOf(if (reduction == .none) 'N' else if (keep_literals) 'U' else 'u', out.items.len);
         for (out.items, 1..) |t, i| key[i] = t.id;
         const gop = c.slot(key);
         if (gop.found_existing) return gop.value_ptr.*;
@@ -864,7 +901,7 @@ pub const Checker = struct {
             }
         }
         if (c.strict_null and nullable and (has_empty or object)) return c.t_never;
-        const drop_empty = has_empty and (definite or object) and !keep_empty;
+        const drop_empty = has_empty and (object or (definite and !keep_empty));
         var reduced = std.ArrayList(*Type).initCapacity(a, 4) catch oom();
         defer reduced.deinit(a);
         for (out.items) |t| {
@@ -977,8 +1014,12 @@ pub const Checker = struct {
     fn isEmptyAnon(c: *Checker, t: *Type) bool {
         if (t == c.t_empty) return true;
         if (t.data != .obj or t.data.obj.kind != .anon) return false;
-        const n = t.data.obj.node orelse return false;
-        return n.data == .type_literal and n.data.type_literal.members.len == 0;
+        const n = t.data.obj.node orelse t.data.obj.literal orelse return false;
+        return switch (n.data) {
+            .type_literal => |x| x.members.len == 0,
+            .object_lit => |x| x.props.len == 0,
+            else => false,
+        };
     }
 
     pub fn hasEmptyMember(c: *Checker, members: []const *Type) bool {
@@ -1084,6 +1125,28 @@ pub const Checker = struct {
         return t;
     }
 
+    /// Past the first rest no position is known, so everything from it to the last rest or optional
+    /// element is one rest of whatever those can hold.
+    fn mergeRests(c: *Checker, elems: *std.ArrayList(*Type), flags: *std.ArrayList(ElemFlag), names: *std.ArrayList(?[]const u8)) void {
+        const first = std.mem.indexOfScalar(ElemFlag, flags.items, .rest) orelse return;
+        var last = first;
+        for (flags.items, first..) |_, i| {
+            if (i >= flags.items.len) break;
+            if (flags.items[i] == .rest or flags.items[i] == .optional) last = i;
+        }
+        if (last == first) return;
+        const members = c.a.alloc(*Type, last - first + 1) catch oom();
+        for (members, first..) |*m, i| {
+            const e = elems.items[i];
+            m.* = if (flags.items[i] == .variadic) @import("decls.zig").getIndexedAccess(c, e, c.t_number) else e;
+        }
+        elems.items[first] = c.getUnion(members);
+        const gone = last - first;
+        elems.replaceRange(c.a, first + 1, gone, &.{}) catch oom();
+        flags.replaceRange(c.a, first + 1, gone, &.{}) catch oom();
+        names.replaceRange(c.a, first + 1, gone, &.{}) catch oom();
+    }
+
     pub fn makeTuple(c: *Checker, elems_in: []const *Type, flags_in: []const ElemFlag, readonly: bool, names_in: []const ?[]const u8) *Type {
         // `[A, ...(X | Y)]` is `[A, ...X] | [A, ...Y]`: positions after a union stay known.
         for (elems_in, flags_in, 0..) |e, f, i| {
@@ -1129,6 +1192,7 @@ pub const Checker = struct {
             flags.append(c.a, fl) catch oom();
             names.append(c.a, nm) catch oom();
         }
+        c.mergeRests(&elems, &flags, &names);
         // As in tsc, a lone rest is no tuple at all: `[...string[]]` is `string[]`.
         if (elems.items.len == 1 and flags.items[0] == .rest) {
             const decls = @import("decls.zig");
@@ -1141,12 +1205,19 @@ pub const Checker = struct {
             } else decls.reportLimit(c, 2800, "Expression produces a tuple type that is too large to represent.");
             return c.t_err;
         }
-        const key = c.keyOf('t', elems.items.len * 2 + 1);
+        // Labels are not part of what a tuple holds, yet `[a: number]` must go on printing as written.
+        const labelled = for (names.items) |nm| {
+            if (nm != null) break true;
+        } else false;
+        const key = c.keyOf(if (labelled) 'l' else 't', elems.items.len * (if (labelled) @as(usize, 3) else 2) + 1);
         key[1] = @intFromBool(readonly);
         for (elems.items, 0..) |t, i| {
             key[i * 2 + 2] = t.id;
             key[i * 2 + 3] = @intFromEnum(flags.items[i]);
         }
+        if (labelled) for (names.items, 0..) |nm, i| {
+            key[elems.items.len * 2 + 2 + i] = if (nm) |x| c.strLit(x).id else 0;
+        };
         const gop = c.slot(key);
         if (gop.found_existing) return gop.value_ptr.*;
         const t = c.newObj(.{ .kind = .tuple, .tuple = c.create(Tuple, .{ .elems = elems.items, .eflags = flags.items, .names = names.items }), .readonly = readonly });
@@ -1166,11 +1237,12 @@ pub const Checker = struct {
     pub fn collectExports(c: *Checker, m: *Symbol, out: *std.ArrayList(*Symbol), seen: *std.StringHashMapUnmanaged(void), depth: u32) void {
         if (depth > 32) return;
         if (m.exports) |tbl| {
-            var it = tbl.map.keyIterator();
-            while (it.next()) |e| {
-                const gop = seen.getOrPut(c.a, e.*.name) catch oom();
+            for (tbl.ordered(c.a)) |e| {
+                // `export *` passes everything on except the default.
+                if (depth > 0 and std.mem.eql(u8, e.name, "default")) continue;
+                const gop = seen.getOrPut(c.a, e.name) catch oom();
                 if (gop.found_existing) continue;
-                out.append(c.a, e.*.resolve()) catch oom();
+                out.append(c.a, e.resolve()) catch oom();
             }
         }
         const sf = c.prog.sourceOf(m.file) orelse return;

@@ -44,8 +44,8 @@ if (!existsSync(path.join(upstream, 'baselines.txt'))) {
     process.exit(2);
 }
 
-// Options stator-ts or the module resolver may read. Harness-only directives such as `outDir`
-// or `traceResolution` change nothing about diagnostics here, so they are left out.
+// Options stator-ts or the module resolver may read. Harness-only directives such as
+// `traceResolution` change nothing about diagnostics here, so they are left out.
 const optionNames = new Map([
     'allowArbitraryExtensions', 'allowImportingTsExtensions', 'allowJs', 'allowSyntheticDefaultImports', 'allowUmdGlobalAccess',
     'allowUnreachableCode', 'allowUnusedLabels', 'alwaysStrict', 'baseUrl', 'checkJs', 'customConditions', 'emitDecoratorMetadata',
@@ -53,7 +53,7 @@ const optionNames = new Map([
     'importHelpers', 'isolatedDeclarations', 'isolatedModules', 'jsx', 'jsxFactory', 'jsxFragmentFactory', 'jsxImportSource', 'lib',
     'libReplacement', 'module', 'moduleDetection', 'moduleResolution', 'noCheck', 'noFallthroughCasesInSwitch', 'noImplicitAny',
     'noImplicitOverride', 'noImplicitReturns', 'noImplicitThis', 'noLib', 'noPropertyAccessFromIndexSignature', 'noResolve',
-    'noUncheckedIndexedAccess', 'noUncheckedSideEffectImports', 'noUnusedLocals', 'noUnusedParameters', 'paths', 'preserveConstEnums', 'preserveSymlinks',
+    'noUncheckedIndexedAccess', 'noUncheckedSideEffectImports', 'noUnusedLocals', 'noUnusedParameters', 'outDir', 'paths', 'preserveConstEnums', 'preserveSymlinks',
     'reactNamespace', 'resolveJsonModule', 'resolvePackageJsonExports', 'resolvePackageJsonImports', 'rewriteRelativeImportExtensions',
     'rootDir', 'rootDirs', 'skipDefaultLibCheck', 'skipLibCheck', 'strict', 'strictBindCallApply', 'strictBuiltinIteratorReturn',
     'strictFunctionTypes', 'strictNullChecks', 'strictPropertyInitialization', 'target', 'typeRoots', 'types', 'useDefineForClassFields',

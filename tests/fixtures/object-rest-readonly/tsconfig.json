@@ -1,1 +1,1 @@
-{ "compilerOptions": { "strict": true, "target": "es2022", "noEmit": true } }
+{ "compilerOptions": { "strict": true, "noEmit": true, "target": "es2022", "types": [] }, "files": ["a.ts"] }

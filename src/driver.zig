@@ -108,7 +108,7 @@ pub fn emittable(a: Allocator, p: *Program, only_roots: bool) []const *SourceFil
     return out.items;
 }
 
-const Printed = struct {
+pub const Printed = struct {
     file: *ast.File,
     start: u32,
     len: u32,
@@ -116,9 +116,11 @@ const Printed = struct {
     msg: []const u8,
     /// From the parser. tsc applies `@ts-ignore` to semantic diagnostics only, whatever their code.
     syntax: bool = false,
+    /// From the binder: with `syntax`, what stops a program before any type question.
+    bind: bool = false,
 };
 
-fn lessDiag(_: void, l: Printed, r: Printed) bool {
+pub fn lessDiag(_: void, l: Printed, r: Printed) bool {
     const o = std.mem.order(u8, l.file.path, r.file.path);
     if (o != .eq) return o == .lt;
     if (l.start != r.start) return l.start < r.start;
@@ -212,7 +214,7 @@ fn keepSemantic(o: project.Options, f: *const ast.File, code: u32) bool {
     };
 }
 
-fn filteredByDirective(d: Printed) bool {
+pub fn filteredByDirective(d: Printed) bool {
     if (d.syntax) return false;
     const src = d.file.src;
     var line_start: u32 = @min(d.start, @as(u32, @intCast(src.len)));

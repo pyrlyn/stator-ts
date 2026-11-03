@@ -559,6 +559,12 @@ fn declareAlias(c: *Checker, s: *Symbol) *Type {
         c.declared.put(c.a, s, x) catch oom();
         return x;
     };
+    // The lib's `type BuiltinIteratorReturn = intrinsic`, the one such alias without a parameter.
+    if (isIntrinsic(d) and params.len == 0 and std.mem.eql(u8, s.name, "BuiltinIteratorReturn")) {
+        const x = if (c.strict_builtin_iterator) c.t_undefined else c.t_any;
+        c.declared.put(c.a, s, x) catch oom();
+        return x;
+    }
     const t = typeFromNode(c, d.data.type_alias.type);
     var out = t;
     // Primitive and shared types stay as they are; only a fresh structural type names its alias.
@@ -605,6 +611,28 @@ pub fn aliasParams(c: *Checker, s0: *Symbol) []*Type {
     return out;
 }
 
+/// A binary operator on two constants, as JavaScript computes it.
+pub fn foldNumbers(op: lexer.Tok, l: f64, r: f64) ?f64 {
+    const li = toInt32(l);
+    const ri = toInt32(r);
+    const count: u5 = @truncate(@as(u32, @bitCast(ri)));
+    return switch (op) {
+        .plus => l + r,
+        .minus => l - r,
+        .star => l * r,
+        .slash => l / r,
+        .percent => @rem(l, r),
+        .star2 => std.math.pow(f64, l, r),
+        .pipe => @floatFromInt(li | ri),
+        .amp => @floatFromInt(li & ri),
+        .caret => @floatFromInt(li ^ ri),
+        .shl => @floatFromInt(li << count),
+        .shr => @floatFromInt(li >> count),
+        .ushr => @floatFromInt(@as(u32, @bitCast(li)) >> count),
+        else => null,
+    };
+}
+
 fn parseEnumInit(c: *Checker, n: *Node, owner: *Symbol) T.EnumValue {
     switch (n.data) {
         .numeric_lit => |v| return .{ .num = (emit.parseNumber(v) orelse 0) },
@@ -639,20 +667,7 @@ fn parseEnumInit(c: *Checker, n: *Node, owner: *Symbol) T.EnumValue {
             const r = parseEnumInit(c, x.right, owner);
             if (l == .str and r == .str and x.op == .plus) return .{ .str = c.fmt("{s}{s}", .{ l.str, r.str }) };
             if (l != .num or r != .num) return .none;
-            const li = toInt32(l.num);
-            const ri = toInt32(r.num);
-            return switch (x.op) {
-                .plus => .{ .num = l.num + r.num },
-                .minus => .{ .num = l.num - r.num },
-                .star => .{ .num = l.num * r.num },
-                .slash => .{ .num = l.num / r.num },
-                .pipe => .{ .num = @floatFromInt(li | ri) },
-                .amp => .{ .num = @floatFromInt(li & ri) },
-                .caret => .{ .num = @floatFromInt(li ^ ri) },
-                .shl => .{ .num = @floatFromInt(li << @as(u5, @truncate(@as(u32, @bitCast(ri))))) },
-                .shr => .{ .num = @floatFromInt(li >> @as(u5, @truncate(@as(u32, @bitCast(ri))))) },
-                else => .none,
-            };
+            return .{ .num = foldNumbers(x.op, l.num, r.num) orelse return .none };
         },
         .identifier => |name| {
             if (owner.exports) |e| if (e.get(name)) |m| return memberValue(c, m, owner, n);
@@ -675,7 +690,7 @@ fn parseEnumInit(c: *Checker, n: *Node, owner: *Symbol) T.EnumValue {
 }
 
 /// ECMAScript ToInt32: `1 / 0` and `0 / 0` are legal initializers.
-fn toInt32(v: f64) i32 {
+pub fn toInt32(v: f64) i32 {
     if (!std.math.isFinite(v)) return 0;
     const m = @mod(@trunc(v), 4294967296.0);
     return @bitCast(@as(u32, @intFromFloat(m)));
@@ -873,7 +888,7 @@ pub fn classBase(c: *Checker, e: *Node) *Type {
         if (x.type_args.items.len != sig.tparams.len) return c.t_err;
         const args = c.a.alloc(*Type, sig.tparams.len) catch oom();
         for (x.type_args.items, 0..) |a, i| args[i] = typeFromNode(c, a);
-        sig = instSig(c, sig, arrayMapper(c, sig.tparams, args));
+        sig = applySig(c, sig, arrayMapper(c, sig.tparams, args));
     }
     return returnOf(c, sig);
 }
@@ -888,11 +903,46 @@ fn isEntity(n: *Node) bool {
 
 pub fn entitySymbol(c: *Checker, n: *Node, meaning: u32) ?*Symbol {
     switch (n.data) {
-        .identifier => |name| return resolveName(c, n, name, meaning),
+        .identifier => |name| return resolveName(c, n, name, meaning) orelse if (meaning & F.namespace != 0) requiredModule(c, n, name) else null,
         .prop_access => |x| return memberSym(c, entitySymbol(c, x.expr, F.namespace | F.alias), x.name.data.identifier, meaning),
         .qualified_name => |x| return memberSym(c, entitySymbol(c, x.left, F.namespace | F.alias), x.right.data.identifier, meaning),
         else => return null,
     }
+}
+
+/// tsc binds `const x = require("m")` in JavaScript as an alias of the module, so `x.T` names its types.
+fn requiredModule(c: *Checker, n: *Node, name: []const u8) ?*Symbol {
+    const r = requireOf(c, n, name) orelse return null;
+    return if (r.prop == null) r.module else null;
+}
+
+/// What a JavaScript `const x = require("m")` or `const { p } = require("m")` binds `name` to.
+const Required = struct { module: ?*Symbol, prop: ?[]const u8 = null };
+
+fn requireOf(c: *Checker, n: *Node, name: []const u8) ?Required {
+    if (!expr.inJs(c, n)) return null;
+    const s = resolveName(c, n, name, F.value) orelse return null;
+    if (s.decls.len == 0) return null;
+    var decl = s.decls[0];
+    var prop: ?[]const u8 = null;
+    if (decl.data == .binding_elem) {
+        const b = decl.data.binding_elem;
+        const key = b.prop_name orelse b.name;
+        if (b.dotdotdot or key.data != .identifier) return null;
+        prop = key.data.identifier;
+        const pattern = decl.parent orelse return null;
+        if (pattern.data != .object_pattern) return null;
+        decl = pattern.parent orelse return null;
+    }
+    if (decl.data != .var_decl) return null;
+    const init = binder.stripParens(decl.data.var_decl.init orelse return null);
+    if (!expr.isRequireCall(init, true)) return null;
+    const spec = switch (init.data.call.args[0].data) {
+        .string_lit, .no_subst_template => |v| v,
+        else => return null,
+    };
+    const sf = c.prog.sourceOf(fileOf(c, decl) orelse return null) orelse return null;
+    return .{ .module = c.prog.resolveModuleName(sf, spec), .prop = prop };
 }
 
 fn memberSym(c: *Checker, base: ?*Symbol, name: []const u8, meaning: u32) ?*Symbol {
@@ -1126,6 +1176,7 @@ fn typeOfQuery(c: *Checker, name: *Node) *Type {
         .identifier => {
             const s = resolveName(c, name, name.data.identifier, F.value) orelse {
                 const v = name.data.identifier;
+                if (expr.commonJsName(c, name, v)) return expr.checkExpr(c, name);
                 if (expr.suggestName(c, name, v, F.value)) |sug| {
                     report(c, name, 2552, c.fmt("Cannot find name '{s}'. Did you mean '{s}'?", .{ v, sug }));
                 } else {
@@ -1181,16 +1232,23 @@ pub fn typeRefFromSymbol(c: *Checker, n: *Node, s: *Symbol, targs: []*Node) *Typ
         const outer_len = o.tparams().len - o.localTparams().len;
         const min = minArgs(c, o.localTparams());
         if (o.localTparams().len == 0) {
-            if (targs.len > 0) report(c, refNameNode(n), 2315, c.fmt("Type '{s}' is not generic.", .{s.name}));
+            // A class in JavaScript takes its type parameters from `@template`, which is not modeled.
+            const from_js = s.decls.len > 0 and expr.inJs(c, s.decls[0]);
+            if (targs.len > 0 and !from_js) report(c, refNameNode(n), 2315, c.fmt("Type '{s}' is not generic.", .{s.name}));
             return g;
         }
+        // JavaScript fills what is missing with `any`, and says so only under `noImplicitAny`.
+        const js = expr.inJs(c, n);
         if (targs.len < min or targs.len > o.localTparams().len) {
-            if (!isInHeritageOfJsLike(n)) reportArity(c, n, s, o.localTparams(), min);
-            return c.t_err;
+            if (!isInHeritageOfJsLike(n) and !(js and !c.no_implicit_any)) reportArity(c, n, s, o.localTparams(), min);
+            if (!js or targs.len > o.localTparams().len) return c.t_err;
         }
         const args = c.a.alloc(*Type, o.tparams().len) catch oom();
         for (o.tparams()[0..outer_len], 0..) |p, i| args[i] = p;
         fillArgs(c, args[outer_len..], o.localTparams(), targs);
+        if (js) for (targs.len..o.localTparams().len) |i| {
+            if (defaultOf(c, o.localTparams()[i]) == null) args[outer_len + i] = c.t_any;
+        };
         checkConstraints(c, targs, o.localTparams(), args[outer_len..]);
         return c.internRef(g, args, null);
     }
@@ -1320,24 +1378,126 @@ pub fn instantiateAlias(c: *Checker, s: *Symbol, params: []*Type, args: []*Type)
 }
 
 fn typeFromRef(c: *Checker, n: *Node, name: *Node, targs: []*Node) *Type {
+    if (expr.inJs(c, n)) {
+        if (isJsdocName(c, leftmostName(name))) return c.t_err;
+        // `/** @type {m.Foo} */` with `m = require("./m")` reaches a `@typedef` of that module.
+        if (name.data == .qualified_name and isJsdocName(c, name.data.qualified_name.right)) return c.t_err;
+        if (jsdocIntended(c, name, targs)) |t| return t;
+    }
     const meaning = F.type;
     const s = switch (name.data) {
-        .identifier => |v| resolveName(c, n, v, meaning),
+        .identifier => |v| resolveName(c, n, v, meaning) orelse requiredType(c, n, v) catch return c.t_err,
         else => entitySymbol(c, name, meaning),
-    } orelse return unresolvedType(c, name);
-    const target = targetOf(c, s) orelse return c.t_unresolved;
+    } orelse {
+        reportUnresolved(c, name);
+        return unresolvedRef(c, name, targs);
+    };
+    const target = targetOf(c, s) orelse return unresolvedRef(c, name, targs);
     if (name.data == .identifier and target.flags & F.type_param != 0) return tparamOf(c, target);
     return typeRefFromSymbol(c, n, target, targs);
 }
 
-fn unresolvedType(c: *Checker, name: *Node) *Type {
+/// The export `const { T } = require("m")` takes, when it is a type. CommonJS exports are not
+/// modeled, so a name the module does not export is left alone.
+fn requiredType(c: *Checker, n: *Node, name: []const u8) error{Unmodeled}!?*Symbol {
+    const r = requireOf(c, n, name) orelse return null;
+    const p = r.prop orelse return null;
+    const e = c.prog.exportOf(r.module orelse return error.Unmodeled, p) orelse return error.Unmodeled;
+    return matches(c, e, F.type);
+}
+
+fn leftmostName(name: *Node) *Node {
+    var n = name;
+    while (n.data == .qualified_name) n = n.data.qualified_name.left;
+    return n;
+}
+
+/// A name a JSDoc tag declares anywhere in the program: such a type is not modeled, so it must not
+/// find whatever else bears the name.
+fn isJsdocName(c: *Checker, name: *Node) bool {
+    if (name.data != .identifier) return false;
+    const own = fileOf(c, name);
+    for (c.prog.files.items) |sf| for (sf.file.jsdoc_names) |x| {
+        // `@typedef {number} NS.T` declares `NS` as well, and a reference reaches it by its leftmost name.
+        const head = x.text[0 .. std.mem.indexOfScalar(u8, x.text, '.') orelse x.text.len];
+        if (!std.mem.eql(u8, head, name.data.identifier)) continue;
+        const s = x.scope orelse return true;
+        if (sf.file == own and s.start <= name.start and name.start < s.end) return true;
+    };
+    return false;
+}
+
+/// tsc's `getIntendedTypeFromJSDocTypeReference`: names JSDoc reads differently from TypeScript.
+/// `Object` with two arguments, a record there, stays `any`.
+fn jsdocIntended(c: *Checker, name: *Node, targs: []*Node) ?*Type {
+    if (name.data != .identifier) return null;
+    const v = name.data.identifier;
+    const eql = std.mem.eql;
+    if (targs.len == 0) {
+        const plain = [_]struct { []const u8, *Type }{
+            .{ "String", c.t_string },       .{ "Number", c.t_number }, .{ "BigInt", c.t_bigint },
+            .{ "Boolean", c.t_boolean },     .{ "Void", c.t_void },     .{ "Undefined", c.t_undefined },
+            .{ "Null", c.t_null },
+        };
+        for (plain) |p| if (eql(u8, v, p[0])) return p[1];
+        if (eql(u8, v, "Function") or eql(u8, v, "function")) return globalType(c, "Function");
+        if (!c.no_implicit_any) {
+            if (eql(u8, v, "array")) return arrayOf(c, c.t_any);
+            if (eql(u8, v, "promise")) return expr.promiseOf(c, c.t_any);
+            if (eql(u8, v, "Object")) return c.t_any;
+        }
+    }
+    if (targs.len == 2 and eql(u8, v, "Object")) return c.t_any;
+    return null;
+}
+
+/// A name that leads nowhere is `any` to the checker and keeps its spelling for whoever reads it.
+fn unresolvedRef(c: *Checker, name: *Node, targs: []*Node) *Type {
+    const s = unresolvedSymbol(c, name) orelse return c.t_unresolved;
+    var key: std.ArrayList(u8) = .empty;
+    key.print(c.a, "{s}", .{unresolvedPath(c, s)}) catch oom();
+    const args = c.a.alloc(*Type, targs.len) catch oom();
+    for (targs, args) |n, *a| {
+        a.* = typeFromNode(c, n);
+        key.print(c.a, ",{d}", .{a.*.id}) catch oom();
+    }
+    const gop = c.unresolved_refs.getOrPut(c.a, key.items) catch oom();
+    if (!gop.found_existing) {
+        gop.value_ptr.* = c.mk(.err);
+        gop.value_ptr.*.alias = c.create(T.Alias, .{ .sym = s, .args = args });
+    }
+    return gop.value_ptr.*;
+}
+
+fn unresolvedSymbol(c: *Checker, name: *Node) ?*Symbol {
+    const text, const up = switch (name.data) {
+        .identifier => |v| .{ v, null },
+        .qualified_name => |x| .{ ast.memberText(x.right), x.left },
+        else => return null,
+    };
+    if (text.len == 0) return null;
+    const parent = if (up) |l| unresolvedSymbol(c, l) else null;
+    const path = if (parent) |p| c.fmt("{s}.{s}", .{ unresolvedPath(c, p), text }) else text;
+    const gop = c.unresolved_syms.getOrPut(c.a, path) catch oom();
+    if (!gop.found_existing) gop.value_ptr.* = c.create(Symbol, .{ .name = text, .flags = F.type_alias, .parent = parent });
+    return gop.value_ptr.*;
+}
+
+fn unresolvedPath(c: *Checker, s: *Symbol) []const u8 {
+    const up = s.parent orelse return s.name;
+    return c.fmt("{s}.{s}", .{ unresolvedPath(c, up), s.name });
+}
+
+/// Whether `t` stands for a name already reported as missing.
+pub fn isUnresolved(c: *Checker, t: *Type) bool {
+    return t == c.t_unresolved or (t.data == .err and t.alias != null);
+}
+
+fn reportUnresolved(c: *Checker, name: *Node) void {
     switch (name.data) {
         .identifier => |v| {
-            if (v.len == 0) return c.t_err;
-            if (classTypeParamFromStatic(c, name, v)) {
-                report(c, name, 2302, "Static members cannot reference class type parameters.");
-                return c.t_err;
-            }
+            if (v.len == 0) return;
+            if (classTypeParamFromStatic(c, name, v)) return report(c, name, 2302, "Static members cannot reference class type parameters.");
             const value = resolveName(c, name, v, F.value);
             if (value != null and value.?.flags & F.namespace == 0) {
                 report(c, name, 2749, c.fmt("'{s}' refers to a value, but is being used as a type here. Did you mean 'typeof {s}'?", .{ v, v }));
@@ -1360,7 +1520,6 @@ fn unresolvedType(c: *Checker, name: *Node) *Type {
         },
         else => {},
     }
-    return c.t_unresolved;
 }
 
 // ---- mappers and instantiation ----
@@ -1434,7 +1593,7 @@ pub fn instantiate(c: *Checker, t: *Type, mo: ?*Mapper) *Type {
             return keepAlias(c, t, out, m);
         },
         .keyof => |x| return getIndexType(c, instantiate(c, x, m)),
-        .access => |x| return getIndexedAccess(c, instantiate(c, x.obj, m), instantiate(c, x.index, m)),
+        .access => |x| return keepAlias(c, t, getIndexedAccess(c, instantiate(c, x.obj, m), instantiate(c, x.index, m)), m),
         .tmpl => |x| return getTemplate(c, x.texts, mapAll(c, m, x.types)),
         .strmap => |x| return getStringMapping(c, x.kind, instantiate(c, x.ty, m)),
         .noinfer => |x| return getNoInfer(c, instantiate(c, x, m)),
@@ -1458,7 +1617,7 @@ pub fn instantiate(c: *Checker, t: *Type, mo: ?*Mapper) *Type {
 
 fn keepAlias(c: *Checker, t: *Type, out: *Type, m: *Mapper) *Type {
     // Interned results are shared, so only a type of the same shape may take the alias.
-    const same = std.meta.activeTag(t.data) == std.meta.activeTag(out.data) and (out.data == .union_ or out.data == .inter or out.data == .cond);
+    const same = std.meta.activeTag(t.data) == std.meta.activeTag(out.data) and (out.data == .union_ or out.data == .inter or out.data == .cond or out.data == .access);
     if (t.alias != null and out.alias == null and out != c.t_boolean and (same or (t.data == .inter and allMapped(out)))) {
         out.alias = c.create(T.Alias, .{ .sym = t.alias.?.sym, .args = mapAll(c, m, t.alias.?.args) });
     }
@@ -1688,7 +1847,7 @@ pub fn propWriteType(c: *Checker, p: *Prop) *Type {
             if (f.params.len > 0) return instantiate(c, typeOfParam(c, f.params[0]), p.mapper);
         };
     };
-    return propType(c, p);
+    return nonMissingPropType(c, p);
 }
 
 // ---- symbol types ----
@@ -1814,7 +1973,7 @@ fn typeOfSymbolWorker(c: *Checker, s: *Symbol) *Type {
     if (s.flags & (F.function | F.method | F.class | F.value_module) != 0) {
         const v = valueObject(c, s);
         if (s.flags & F.class != 0) if (baseTypeVariable(c, s)) |b| return c.getIntersection(&.{ v, b });
-        return if (s.flags & F.optional != 0) addOptional(c, v) else v;
+        return if (s.flags & F.optional != 0) addMissing(c, v) else v;
     }
     if (s.flags & F.enum_any != 0) return valueObject(c, s);
     if (s.flags & F.enum_member != 0) return c.freshOf(enumMemberType(c, s));
@@ -1827,34 +1986,106 @@ fn typeOfSymbolWorker(c: *Checker, s: *Symbol) *Type {
         .property_decl => |x| propDecl(c, d, x.type, x.init, x.question),
         .property_sig => |x| blk: {
             const t = if (x.type) |n| typeFromNode(c, n) else c.t_any;
-            break :blk if (x.question) addOptional(c, t) else t;
+            break :blk if (x.question) addMissing(c, t) else t;
         },
         .func => valueObject(c, s),
-        .prop_access, .elem_access => expandoType(c, s),
+        .prop_access, .elem_access => if (binder.isThisAssignment(d)) thisPropertyType(c, s) else expandoType(c, s),
+        .export_assign => |x| expr.widenInit(c, x.expr, expr.checkSilent(c, x.expr), true),
         else => c.t_err,
     };
 }
 
-/// `f.x = 1; f.x = 'a'` declares one property that holds either.
-fn expandoType(c: *Checker, s: *Symbol) *Type {
-    if (binder.isThisProperty(s)) return thisPropertyType(c, s);
-    return c.getUnion(assignedTypes(c, s, false).items);
+fn isInConstructor(left: *Node) bool {
+    const member = binder.thisContainer(left) orelse return false;
+    return member.data == .func and member.data.func.kind == .ctor;
 }
 
-fn assignedTypes(c: *Checker, s: *Symbol, this_property: bool) std.ArrayList(*Type) {
-    var parts = c.newList(*Type);
+fn isNullable(t: *const Type) bool {
+    return t.data == .null or t.data == .undefined;
+}
+
+fn hasValue(t: *const Type) bool {
+    if (t.data != .union_) return !isNullable(t);
+    for (t.data.union_) |m| if (!isNullable(m)) return true;
+    return false;
+}
+
+fn baseProperty(c: *Checker, s: *Symbol) ?*Type {
+    const owner = s.parent orelse return null;
+    const declared = declaredType(c, owner);
+    const bases = basesOf(c, declared);
+    if (bases.len == 0) return null;
+    const p = getProp(c, bases[0], s.name) orelse return null;
+    return propType(c, p);
+}
+
+/// What the constructor leaves in `this.x`, when it is the one place that declares it: tsc's
+/// `isConstructorDeclaredProperty`, and null when that is at most `null` or `undefined`.
+fn thisPropertyFromConstructor(c: *Checker, s: *Symbol) ?*Type {
+    var ctor: ?*Node = null;
+    var named: ?*Node = null;
     for (s.decls) |left| {
+        if (!binder.isThisAssignment(left)) return null;
+        if (isInConstructor(left)) {
+            ctor = ctor orelse binder.thisContainer(left);
+            named = named orelse left;
+        }
+    }
+    const body = ctor orelse return null;
+    const name = switch (named.?.data) {
+        .prop_access => |x| x.name,
+        else => return null,
+    };
+    return flowInConstructor(c, name, body, baseProperty(c, s) orelse c.t_undefined);
+}
+
+/// `this.x = 1` as `getWidenedTypeForAssignmentDeclaration` has it: the constructor's word outranks
+/// a method's, and a property only a method sets may still be missing.
+fn thisPropertyType(c: *Checker, s: *Symbol) *Type {
+    if (thisPropertyFromConstructor(c, s)) |t| return t;
+    // The base class decides before any assignment is read: a derived accessor whose setter assigns
+    // the property and whose getter reads it would otherwise reach this symbol through its own value.
+    const only_methods = for (s.decls) |left| {
+        if (binder.isThisAssignment(left) and isInConstructor(left)) break false;
+    } else true;
+    if (only_methods) if (baseProperty(c, s)) |t| if (hasValue(t)) return t;
+    var all = c.newList(*Type);
+    var from_ctor = c.newList(*Type);
+    var in_ctor = false;
+    var in_method = false;
+    for (s.decls) |left| {
+        if (!binder.isThisAssignment(left)) continue;
         const value = left.parent.?.data.binary.right;
         // `this.x = this.x + 1` says nothing about `x` that the other assignments do not.
-        if (this_property and readsThisProperty(value, s.name)) continue;
-        if (this_property and value.data == .array_lit and value.data.array_lit.elems.len == 0) {
+        if (readsThisProperty(value, s.name)) continue;
+        const t = if (value.data == .array_lit and value.data.array_lit.elems.len == 0) blk: {
             implicitMember(c, s, left, "any[]");
-            parts.append(c.a, arrayOf(c, c.t_any)) catch oom();
-            continue;
-        }
-        parts.append(c.a, expr.widenInit(c, value, expr.checkSilent(c, value), false)) catch oom();
+            break :blk arrayOf(c, c.t_any);
+        } else expr.widenInit(c, value, expr.checkSilent(c, value), false);
+        all.append(c.a, t) catch oom();
+        if (isInConstructor(left)) {
+            in_ctor = true;
+            from_ctor.append(c.a, t) catch oom();
+        } else in_method = true;
     }
-    return parts;
+    if (in_method) if (baseProperty(c, s)) |t| {
+        from_ctor.append(c.a, t) catch oom();
+        in_ctor = true;
+    };
+    const ctor_decides = for (from_ctor.items) |t| {
+        if (hasValue(t)) break true;
+    } else false;
+    const declared = c.getUnion(if (ctor_decides) from_ctor.items else all.items);
+    if (!hasValue(declared)) {
+        if (all.items.len > 0) implicitMember(c, s, s.value_decl orelse s.decls[0], "any");
+        return c.t_any;
+    }
+    return if (in_method and !in_ctor) addOptional(c, declared) else declared;
+}
+
+fn implicitMember(c: *Checker, s: *Symbol, left: *Node, shown: []const u8) void {
+    if (!c.no_implicit_any) return;
+    report(c, left.parent.?, 7008, c.fmt("Member '{s}' implicitly has an '{s}' type.", .{ s.name, shown }));
 }
 
 const ThisRead = struct { name: []const u8, found: bool = false };
@@ -1878,60 +2109,14 @@ fn findThisRead(ctx: *ThisRead, n: *Node) void {
     ast.forEachChild(n, ctx, findThisRead);
 }
 
-/// tsc's `getWidenedTypeForAssignmentDeclaration` for a JavaScript class's `this.x = ...`: what a
-/// constructor leaves in `this.x`, else what the base class says, else every value assigned.
-fn thisPropertyType(c: *Checker, s: *Symbol) *Type {
-    // JSDoc types are not modeled, so a documented member stays quiet.
-    for (s.decls) |left| if (checker.jsDocHas(c, left, &.{"@type"})) return c.t_err;
-    const base = inheritedType(c, s);
-    const ctor = for (s.decls) |left| {
-        if (thisOwner(left)) |f| if (f.data == .func and f.data.func.kind == .ctor) break f;
-    } else null;
-    if (ctor) |f| if (s.decls[0].data == .prop_access) if (expr.thisAccess(c, s.decls[0].data.prop_access.name, f)) |ref| {
-        const t = flow.flowType(c, ref, c.t_auto, base orelse c.t_undefined, f);
-        if (t == c.t_auto) return c.t_any;
-        if (!everyNullable(t)) return t;
-    };
-    if (ctor == null) if (base) |t| return t;
-    var parts = assignedTypes(c, s, true);
-    if (ctor == null and parts.items.len > 0 and c.strict_null) parts.append(c.a, c.t_undefined) catch oom();
-    const t = c.getUnion(parts.items);
-    if (!everyNullable(t)) return t;
-    implicitMember(c, s, s.value_decl orelse s.decls[0], "any");
-    return c.t_any;
-}
-
-fn implicitMember(c: *Checker, s: *Symbol, left: *Node, shown: []const u8) void {
-    if (!c.no_implicit_any) return;
-    report(c, left.parent.?, 7008, c.fmt("Member '{s}' implicitly has an '{s}' type.", .{ s.name, shown }));
-}
-
-fn everyNullable(t: *Type) bool {
-    const members_of = if (t.data == .union_) t.data.union_ else @as([]const *Type, &.{t});
-    for (members_of) |m| if (m.data != .null and m.data != .undefined) return false;
-    return true;
-}
-
-/// The class member whose `this` the assignment writes through.
-fn thisOwner(left: *Node) ?*Node {
-    var cur = left.parent;
-    while (cur) |x| : (cur = x.parent) switch (x.data) {
-        .func => |f| if (f.kind != .arrow) return x,
-        .static_block, .property_decl => return x,
-        else => {},
-    };
-    return null;
-}
-
-fn inheritedType(c: *Checker, s: *Symbol) ?*Type {
-    const cls = s.parent orelse return null;
-    if (cls.flags & F.class == 0) return null;
-    // A static member's base would be the base constructor, which this does not look at.
-    if (cls.exports) |e| if (e.get(s.name) == s) return null;
-    const bases = basesOf(c, declaredType(c, cls));
-    if (bases.len == 0) return null;
-    const p = getProp(c, bases[0], s.name) orelse return null;
-    return propType(c, p);
+/// `f.x = 1; f.x = 'a'` declares one property that holds either.
+fn expandoType(c: *Checker, s: *Symbol) *Type {
+    var parts = c.newList(*Type);
+    for (s.decls) |left| {
+        const value = left.parent.?.data.binary.right;
+        parts.append(c.a, expr.widenInit(c, value, expr.checkSilent(c, value), false)) catch oom();
+    }
+    return c.getUnion(parts.items);
 }
 
 pub fn addOptional(c: *Checker, t: *Type) *Type {
@@ -1939,10 +2124,42 @@ pub fn addOptional(c: *Checker, t: *Type) *Type {
     return c.getUnion(&.{ t, c.t_undefined });
 }
 
+/// `addOptional` for a property or a tuple element, which may be left out rather than be `undefined`.
+pub fn addMissing(c: *Checker, t: *Type) *Type {
+    if (!c.strict_null) return t;
+    return c.getUnion(&.{ t, c.t_missing });
+}
+
+pub fn containsMissing(c: *Checker, t: *Type) bool {
+    if (!c.exact_optional) return false;
+    if (t == c.t_missing) return true;
+    return t.data == .union_ and std.mem.indexOfScalar(*Type, t.data.union_, c.t_missing) != null;
+}
+
+pub fn removeMissing(c: *Checker, t: *Type) *Type {
+    if (!containsMissing(c, t)) return t;
+    if (t == c.t_missing) return c.t_never;
+    var out = c.newList(*Type);
+    for (t.data.union_) |m| if (m != c.t_missing) out.append(c.a, m) catch oom();
+    return c.getUnion(out.items);
+}
+
+/// What is left of an optional property made required, which under the exact option may still
+/// hold a written `undefined`.
+pub fn removeMissingOrUndefined(c: *Checker, t: *Type) *Type {
+    return if (c.exact_optional) removeMissing(c, t) else relate.removeDefinitelyUndefined(c, t);
+}
+
+/// What a property holds once it is there, which is what relating two properties compares.
+pub fn nonMissingPropType(c: *Checker, p: *Prop) *Type {
+    const t = propType(c, p);
+    return if (p.optional) removeMissing(c, t) else t;
+}
+
 fn propDecl(c: *Checker, d: *Node, ann: ?*Node, init: ?*Node, question: bool) *Type {
     var t = if (ann) |n| typeFromNode(c, n) else if (init) |i| expr.widenInit(c, i, expr.checkInit(c, i), d.mods.readonly) else typeFromConstructor(c, d) orelse c.t_any;
     if (t == c.t_auto) t = c.t_any;
-    if (question) t = addOptional(c, t);
+    if (question) t = addMissing(c, t);
     return t;
 }
 
@@ -1950,7 +2167,7 @@ fn propDecl(c: *Checker, d: *Node, ann: ?*Node, init: ?*Node, question: bool) *T
 /// nor initializer takes what the constructor (or a static block) leaves in `this.x`, unless it only
 /// ever gets `null` or `undefined`. `t_auto` means nothing was assigned on some path.
 pub fn typeFromConstructor(c: *Checker, d: *Node) ?*Type {
-    if (!c.no_implicit_any or d.mods.declare) return null;
+    if (!(c.no_implicit_any or expr.inJs(c, d)) or d.mods.declare) return null;
     const cls = d.parent orelse return null;
     if (cls.data != .class) return null;
     const name = thisRefName(c, d.data.property_decl.name) orelse return null;
@@ -1970,6 +2187,14 @@ pub fn typeFromConstructor(c: *Checker, d: *Node) ?*Type {
     return null;
 }
 
+/// What `this.name` holds when `ctor` returns, or null when that says nothing beyond `undefined`.
+fn flowInConstructor(c: *Checker, name: *Node, ctor: *Node, initial: *Type) ?*Type {
+    const ref = expr.thisAccess(c, name, ctor) orelse return null;
+    const t = flow.flowType(c, ref, c.t_auto, initial, ctor);
+    if (flow.isAuto(c, t)) return flow.fromAuto(c, t);
+    return if (hasValue(t)) t else null;
+}
+
 /// `this.x` needs an identifier, so `0` and `"x"` members are referenced by their symbol name,
 /// which `this[0]` and `this["x"]` match.
 fn thisRefName(c: *Checker, n: *Node) ?*Node {
@@ -1981,7 +2206,8 @@ fn thisRefName(c: *Checker, n: *Node) ?*Node {
 
 fn inferredFromFlow(c: *Checker, t: *Type) ?*Type {
     if (t == c.t_auto) return t;
-    return if (everyNullable(t)) null else t;
+    if (flow.isAuto(c, t)) return flow.fromAuto(c, t);
+    return if (hasValue(t)) t else null;
 }
 
 fn accessorType(c: *Checker, s: *Symbol) *Type {
@@ -2021,12 +2247,48 @@ fn typeOfVarDecl(c: *Checker, d: *Node) *Type {
     };
     const is_const = list.data == .var_list and (list.data.var_list.kind == .@"const" or list.data.var_list.kind == .using or list.data.var_list.kind == .await_using);
     // `let x;` and `let x = null` have no type of their own: each read gets what the flow assigned.
-    if (!is_const and c.no_implicit_any and v.name.data == .identifier and (v.init == null or isNullish(v.init.?)) and !isReadElsewhere(c, list, d)) {
-        // JavaScript is checked by rules of its own that are not modeled, so it stays quiet.
-        return if (expr.inJs(c, d)) c.t_err else c.t_auto;
+    if (!is_const and (c.no_implicit_any or (c.js_follows_flow and expr.inJs(c, d))) and v.name.data == .identifier and (v.init == null or isNullish(v.init.?)) and !isReadElsewhere(c, list, d)) {
+        return c.t_auto;
     }
-    if (v.init) |i| return padPattern(c, expr.widenInit(c, i, expr.checkInit(c, i), is_const), i, v.name);
+    if (v.init) |i| {
+        // `const util = exports = module.exports = {}` holds the `{}` the chain ends in.
+        if (expr.inJs(c, d) and binder.isEmptyObject(binder.chainedValue(i))) return containerObject(c, d.symbol().?);
+        // tsc lets such an array evolve with each write, which is not modeled: any element is
+        // what a read of it has before the first write.
+        if (isEmptyArrayLit(i) and v.name.data == .identifier and (c.no_implicit_any or (c.js_follows_flow and expr.inJs(c, d))) and !isReadElsewhere(c, list, d)) return flow.autoArray(c);
+        if (c.no_implicit_any and v.name.data == .identifier and isEmptyArrayLit(i)) return arrayOf(c, c.t_err);
+        if (isEmptyArrayLit(i) and expr.inJs(c, d)) return arrayOf(c, c.t_any);
+        return padPattern(c, expr.widenInit(c, i, expr.checkInit(c, i), is_const), i, v.name);
+    }
     return c.t_err;
+}
+
+/// The variable of a JavaScript `{}` is that object, and every later `x.y = 1` a member of it.
+fn containerObject(c: *Checker, s: *Symbol) *Type {
+    const m = c.emptyMembers();
+    if (!lostGlobalMerge(c, s)) addExpandosOf(c, m, s);
+    return c.newObj(.{ .kind = .anon, .sym = s, .members = m, .open = !c.no_implicit_any });
+}
+
+/// A script's declaration that conflicts with an earlier global of its name stays out of the merge,
+/// so the name finds the other one, and assignments through it never reach this one.
+fn lostGlobalMerge(c: *Checker, s: *Symbol) bool {
+    const d = s.value_decl orelse return false;
+    const f = fileOf(c, d) orelse return false;
+    if (f.is_module or f.is_commonjs) return false;
+    const list = d.parent orelse return false;
+    const stmt = list.parent orelse return false;
+    if (stmt.parent != f.root) return false;
+    const g = globalSym(c, s.name) orelse return false;
+    return g.resolve() != s.resolve();
+}
+
+pub fn isEmptyArrayLit(n: *Node) bool {
+    return switch (n.data) {
+        .paren => |x| x.cast == null and isEmptyArrayLit(x.expr),
+        .array_lit => |x| x.elems.len == 0,
+        else => false,
+    };
 }
 
 fn isNullish(n: *Node) bool {
@@ -2145,6 +2407,7 @@ pub fn typeOfParam(c: *Checker, d: *Node) *Type {
         if (c.param_types.get(d)) |t| return t;
     };
     if (p.init) |i| {
+        if (isEmptyArrayLit(i) and expr.inJs(c, d)) return arrayOf(c, c.t_any);
         var t = padPattern(c, expr.widenInit(c, i, expr.checkInit(c, i), false), i, p.name);
         if (p.question) t = addOptional(c, t);
         return t;
@@ -2174,7 +2437,29 @@ fn patternType(c: *Checker, pat: *Node) *Type {
             }
             return c.newObj(.{ .kind = .anon, .members = m, .open = open });
         },
-        .array_pattern => return arrayOf(c, c.t_any),
+        .array_pattern => |x| {
+            const has_rest = x.elems.len > 0 and x.elems[x.elems.len - 1].data == .binding_elem and x.elems[x.elems.len - 1].data.binding_elem.dotdotdot;
+            if (x.elems.len == 0 or (x.elems.len == 1 and has_rest)) return arrayOf(c, c.t_any);
+            var min: usize = 0;
+            for (x.elems, 0..) |el, i| {
+                if (el.data == .binding_elem and !el.data.binding_elem.dotdotdot and el.data.binding_elem.init == null) min = i + 1;
+            }
+            const elems = c.a.alloc(*Type, x.elems.len) catch oom();
+            const flags = c.a.alloc(T.ElemFlag, x.elems.len) catch oom();
+            const names = c.a.alloc(?[]const u8, x.elems.len) catch oom();
+            for (x.elems, elems, flags, names, 0..) |el, *t, *f, *name, i| {
+                const rest = has_rest and i == x.elems.len - 1;
+                f.* = if (rest) .rest else if (i >= min) .optional else .required;
+                t.* = c.t_any;
+                name.* = null;
+                if (el.data != .binding_elem) continue;
+                const e = el.data.binding_elem;
+                if (e.init) |init| {
+                    t.* = expr.widenInit(c, init, expr.checkInit(c, init), false);
+                } else if (e.name.data != .identifier) t.* = patternType(c, e.name);
+            }
+            return c.makeTuple(elems, flags, false, names);
+        },
         else => return c.t_any,
     }
 }
@@ -2198,10 +2483,24 @@ pub fn bindingParentType(c: *Checker, el: *Node) *Type {
             if (v.init) |i| break :blk padPattern(c, expr.patternParent(c, expr.checkInit(c, i)), i, v.name);
             break :blk c.t_err;
         },
-        .param => typeOfParam(c, owner),
-        .binding_elem => bindingElemType(c, owner),
+        // tsc reads the declared type without the `?`, and an ambient one, which no call reaches,
+        // without `null` or `undefined` at all.
+        .param => |p| blk: {
+            const t = if (p.type) |n| typeFromNode(c, n) else typeOfParam(c, owner);
+            break :blk if (isAmbient(c, owner)) expr.nonNull(c, t) else t;
+        },
+        .binding_elem => blk: {
+            const t = bindingElemType(c, owner);
+            break :blk if (isAmbientParamPart(c, owner)) expr.nonNull(c, t) else t;
+        },
         else => c.t_err,
     };
+}
+
+fn isAmbientParamPart(c: *Checker, el: *Node) bool {
+    var n = el;
+    while (n.data == .binding_elem) n = (n.parent orelse return false).parent orelse return false;
+    return n.data == .param and isAmbient(c, n);
 }
 
 pub fn bindingElemFrom(c: *Checker, el: *Node, parent_t: *Type) *Type {
@@ -2388,6 +2687,12 @@ pub fn predOf(c: *Checker, s: *Sig) ?*T.Pred {
     return s.pred;
 }
 
+/// A body right behind another one is taken for its implementation too, and reported as a second.
+fn isNextTo(c: *Checker, a: *Node, b: *Node) bool {
+    const f = fileOf(c, a) orelse return false;
+    return std.mem.trim(u8, f.src[a.end..b.start], " \t\r\n").len == 0;
+}
+
 pub fn sigsOfSymbol(c: *Checker, s: *Symbol, want_ctor: bool) []*Sig {
     const cache = if (want_ctor) &c.ctor_list else &c.sig_list;
     if (cache.get(s)) |x| return x;
@@ -2398,7 +2703,7 @@ pub fn sigsOfSymbol(c: *Checker, s: *Symbol, want_ctor: bool) []*Sig {
         if (want_ctor != (f.kind == .ctor or f.kind == .construct_sig)) continue;
         if (f.body != null and i > 0) {
             const prev = s.decls[i - 1];
-            if (prev.data == .func and prev.parent == d.parent and prev.data.func.kind == f.kind and prev.data.func.body == null) continue;
+            if (prev.data == .func and prev.parent == d.parent and prev.data.func.kind == f.kind and (prev.data.func.body == null or isNextTo(c, prev, d))) continue;
         }
         out.append(c.a, sigOfDecl(c, d)) catch oom();
     }
@@ -2513,14 +2818,13 @@ fn fillProps(c: *Checker, t: *Type, m: *Members, l: *const T.LazyProps) void {
         .declared => |x| {
             if (x.owner.data.obj.sym.?.members) |tbl| {
                 out.ensureTotalCapacity(c.a, tbl.map.count()) catch oom();
-                var it = tbl.map.keyIterator();
-                while (it.next()) |e| {
-                    const name = e.*.name;
+                for (tbl.ordered(c.a)) |e| {
+                    const name = e.name;
                     if (std.mem.eql(u8, name, "__constructor")) {
-                        addParamProps(c, e.*.resolve(), &out, &m.props, x.mapper, x.owner);
+                        addParamProps(c, e.resolve(), &out, &m.props, x.mapper, x.owner);
                     } else if (!isUnnamedMember(name)) {
                         const p = m.props.get(name) orelse blk: {
-                            const q = propFromSymbol(c, e.*.resolve(), x.owner);
+                            const q = propFromSymbol(c, e.resolve(), x.owner);
                             q.mapper = x.mapper;
                             break :blk q;
                         };
@@ -2563,12 +2867,14 @@ fn getterOf(s: *Symbol) ?*Node {
 }
 
 fn addExpandos(c: *Checker, m: *Members, func: *Node) void {
-    const holder = binder.expandoHolder(func) orelse return;
+    addExpandosOf(c, m, binder.expandoHolder(func) orelse return);
+}
+
+fn addExpandosOf(c: *Checker, m: *Members, holder: *Symbol) void {
     if (holder.exports) |table| {
-        var it = table.map.keyIterator();
-        while (it.next()) |e| {
-            const s = e.*.resolve();
-            if (s.flags & F.property != 0) m.props.put(c.a, e.*.name, propFromSymbol(c, s, null)) catch oom();
+        for (table.ordered(c.a)) |e| {
+            const s = e.resolve();
+            if (s.flags & F.property != 0) m.props.put(c.a, e.name, propFromSymbol(c, s, null)) catch oom();
         }
     }
     addLateExpandos(c, m, holder);
@@ -2663,13 +2969,12 @@ fn resolveIface(c: *Checker, self: *Type, g: *Type, args: []*Type, this_arg: *Ty
         if (s.members != null or bases.len > 0) m.lazy = c.create(T.LazyProps, .{ .declared = .{ .owner = g, .mapper = mapper, .bases = bases } });
     } else {
         if (s.members) |tbl| {
-            var it = tbl.map.keyIterator();
-            while (it.next()) |e| {
-                const name = e.*.name;
+            for (tbl.ordered(c.a)) |e| {
+                const name = e.name;
                 if (std.mem.eql(u8, name, "__constructor")) {
-                    addParamProps(c, e.*.resolve(), &m.props, &.empty, mapper, g);
+                    addParamProps(c, e.resolve(), &m.props, &.empty, mapper, g);
                 } else if (!isUnnamedMember(name)) {
-                    const p = propFromSymbol(c, e.*.resolve(), g);
+                    const p = propFromSymbol(c, e.resolve(), g);
                     p.mapper = mapper;
                     m.props.put(c.a, name, p) catch oom();
                 }
@@ -2691,32 +2996,26 @@ fn resolveIface(c: *Checker, self: *Type, g: *Type, args: []*Type, this_arg: *Ty
 fn addLateMembers(c: *Checker, late: []*Symbol, m: *Members, mapper: ?*Mapper, owner: ?*Type, indexes: *std.ArrayList(T.Index), unnamed: bool) void {
     var computed = c.newList(expr.ComputedKey);
     var readonly = true;
-    var bound: std.StringHashMapUnmanaged(*Symbol) = .empty;
-    for (late) |ls0| {
-        var ls = ls0;
+    for (late) |ls| {
         const node = binder.nameNode(ls.decls[0]) orelse continue;
+        const p = propFromSymbol(c, ls, owner);
+        p.mapper = mapper;
         const name = expr.propNameOf(c, node) orelse {
-            const p = propFromSymbol(c, ls, owner);
-            p.mapper = mapper;
             const key = expr.computedKeyOf(c, node) orelse continue;
             computed.append(c.a, .{ .key = key, .ty = propType(c, p) }) catch oom();
             readonly = readonly and p.readonly;
             continue;
         };
-        if (m.props.contains(name)) {
-            // tsc's `lateBindMember` gives a getter and a setter of one late name a single symbol.
-            const first = bound.get(name) orelse continue;
-            if (!pairsAccessors(first, ls)) continue;
-            const merged = c.create(Symbol, first.*);
-            merged.decls = std.mem.concat(c.a, *Node, &.{ first.decls, ls.decls }) catch oom();
-            merged.flags |= ls.flags;
-            ls = merged;
+        if (m.props.get(name)) |old| {
+            const pair = latePair(c, old, ls) orelse continue;
+            const q = propFromSymbol(c, pair, owner);
+            q.mapper = mapper;
+            q.name = name;
+            m.props.put(c.a, name, q) catch oom();
+            continue;
         }
-        const p = propFromSymbol(c, ls, owner);
-        p.mapper = mapper;
         p.name = name;
         m.props.put(c.a, name, p) catch oom();
-        bound.put(c.a, name, ls) catch oom();
     }
     if (computed.items.len == 0) return;
     outer: for ([_]*Type{ c.t_string, c.t_symbol, c.t_number }) |key| {
@@ -2738,8 +3037,16 @@ fn addLateMembers(c: *Checker, late: []*Symbol, m: *Members, mapper: ?*Mapper, o
     }
 }
 
-fn pairsAccessors(a: *Symbol, b: *Symbol) bool {
-    return (a.flags & F.getter != 0 and b.flags & F.setter != 0) or (a.flags & F.setter != 0 and b.flags & F.getter != 0);
+/// `get [k]()` next to `set [k](v)`: one property, which only the checker can see once it knows
+/// what `k` holds. Anything else of that name is a duplicate and the first one stands.
+fn latePair(c: *Checker, old: *Prop, late: *Symbol) ?*Symbol {
+    const first = old.sym orelse return null;
+    if (first.parent != late.parent or (first.flags | late.flags) & F.accessor != F.accessor or (first.flags & late.flags) & F.accessor != 0) return null;
+    const gop = c.late_pairs.getOrPut(c.a, first) catch oom();
+    if (gop.found_existing) return gop.value_ptr.*;
+    const decls = std.mem.concat(c.a, *Node, &.{ first.decls, late.decls }) catch oom();
+    gop.value_ptr.* = c.create(Symbol, .{ .name = first.name, .flags = first.flags | late.flags, .decls = decls, .value_decl = first.value_decl, .parent = first.parent, .file = first.file });
+    return gop.value_ptr.*;
 }
 
 fn inheritFrom(c: *Checker, m: *Members, b: *Type, calls: *std.ArrayList(*Sig), ctors: *std.ArrayList(*Sig), indexes: *std.ArrayList(T.Index), is_class: bool) void {
@@ -2846,12 +3153,12 @@ fn resolveTuple(c: *Checker, t: *Type) *Members {
     var open = false;
     var min: usize = 0;
     for (o.tuple.elems, o.tuple.eflags, 0..) |e, f, i| {
-        parts.append(c.a, if (f == .optional) addOptional(c, e) else e) catch oom();
+        parts.append(c.a, if (f == .optional) addMissing(c, e) else e) catch oom();
         if (f == .required) min = i + 1;
         if (f == .rest or f == .variadic) open = true;
         if (!open) {
             const name = c.fmt("{d}", .{i});
-            m.props.put(c.a, name, c.create(Prop, .{ .name = name, .ty = if (f == .optional) addOptional(c, e) else e, .optional = f == .optional, .readonly = o.readonly })) catch oom();
+            m.props.put(c.a, name, c.create(Prop, .{ .name = name, .ty = if (f == .optional) addMissing(c, e) else e, .optional = f == .optional, .readonly = o.readonly })) catch oom();
         }
     }
     const elem = if (parts.items.len == 0) c.t_never else c.getUnion(parts.items);
@@ -2909,10 +3216,9 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
             if (d.data.func.kind == .constructor_type) ctors.append(c.a, sg) catch oom() else calls.append(c.a, sg) catch oom();
         };
         if (s.members) |tbl| {
-            var it = tbl.map.keyIterator();
-            while (it.next()) |e| {
-                const ms = e.*.resolve();
-                const name = e.*.name;
+            for (tbl.ordered(c.a)) |e| {
+                const ms = e.resolve();
+                const name = e.name;
                 if (std.mem.eql(u8, name, "__call")) {
                     for (sigsOfSymbol(c, ms, false)) |x| calls.append(c.a, x) catch oom();
                 } else if (std.mem.eql(u8, name, "__new")) {
@@ -3184,7 +3490,7 @@ fn mappedPropType(c: *Checker, owner: *Type, p: *Prop) *Type {
     const kp = mappedParam(c, n);
     const m = compose(c, o.mapper, arrayMapper(c, c.dupe(*Type, &.{kp}), c.dupe(*Type, &.{p.mapped.?.key})));
     var t = if (d.type) |x| instantiate(c, typeFromNode(c, x), m) else c.t_any;
-    if (p.mapped.?.required) t = relate.removeDefinitelyUndefined(c, t) else if (p.optional) t = addOptional(c, t);
+    if (p.mapped.?.required) t = removeMissingOrUndefined(c, t) else if (p.optional) t = addMissing(c, t);
     return t;
 }
 
@@ -3213,7 +3519,7 @@ fn mappedValueAt(c: *Checker, t: *Type, key: *Type) *Type {
     const x = n.data.mapped_type;
     const m = compose(c, o.mapper, arrayMapper(c, c.dupe(*Type, &.{mappedParam(c, n)}), c.dupe(*Type, &.{key})));
     const v = if (x.type) |y| instantiate(c, typeFromNode(c, y), m) else c.t_any;
-    return if (x.question_mod == .question or x.question_mod == .plus) addOptional(c, v) else v;
+    return if (x.question_mod == .question or x.question_mod == .plus) addMissing(c, v) else v;
 }
 
 /// What any key of a mapped type holds while its keys are generic.
@@ -3319,12 +3625,13 @@ pub fn propsOf(c: *Checker, t: *Type) []const *Prop {
             return seen.values();
         },
         .union_ => |x| {
-            var out = c.newList(*Prop);
-            if (x.len == 0) return out.items;
-            for (propsOf(c, getApparent(c, x[0]))) |p| {
-                if (getProp(c, t, p.name)) |q| out.append(c.a, q) catch oom();
-            }
-            return out.items;
+            // A member can have it from `Object` without declaring it, so each one gets a turn.
+            var seen: T.PropTable = .empty;
+            for (x) |y| for (propsOf(c, getApparent(c, y))) |p| {
+                if (seen.contains(p.name)) continue;
+                if (getProp(c, t, p.name)) |q| seen.put(c.a, p.name, q) catch oom();
+            };
+            return seen.values();
         },
         else => return &.{},
     }
@@ -3351,7 +3658,7 @@ fn tupleProp(c: *Checker, t: *Type, name: []const u8) ?*Prop {
     if (i >= o.tuple.elems.len) return null;
     for (o.tuple.eflags[0 .. i + 1]) |f| if (f == .rest or f == .variadic) return null;
     const optional = o.tuple.eflags[i] == .optional;
-    return c.create(Prop, .{ .name = name, .ty = if (optional) addOptional(c, o.tuple.elems[i]) else o.tuple.elems[i], .optional = optional, .readonly = o.readonly });
+    return c.create(Prop, .{ .name = name, .ty = if (optional) addMissing(c, o.tuple.elems[i]) else o.tuple.elems[i], .optional = optional, .readonly = o.readonly });
 }
 
 /// Whether a tuple has no element at `i` and no open tail to hold one.
@@ -3695,7 +4002,7 @@ pub fn indexesOf(c: *Checker, t0: *Type) []T.Index {
 pub fn indexValue(c: *Checker, t: *Type, key: *Type) ?*Type {
     const list = indexesOf(c, t);
     for (list) |i| if (i.key == key) return i.ty;
-    if (key.data == .number or key.data == .num_lit) {
+    if (key.data == .number or key.data == .num_lit or (key.data == .str_lit and expr.isNumericName(c, key.data.str_lit))) {
         for (list) |i| if (i.key.data == .number) return i.ty;
     }
     if (key.data == .number or key.data == .num_lit or key.data == .string or key.data == .str_lit or key.data == .tmpl or key.data == .strmap) {
@@ -3811,8 +4118,8 @@ fn mappedAccess(c: *Checker, obj: *Type, idx: *Type) ?*Type {
     const tpl = x.type orelse return null;
     const m = compose(c, o.mapper, arrayMapper(c, c.dupe(*Type, &.{mappedParam(c, n)}), c.dupe(*Type, &.{idx})));
     const t = instantiate(c, typeFromNode(c, tpl), m);
-    if (x.question_mod == .minus) return relate.removeDefinitelyUndefined(c, t);
-    return if (x.question_mod == .question or x.question_mod == .plus) addOptional(c, t) else t;
+    if (x.question_mod == .minus) return removeMissingOrUndefined(c, t);
+    return if (x.question_mod == .question or x.question_mod == .plus) addMissing(c, t) else t;
 }
 
 pub fn getApparent(c: *Checker, t: *Type) *Type {
@@ -4053,7 +4360,7 @@ fn condResolve(c: *Checker, root: *T.Cond, mapper: ?*Mapper, for_constraint: boo
     }
     const inferred_ext = if (root.infer_params.len > 0) instantiate(c, root.extends, combined) else extends;
     if (check_deferred or isGeneric(c, inferred_ext) or (tuples and hasGenericElem(c, inferred_ext))) return deferredCond(c, root, mapper);
-    if (check.data == .any or check == c.t_unresolved) {
+    if (check.data == .any or isUnresolved(c, check)) {
         return c.getUnion(&.{ instantiate(c, condThen(c, root), combined), instantiate(c, condEls(c, root), mapper) });
     }
     if (!relate.isAssignable(c, relate.permissive(c, check), relate.permissive(c, inferred_ext))) {

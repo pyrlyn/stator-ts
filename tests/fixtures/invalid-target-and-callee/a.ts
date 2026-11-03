@@ -1,0 +1,13 @@
+const box = { get x() { return 7; } };
+const r: string = (box.x += 1);
+const r2: string = (box.x = 1);
+const r3: string = box.x++;
+declare const ro: { readonly a: number; readonly [k: string]: number };
+const r4: string = (ro.a += 1);
+const r5: string = (ro['a'] += 1);
+const r6: string = (ro['q'] += 1);
+const nv: { f: null } = { f: null };
+const v: number = nv.f ? nv.f('hi') : 'none';
+declare const never1: never;
+const w: string = never1();
+const w2: string = new never1();

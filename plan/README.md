@@ -6,7 +6,7 @@ Standalone TypeScript compiler in Zig 0.17 that emits JavaScript, aims for `tsc`
 
 ## Decisions
 
-- Standalone project. It shares no code with `apps/stator`, whose frontend is the TypeScript compiler API.
+- Standalone project. It shares no code with `apps/stator`; Stator's Zig compiler uses it as a library (`stator_ts` module, `Session`), and Stator's old compiler keeps the TypeScript compiler API until that port lands.
 - Output is JavaScript. Target is ES2022 or newer, modules are ESM; downleveling and CommonJS are on the roadmap.
 - `lib.*.d.ts` files are found at run time (`--lib-dir`, `STATOR_TS_LIB`, then `node_modules/typescript/lib`), so they always match the project's TypeScript version.
 - The emitter applies edits to source text, so comments and formatting survive.

@@ -48,6 +48,9 @@ fn drainDeferred(c: *Checker) void {
 fn implicitAny(c: *Checker, p: *Node, fnode: ?*Node) void {
     if (!c.no_implicit_any) return;
     const x = p.data.param;
+    if (x.type == null and x.name.data == .identifier and x.init != null and d.isEmptyArrayLit(x.init.?) and expr.inJs(c, p)) {
+        err(c, p, 7006, c.fmt("Parameter '{s}' implicitly has an 'any[]' type.", .{x.name.data.identifier}));
+    }
     if (x.type != null or x.init != null) return;
     if (c.param_types.contains(p)) return;
     if (fnode) |f| if (f.data == .func) {
@@ -85,7 +88,7 @@ fn implicitAnyMember(c: *Checker, n: *Node) void {
     if (typed) return;
     const f = d.fileOf(c, n) orelse return;
     // JSDoc may type it, and is not modeled.
-    if (project.isJs(f.path)) return;
+    if (project.isJsFile(f.path)) return;
     if (privateWithinAmbient(c, n, name)) return;
     if (n.data == .property_decl) {
         if (d.typeFromConstructor(c, n)) |t| if (t != c.t_auto) return;
@@ -99,7 +102,7 @@ fn implicitAnyMember(c: *Checker, n: *Node) void {
 /// a `@param` naming it, or a `@type` or `@overload` on it or on what holds its function.
 fn jsDocTyped(c: *Checker, p: *Node) bool {
     const f = d.fileOf(c, p) orelse return false;
-    if (!project.isJs(f.path)) return false;
+    if (!project.isJsFile(f.path)) return false;
     const name_node = p.data.param.name;
     const name = if (name_node.data == .identifier) name_node.data.identifier else "";
     var n: ?*Node = p;
@@ -110,7 +113,9 @@ fn jsDocTyped(c: *Checker, p: *Node) bool {
         }
         const doc = jsDocBefore(f.src, x.start) orelse continue;
         if (std.mem.indexOf(u8, doc, "@type") != null or std.mem.indexOf(u8, doc, "@overload") != null) return true;
-        if (name.len > 0 and documentsParam(doc, name)) return true;
+        // A `@callback` or `@typedef` comment's tags describe the type it declares, not `p`.
+        const own = doc[0 .. std.mem.indexOf(u8, doc, "@callback") orelse std.mem.indexOf(u8, doc, "@typedef") orelse doc.len];
+        if (name.len > 0 and documentsParam(own, name)) return true;
     }
     return false;
 }
@@ -118,7 +123,7 @@ fn jsDocTyped(c: *Checker, p: *Node) bool {
 /// Whether a JSDoc comment on `n`, or on what holds it within its statement, names one of `tags`.
 pub fn jsDocHas(c: *Checker, n: *Node, tags: []const []const u8) bool {
     const f = d.fileOf(c, n) orelse return false;
-    if (!project.isJs(f.path)) return false;
+    if (!project.isJsFile(f.path)) return false;
     var cur: ?*Node = n;
     while (cur) |x| : (cur = x.parent) {
         switch (x.data) {
@@ -311,7 +316,7 @@ fn implicitAnyAccessor(c: *Checker, n: *Node) void {
     }
     const file = d.fileOf(c, n) orelse return;
     // JSDoc may type it, and is not modeled.
-    if (project.isJs(file.path)) return;
+    if (project.isJsFile(file.path)) return;
     const name = f.name orelse return;
     if (privateWithinAmbient(c, n, name)) return;
     const shown = file.src[name.start..name.end];
@@ -339,7 +344,7 @@ fn implicitAnyReturn(c: *Checker, n: *Node) void {
     if (f.kind == .method and n.parent != null and n.parent.?.data == .object_lit) return;
     const file = d.fileOf(c, n) orelse return;
     // Where parsing failed, tsc's recovery often keeps a body this parser does not.
-    if (project.isJs(file.path) or file.diags.len > 0) return;
+    if (project.isJsFile(file.path) or file.diags.len > 0) return;
     const name = f.name orelse {
         err(c, n, 7011, "Function expression, which lacks return-type annotation, implicitly has an 'any' return type.");
         return;
@@ -389,7 +394,14 @@ fn checkReturn(c: *Checker, n: *Node) void {
     const v: ?*Type = if (e) |i| expr.checkExpression(c, i) else null;
     const fun = fnode orelse return;
     const f = fun.data.func;
-    if (f.kind == .setter or f.kind == .ctor) return;
+    if (f.kind == .setter) return;
+    if (f.kind == .ctor) {
+        const t = v orelse return;
+        const want = d.declaredType(c, (fun.parent orelse return).symbol() orelse return);
+        if (relate.isAssignable(c, t, want)) return;
+        expr.checkAssignable(c, t, want, e, n);
+        return err(c, n, 2409, "Return type of constructor signature must be assignable to the instance type of the class.");
+    }
     if (f.ret) |rn| if (rn.data == .type_predicate) {
         if (v) |t| expr.checkAssignable(c, t, c.t_boolean, e, n);
         return;
@@ -445,8 +457,7 @@ fn checkVarDecl(c: *Checker, n: *Node) void {
 fn checkRedeclared(c: *Checker, n: *Node, s0: *Symbol, name: *Node) void {
     const s = s0.resolve();
     const first = s.value_decl orelse return;
-    // Without a type for a missing property, `exactOptionalPropertyTypes` could not be told apart.
-    if (first == n or s.flags & F.assignment != 0 or expr.inJs(c, n) or c.exact_optional) return;
+    if (first == n or s.flags & F.assignment != 0) return;
     const want = declaredAsAny(c, first, d.typeOfSymbol(c, s));
     const got = declaredAsAny(c, n, d.typeOfDeclaration(c, n));
     if (want.data == .err or got.data == .err or relate.isIdentical(c, want, got)) return;
@@ -1003,7 +1014,7 @@ fn checkImport(c: *Checker, n: *Node) void {
         if (m.exports != null and c.prog.exportOf(m, "default") == null and c.prog.exportOf(m, "export=") == null) {
             if (!(c.prog.cfg.options.flag("esModuleInterop") or c.prog.cfg.options.flag("allowSyntheticDefaultImports"))) {
                 err(c, cl.name.?, 1192, c.fmt("Module '\"{s}\"' has no default export.", .{moduleName(m)}));
-            } else if (m.file) |f| if (!f.is_dts) {
+            } else if (m.file) |f| if (!f.is_dts and !f.is_commonjs) {
                 err(c, cl.name.?, 1192, c.fmt("Module '\"{s}\"' has no default export.", .{moduleName(m)}));
             };
         }
@@ -1016,7 +1027,7 @@ fn checkImport(c: *Checker, n: *Node) void {
         const s = e.data.import_spec;
         const nm = s.prop_name orelse s.name;
         const name = if (nm.data == .identifier) nm.data.identifier else if (nm.data == .string_lit) nm.data.string_lit else continue;
-        if (c.prog.exportOf(m, name) != null) continue;
+        if (c.prog.importedExport(d.fileOf(c, n), m, name) != null) continue;
         missingExport(c, m, nm, name);
     }
 }
@@ -1068,7 +1079,7 @@ fn checkExportDecl(c: *Checker, n: *Node) void {
         if (nm.data != .identifier) continue;
         const name = nm.data.identifier;
         if (x.specifier != null) {
-            if (m) |mm| if (c.prog.exportOf(mm, name) == null and c.prog.exportOf(mm, "export=") == null) missingExport(c, mm, nm, name);
+            if (m) |mm| if (c.prog.importedExport(d.fileOf(c, n), mm, name) == null and c.prog.exportOf(mm, "export=") == null) missingExport(c, mm, nm, name);
         } else if (d.resolveName(c, n, name, F.value | F.type | F.namespace | F.alias) == null) {
             if (expr.suggestName(c, nm, name, F.value | F.type | F.namespace)) |sug| {
                 err(c, nm, 2552, c.fmt("Cannot find name '{s}'. Did you mean '{s}'?", .{ name, sug }));
@@ -1646,8 +1657,20 @@ fn hasUndefinedType(c: *Checker, t: *Type) bool {
     return relate.isAssignable(c, c.t_undefined, t);
 }
 
+fn checkConstructors(c: *Checker, members: []*Node) void {
+    var bodies: usize = 0;
+    for (members) |m| {
+        if (m.data == .func and m.data.func.kind == .ctor and m.data.func.body != null) bodies += 1;
+    }
+    if (bodies < 2) return;
+    for (members) |m| {
+        if (m.data == .func and m.data.func.kind == .ctor) err(c, m, 2392, "Multiple constructor implementations are not allowed.");
+    }
+}
+
 fn checkMembers(c: *Checker, cls: *Node, members: []*Node) void {
     _ = cls;
+    checkConstructors(c, members);
     for (members) |m| {
         switch (m.data) {
             .func => {
@@ -2104,7 +2127,7 @@ fn isAsConst(n: *Node) bool {
     return t == n and n.data.type_ref.name.data == .identifier and std.mem.eql(u8, n.data.type_ref.name.data.identifier, "const");
 }
 
-fn checkFile(c: *Checker, f: *ast.File) void {
+pub fn checkFile(c: *Checker, f: *ast.File) void {
     checkBlock(c, f.root.data.source_file.stmts);
     drainDeferred(c);
     walkTypes(c, f.root);

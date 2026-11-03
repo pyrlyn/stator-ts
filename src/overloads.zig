@@ -33,7 +33,7 @@ pub fn check(c: *Checker, n: *Node) void {
     if (!isOverloadable(n)) return;
     const f = d.fileOf(c, n) orelse return;
     // JavaScript redeclares functions freely.
-    if (project.isJs(f.path)) return;
+    if (project.isJsFile(f.path)) return;
     if (n.data.func.name) |name| if (name.data == .computed_name and !hasLiteralName(name)) return;
     const s = (n.symbol() orelse return).resolve();
     const halves = moduleHalves(c, n) orelse {

@@ -174,7 +174,8 @@ pub const Data = union(enum) {
     shorthand_assign: struct { name: *Node, init: ?*Node },
     spread_assign: struct { expr: *Node },
     spread_elem: struct { expr: *Node },
-    paren: struct { expr: *Node },
+    /// `cast` is the type of a JSDoc `/** @type {T} */ (x)`, the one assertion JavaScript can write.
+    paren: struct { expr: *Node, cast: ?*Node = null },
     prop_access: struct { expr: *Node, name: *Node, optional: bool },
     elem_access: struct { expr: *Node, index: *Node, optional: bool },
     call: *Call,
@@ -433,6 +434,21 @@ pub fn isBlockBody(n: *const Node) bool {
 /// Which `exports` condition a module specifier resolves through.
 pub const ResolutionMode = enum { import, require };
 
+/// `ty` as the source wrote it on `decl`, null for one a JSDoc comment gave it: a comment's type
+/// starts before what it describes.
+pub fn writtenType(decl: *const Node, ty: ?*Node) ?*Node {
+    const t = ty orelse return null;
+    return if (t.start < decl.start) null else t;
+}
+
+pub fn isJsFile(name: []const u8) bool {
+    for ([_][]const u8{ ".js", ".jsx", ".mjs", ".cjs" }) |e| if (std.mem.endsWith(u8, name, e)) return true;
+    return false;
+}
+
+/// A type name a JSDoc tag declares: `@typedef`, `@callback` and `@import` for the whole program,
+/// `@template` for `scope` in its own file.
+pub const JsdocName = struct { text: []const u8, scope: ?Span };
 pub const File = struct {
     path: []const u8,
     src: []const u8,
@@ -445,7 +461,13 @@ pub const File = struct {
     is_module: bool,
     /// Under Node's module modes, the file's format is CommonJS.
     implied_cjs: bool = false,
+    /// A JavaScript file a `require` or an `exports` assignment makes a module.
+    is_commonjs: bool = false,
     references: []Reference,
+    /// `// @ts-check` (true) or `// @ts-nocheck` (false) before the first token, the last one winning.
+    check_directive: ?bool = null,
+    /// Type names the file's JSDoc tags declare, which the checker does not model.
+    jsdoc_names: []const JsdocName = &.{},
     symbol: ?*binder.Symbol = null,
     bind_diags: []lexer.Diag = &.{},
     /// Executable statements no path reaches, from the binder.
@@ -458,6 +480,8 @@ pub const File = struct {
     umd_name: ?[]const u8 = null,
     /// A body had to be parsed while loading and has a syntax error.
     bad_body: bool = false,
+    /// Position among the program's files, which is the order their declarations merge in.
+    order: u32 = 0,
 
     pub const Reference = struct { kind: enum { path, lib, types }, value: []const u8, mode: ?ResolutionMode = null };
 

@@ -11,6 +11,13 @@ pub fn build(b: *std.Build) void {
     });
     mod.addImport("coroutines", b.dependency("coroutines", .{ .target = target, .optimize = optimize }).module("coroutines"));
 
+    const lib = b.addModule("stator_ts", .{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    lib.addImport("coroutines", b.dependency("coroutines", .{ .target = target, .optimize = optimize }).module("coroutines"));
+
     const exe = b.addExecutable(.{ .name = "stator-ts", .root_module = mod });
     b.installArtifact(exe);
 

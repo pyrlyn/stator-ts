@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "allowJs": true,
+    "noEmit": true,
+    "target": "es2022",
+    "types": []
+  },
+  "files": ["a.js", "b.js", "c.js", "d.js", "e.ts"]
+}

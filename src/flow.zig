@@ -157,6 +157,7 @@ pub fn matchingRef(c: *Checker, r0: *Node, n0: *Node) bool {
         },
         .this_expr => return r.data == .this_expr,
         .super_expr => return r.data == .super_expr,
+        .meta_property => |x| return r.data == .meta_property and r.data.meta_property.keyword == x.keyword,
         .prop_access, .elem_access => {
             const a = accessName(c, n) orelse {
                 const k = constKeySym(c, n);
@@ -191,6 +192,7 @@ fn refKey(c: *Checker, n0: *Node) u64 {
         .identifier => @intFromPtr(expr.symbolOf(c, n)),
         .this_expr => 1,
         .super_expr => 2,
+        .meta_property => |x| 3 + @intFromEnum(x.keyword),
         .prop_access, .elem_access => blk: {
             const name = accessName(c, n) orelse std.mem.asBytes(&constKeySym(c, n));
             break :blk std.hash.Wyhash.hash(refKey(c, accessObject(n).?), name);
@@ -219,6 +221,15 @@ fn oncePerRound(c: *Checker, memo: *T.IdMap(*Node, Checker.Provisional), n: *Nod
 fn forgetRound(c: *Checker) void {
     c.flow_assigned.clearRetainingCapacity();
     c.flow_operands.clearRetainingCapacity();
+}
+
+/// tsc lets an array start empty and evolve with each write, which is not modeled: any element is
+/// what a read has before the first write.
+fn isEmptyArrayAssignment(n: *Node) bool {
+    return switch (n.data) {
+        .var_decl => |v| if (v.init) |i| d.isEmptyArrayLit(i) else false,
+        else => if (n.parent) |p| p.data == .binary and p.data.binary.op == .assign and p.data.binary.left == n and d.isEmptyArrayLit(p.data.binary.right) else false,
+    };
 }
 
 fn assignedOnce(c: *Checker, n: *Node) ?*Type {
@@ -267,6 +278,10 @@ const St = struct {
                     if (st.assignment(f)) |t| return t;
                     f = f.antecedent orelse return st.initial;
                 },
+                .array_mutation => {
+                    if (st.arrayMutation(f)) |t| return t;
+                    f = f.antecedent orelse return st.initial;
+                },
                 .call => {
                     if (st.callNode(f)) |t| return t;
                     f = f.antecedent orelse return st.initial;
@@ -297,7 +312,7 @@ const St = struct {
         if (matchingRef(c, st.ref, n)) {
             // tsc never works out what `x += 1` or `x++` stores: `x` stays what it was, widened.
             if (expr.isCompound(n)) return expr.baseOfLiteral(c, st.go(f.antecedent orelse return st.initial));
-            if (st.declared == c.t_auto) {
+            if (isAuto(c, st.declared)) {
                 // A chain of `a = f(a)` reads every earlier link, so each is worked out once.
                 const k = st.cacheKey(f);
                 if (st.recall(k, f)) |t| return t;
@@ -307,7 +322,7 @@ const St = struct {
                     c.flow_touched = @min(touched, c.flow_touched);
                     return if (n.data == .var_decl) null else st.declared;
                 };
-                const r = expr.widenInit(c, n, t, false);
+                const r = if (isEmptyArrayAssignment(n)) evolving(c, c.t_never) else autoAssigned(c, st.declared, expr.widenInit(c, n, t, false));
                 st.settle(k, f, r, touched);
                 return r;
             }
@@ -317,10 +332,44 @@ const St = struct {
         }
         if (containsRef(c, st.ref, n)) {
             // `const f = () => {}; f.x = 1`: declaring `f` does not reset `f.x`, it starts it.
-            if (n.data == .var_decl) if (n.symbol()) |s| if (binder.holdsExpandos(s)) return null;
+            if (n.data == .var_decl) if (n.symbol()) |s| if (binder.holdsExpandos(s, expr.inJs(c, n))) return null;
             return st.declared;
         }
         return null;
+    }
+
+    /// `x.push(v)` and `x[i] = v` add `v` to what an array still being built holds.
+    fn arrayMutation(st: *St, f: *FlowNode) ?*Type {
+        const c = st.c;
+        if (!isAuto(c, st.declared)) return null;
+        const n = f.node orelse return null;
+        const target = switch (n.data) {
+            .call => |x| x.callee.data.prop_access.expr,
+            .binary => |x| x.left.data.elem_access.expr,
+            else => return null,
+        };
+        if (!matchingRef(c, st.ref, target)) return null;
+        const k = st.cacheKey(f);
+        if (st.recall(k, f)) |t| return t;
+        const touched = c.flow_touched;
+        c.flow_touched = T.flow_untouched;
+        const before = st.go(f.antecedent.?);
+        var element = c.evolving_elements.get(before) orelse {
+            st.settle(k, f, before, touched);
+            return before;
+        };
+        switch (n.data) {
+            .call => |x| for (x.args) |arg| {
+                element = grown(c, element, arg);
+            },
+            .binary => |x| if (expr.isNumberLike(c, expr.checkSilent(c, x.left.data.elem_access.index))) {
+                element = grown(c, element, x.right);
+            },
+            else => {},
+        }
+        const r = evolving(c, element);
+        st.settle(k, f, r, touched);
+        return r;
     }
 
     fn callNode(st: *St, f: *FlowNode) ?*Type {
@@ -872,12 +921,103 @@ fn mayAssign(c: *Checker, s: *Type, t: *Type) bool {
     return relate.isAssignable(c, s, t);
 }
 
+pub fn autoArray(c: *Checker) *Type {
+    if (c.t_auto_array) |t| return t;
+    const t = d.arrayOf(c, c.t_auto);
+    c.t_auto_array = t;
+    return t;
+}
+
+/// A declaration that leaves its type to the flow: `let x;` and `let x = [];`.
+pub fn isAuto(c: *Checker, t: *Type) bool {
+    return t == c.t_auto or t == c.t_auto_array;
+}
+
+/// What such a declaration is to anyone the flow told nothing.
+pub fn fromAuto(c: *Checker, t: *Type) *Type {
+    return if (t == c.t_auto) c.t_any else if (t == c.t_auto_array) d.arrayOf(c, c.t_any) else t;
+}
+
+fn evolving(c: *Checker, element: *Type) *Type {
+    if (c.evolving_arrays.get(element)) |t| return t;
+    const t = c.mk(.any);
+    c.evolving_arrays.put(c.a, element, t) catch oom();
+    c.evolving_elements.put(c.a, t, element) catch oom();
+    return t;
+}
+
+fn grown(c: *Checker, element: *Type, value: *Node) *Type {
+    const added = if (value.data == .spread_elem) blk: {
+        const e = value.data.spread_elem.expr;
+        break :blk expr.iteratedOf(c, e, expr.checkSilent(c, e), false);
+    } else expr.checkSilent(c, value);
+    return c.getUnion(&.{ element, expr.regularize(c, expr.baseOfLiteral(c, added)) });
+}
+
+fn autoAssigned(c: *Checker, declared: *Type, assigned: *Type) *Type {
+    if (declared == c.t_auto or relate.isAssignable(c, assigned, declared)) return assigned;
+    return d.arrayOf(c, c.t_any);
+}
+
+fn finalArray(c: *Checker, t: *Type) *Type {
+    const element = c.evolving_elements.get(t) orelse return t;
+    if (element.data == .never) return autoArray(c);
+    return d.arrayOf(c, if (element.data == .union_) expr.reduceSubtypes(c, element.data.union_) else element);
+}
+
+/// Arrays still being built meet as one; meeting anything else ends them.
+fn joinEvolving(c: *Checker, parts: []const *Type) ?*Type {
+    var building = false;
+    var only = true;
+    for (parts) |t| {
+        if (c.evolving_elements.contains(t)) building = true else if (t.data != .never) only = false;
+    }
+    if (!building) return null;
+    const list = c.a.alloc(*Type, parts.len) catch oom();
+    for (parts, list) |t, *slot| slot.* = if (only) c.evolving_elements.get(t) orelse c.t_never else finalArray(c, t);
+    return if (only) evolving(c, c.getUnion(list)) else recombineUnknown(c, c.getUnion(list));
+}
+
+/// `x` in `x.length`, `x.push(v)`, `x.unshift(v)` and `x[n] = v` works on the array as it stands, so
+/// these reads do not fix what it holds.
+pub fn isEvolvingTarget(c: *Checker, ref: *Node) bool {
+    var root = ref;
+    // tsc's getReferenceRoot: `(x = [], x).push(5)` still evolves `x`, so the
+    // root climbs through an assignment target and a comma's right operand.
+    while (root.parent) |p| : (root = p) {
+        const through = switch (p.data) {
+            .paren, .non_null => true,
+            .binary => |b| (b.op == .assign and b.left == root) or (b.op == .comma and b.right == root),
+            else => false,
+        };
+        if (!through) break;
+    }
+    const p = root.parent orelse return false;
+    switch (p.data) {
+        .prop_access => |x| {
+            if (x.expr != root or x.name.data != .identifier) return false;
+            const name = x.name.data.identifier;
+            if (std.mem.eql(u8, name, "length")) return true;
+            const call = p.parent orelse return false;
+            return call.data == .call and call.data.call.callee == p and
+                (std.mem.eql(u8, name, "push") or std.mem.eql(u8, name, "unshift"));
+        },
+        .elem_access => |x| {
+            if (x.expr != root) return false;
+            const assign = p.parent orelse return false;
+            if (assign.data != .binary or assign.data.binary.op != .assign or assign.data.binary.left != p) return false;
+            return expr.isNumberLike(c, expr.checkSilent(c, x.index));
+        },
+        else => return false,
+    }
+}
+
 fn joinTypes(c: *Checker, declared: *Type, parts: []const *Type) *Type {
-    _ = declared;
     var small: [d.small_list]*Type = undefined;
     var list = std.ArrayList(*Type).initBuffer(d.smallList(c, &small, parts.len));
     for (parts) |t| if (t != c.t_unreachable) list.appendAssumeCapacity(t);
     if (list.items.len == 0) return c.t_unreachable;
+    if (isAuto(c, declared)) if (joinEvolving(c, list.items)) |r| return r;
     return recombineUnknown(c, c.getUnion(list.items));
 }
 
@@ -894,6 +1034,7 @@ fn recombineUnknown(c: *Checker, t: *Type) *Type {
 pub fn byTruthiness(c: *Checker, t: *Type, assume: bool) *Type {
     // Past a truthy test it is a plain `any`: the flow has found something, so nothing is reported.
     if (t == c.t_auto and assume) return c.t_any;
+    if (t == c.t_auto_array) return fromAuto(c, t);
     switch (t.data) {
         .union_ => |u| {
             var small: [d.small_list]*Type = undefined;
@@ -1098,13 +1239,18 @@ fn isNullishLeft(n: *Node) bool {
     return x.left == n and (x.op == .qq or x.op == .qq_assign);
 }
 
+/// Leaving a property out compares as `undefined` does.
+fn sameNullish(m: *Type, v: *Type) bool {
+    return m == v or (m.data == .undefined and v.data == .undefined);
+}
+
 fn narrowNullish(c: *Checker, t: *Type, v: *Type, loose: bool, assume: bool) *Type {
     const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
     var parts = c.newList(*Type);
     if (assume) {
         if (t.data == .unknown) return if (loose) c.getUnion(&.{ c.t_null, c.t_undefined }) else v;
         for (members) |m| {
-            if (m == v or (loose and (m.data == .null or m.data == .undefined))) {
+            if (sameNullish(m, v) or (loose and (m.data == .null or m.data == .undefined))) {
                 parts.append(c.a, m) catch oom();
             } else if (m.data == .void and v.data == .undefined) {
                 parts.append(c.a, m) catch oom();
@@ -1119,7 +1265,7 @@ fn narrowNullish(c: *Checker, t: *Type, v: *Type, loose: bool, assume: bool) *Ty
     const other = if (v.data == .null) c.t_undefined else c.t_null;
     const has_other = std.mem.indexOfScalar(*Type, members, other) != null;
     for (members) |m| {
-        const drop = m == v or (loose and (m.data == .null or m.data == .undefined)) or (m.data == .void and (loose or v.data == .undefined));
+        const drop = sameNullish(m, v) or (loose and (m.data == .null or m.data == .undefined)) or (m.data == .void and (loose or v.data == .undefined));
         if (drop or (m.data == .inter and std.mem.indexOfScalar(*Type, m.data.inter, v) != null)) continue;
         parts.append(c.a, if (loose) expr.definite(c, m) else withoutNullish(c, m, v, other, has_other)) catch oom();
     }
@@ -1175,7 +1321,8 @@ fn narrowSwitch(c: *Checker, t: *Type, sw: *Node, start: u32, end: u32) *Type {
     }
     var rest = c.newList(*Type);
     for (members) |m| {
-        const reg = m.regular orelse m;
+        // Leaving a property out compares as `undefined` does.
+        const reg = if (m.data == .undefined) c.t_undefined else m.regular orelse m;
         const hit = for (all.items) |v| {
             if (v == reg and relate.isUnitType(reg)) break true;
         } else false;
@@ -1424,7 +1571,8 @@ pub fn flowType(c: *Checker, ref: *Node, declared: *Type, initial: *Type, contai
     defer _ = c.popResolution();
     const r = walk(c, ref, declared, initial, container, flow);
     // Dead code has no assignments to read, and reporting them would only follow up on its own error.
-    if (r == c.t_unreachable) return if (declared == c.t_auto) c.t_any else declared;
+    if (r == c.t_unreachable) return fromAuto(c, declared);
+    if (c.evolving_elements.contains(r)) return if (isEvolvingTarget(c, ref)) autoArray(c) else finalArray(c, r);
     // `x!` where `x` was narrowed to nothing but nullish: the author insists it has changed since.
     if (ref.parent) |p| if (p.data == .non_null and r.data != .never and expr.nonNull(c, r).data == .never) return declared;
     return r;
@@ -1502,7 +1650,7 @@ pub fn isPostSuper(c: *Checker, f0: *FlowNode) bool {
         switch (f.kind) {
             .start => return false,
             .unreachable_end => return true,
-            .assign, .true_cond, .false_cond, .switch_clause => f = f.antecedent orelse return false,
+            .assign, .true_cond, .false_cond, .switch_clause, .array_mutation => f = f.antecedent orelse return false,
             .call => {
                 if (f.node) |n| if (n.data == .call and n.data.call.callee.data == .super_expr) return true;
                 f = f.antecedent orelse return false;
@@ -1536,7 +1684,7 @@ pub fn isReachable(c: *Checker, f0: ?*FlowNode) bool {
             },
             .start => return true,
             .unreachable_end => return false,
-            .assign, .true_cond, .false_cond => f = f.antecedent orelse return true,
+            .assign, .true_cond, .false_cond, .array_mutation => f = f.antecedent orelse return true,
             .call => {
                 if (f.node) |n| if (expr.effectsSig(c, n)) |s| {
                     if (assertsFalse(c, n, s) or d.returnOf(c, s).data == .never) return false;
