@@ -1,0 +1,1 @@
+{ "compilerOptions": { "strict": true, "exactOptionalPropertyTypes": true, "noUncheckedIndexedAccess": true, "noEmit": true, "target": "esnext", "module": "esnext", "types": [] }, "files": ["a.ts"] }

@@ -281,6 +281,14 @@ fn isDigit(c: u8) bool {
     return c >= '0' and c <= '9';
 }
 
+/// Whether the text reads as one identifier, whatever it would mean as a keyword.
+pub fn isIdentifierText(s: []const u8) bool {
+    if (s.len == 0 or isDigit(s[0])) return false;
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) if (!identPartAt(s, i)) return false;
+    return true;
+}
+
 pub const Lexer = struct {
     src: []const u8,
     a: Allocator,

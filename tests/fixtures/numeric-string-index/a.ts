@@ -1,0 +1,9 @@
+const a: number[] = [1];
+const b: string = a["0"];
+const c: string = a["x"];
+const m: { [n: number]: string } = {};
+const d: number = m["1"];
+const e: number = m["1.5"];
+const f: number = m["01"];
+const t: [string, number] = ["a", 1];
+const g: number = t["0"];

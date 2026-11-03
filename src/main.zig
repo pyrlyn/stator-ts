@@ -8,6 +8,7 @@ const pool = @import("pool.zig");
 const emit = @import("emit.zig");
 const testrun = @import("testrun.zig");
 const parser = @import("parser.zig");
+const Session = @import("session.zig").Session;
 
 const usage =
     \\usage: stator-ts <command> [options]
@@ -17,6 +18,8 @@ const usage =
     \\  build               type-check and emit JavaScript
     \\  scan                parse the whole project in parallel, print stats
     \\  test [filter...]    compile and run *.test.ts files in parallel on Node or Bun
+    \\  types [file...]     print the type of every expression, one per line
+    \\  api [file...]       the same, with what the checker API answers for each
     \\
     \\options:
     \\  -p, --project <p>   tsconfig.json, or a directory to use as the project
@@ -169,6 +172,17 @@ pub fn main(init: std.process.Init) !u8 {
     if (std.mem.eql(u8, cli.command, "test")) {
         return testrun.run(a, io, init.environ_map, .{ .cfg = cfg, .tp = tp, .runtime = cli.runtime, .filters = cli.rest.items, .name_filter = cli.test_name, .lib_dir = cli.lib_dir }, w);
     }
+    if (std.mem.eql(u8, cli.command, "types") or std.mem.eql(u8, cli.command, "api")) {
+        if (cli.rest.items.len > 0) {
+            const cwd = try Io.Dir.cwd().realPathFileAlloc(io, ".", a);
+            const files = try a.alloc([]const u8, cli.rest.items.len);
+            for (cli.rest.items, files) |x, *f| f.* = try fspath.resolve(a, &.{ cwd, x });
+            cfg.files = files;
+        }
+        const s = Session.open(a, io, tp, cfg, .{ .lib_dir = cli.lib_dir, .lib_env = init.environ_map.get("STATOR_TS_LIB") });
+        try s.dumpTypes(w, std.mem.eql(u8, cli.command, "api"));
+        return 0;
+    }
     if (std.mem.eql(u8, cli.command, "check") or std.mem.eql(u8, cli.command, "build")) {
         return @import("driver.zig").run(a, io, .{
             .cfg = cfg,
@@ -195,4 +209,6 @@ test {
     _ = @import("driver.zig");
     _ = @import("testrun.zig");
     _ = @import("spelling.zig");
+    _ = @import("session.zig");
+    _ = @import("api.zig");
 }
