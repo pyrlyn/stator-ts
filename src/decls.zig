@@ -74,6 +74,8 @@ pub fn resolveName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?*S
         const hidden = n.data == .conditional_type and last != n.data.conditional_type.then;
         if (!hidden) if (localsOf(c, n)) |l| if (l.getHashed(hashed)) |s| {
             if (matches(c, s, meaning)) |r| {
+                // A static member belongs to the constructor, which no instantiation reaches.
+                if (n.data == .class and r.flags & F.type_param != 0 and isStaticMember(last)) return null;
                 if (n.data != .func or visibleInFunc(c, n, last, r, meaning)) return unused.noteUse(c, from, r, self, meaning);
             } else if (n.data == .source_file) if (fileOf(c, n)) |f| if (f.symbol) |m| if (m.exports) |e| if (e.getHashed(hashed)) |x| {
                 if (x != s and !binder.isExportSpecifierOnly(x)) if (matches(c, x, meaning)) |r| return unused.noteUse(c, from, r, self, meaning);
@@ -88,6 +90,22 @@ pub fn resolveName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?*S
     }
     if (c.prog.globals.getHashed(hashed)) |s| if (matches(c, s, meaning)) |r| return r;
     return null;
+}
+
+fn isStaticMember(n: ?*Node) bool {
+    const m = n orelse return false;
+    return m.data == .static_block or (m.mods.static and m.parent != null and m.parent.?.data == .class);
+}
+
+/// The class type parameter a failed type lookup stopped at, which a static member cannot see.
+fn classTypeParamFromStatic(c: *Checker, from: *Node, name: []const u8) bool {
+    var last: ?*Node = null;
+    var cur: ?*Node = from;
+    while (cur) |n| : ({
+        last = n;
+        cur = n.parent;
+    }) if (n.data == .class) if (localsOf(c, n)) |l| if (l.get(name)) |s| if (s.flags & F.type_param != 0) return isStaticMember(last);
+    return false;
 }
 
 /// One table holds a function's parameters and what its block declares, but `last`, the way in,
@@ -1316,6 +1334,10 @@ fn unresolvedType(c: *Checker, name: *Node) *Type {
     switch (name.data) {
         .identifier => |v| {
             if (v.len == 0) return c.t_err;
+            if (classTypeParamFromStatic(c, name, v)) {
+                report(c, name, 2302, "Static members cannot reference class type parameters.");
+                return c.t_err;
+            }
             const value = resolveName(c, name, v, F.value);
             if (value != null and value.?.flags & F.namespace == 0) {
                 report(c, name, 2749, c.fmt("'{s}' refers to a value, but is being used as a type here. Did you mean 'typeof {s}'?", .{ v, v }));
