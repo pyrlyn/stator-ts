@@ -64,6 +64,7 @@ compiler/aliasUsageInVarAssignment
 compiler/aliasUsedAsNameValue
 compiler/aliasWithInterfaceExportAssignmentUsedInVarInitializer
 compiler/allowJsClassThisTypeCrash
+compiler/allowJsCrossMonorepoPackage
 compiler/allowSyntheticDefaultImports1
 compiler/allowSyntheticDefaultImports10
 compiler/allowSyntheticDefaultImports4
@@ -532,6 +533,7 @@ compiler/circularReferenceInReturnType2
 compiler/circularTypeofWithFunctionModule
 compiler/circularlySimplifyingConditionalTypesNoCrash
 compiler/cjsExportClassExpressionNameConflict
+compiler/cjsExportGenericTypes
 compiler/cjsExportNamedClassExpressionNoAssignment
 compiler/classAccessorInitializationInferenceWithElementAccess1
 compiler/classAttributeInferenceTemplate
@@ -803,6 +805,7 @@ compiler/commentsVariableStatement1
 compiler/commentsdoNotEmitComments(target=es2015)
 compiler/commentsemitComments(target=es2015)
 compiler/commonJsIsolatedModules
+compiler/commonJsUnusedLocals
 compiler/commonSourceDir1
 compiler/commonSourceDir2
 compiler/commonSourceDir3
@@ -3126,6 +3129,7 @@ compiler/isolatedModulesWithDeclarationFile
 compiler/isolatedModules_resolveJsonModule
 compiler/isolatedModules_resolveJsonModule_strict_outDir_commonJs
 compiler/iterableTReturnTNext(strictbuiltiniteratorreturn=false)
+compiler/iterableTReturnTNext(strictbuiltiniteratorreturn=true)
 compiler/iteratorChunks
 compiler/iteratorConstructorAugmentation
 compiler/iteratorIncludes
@@ -3134,6 +3138,7 @@ compiler/iteratorResultNullishValueAssignment
 compiler/iteratorsAndStrictNullChecks
 compiler/javascriptCommonjsModule
 compiler/javascriptDefinePropertyPrototypeNonConstructor
+compiler/javascriptImportDefaultBadExport
 compiler/javascriptThisAssignmentInStaticBlock
 compiler/jqueryInference
 compiler/jsCheckObjectDefineThisNoCrash
@@ -3163,8 +3168,10 @@ compiler/jsDocOverloadAnonDefaultExport
 compiler/jsDocOverloadNamedDefaultExport
 compiler/jsDocTypedefTagNamespace
 compiler/jsDocTypedefWithThisTag
+compiler/jsElementAccessNoContextualTypeCrash
 compiler/jsEmitIntersectionProperty
 compiler/jsEnumFunctionLocalNoCrash
+compiler/jsEnumTagOnObjectFrozen
 compiler/jsExpandoAssignmentElementAccess
 compiler/jsFileAlternativeUseOfOverloadTag
 compiler/jsFileClassPropertyInitalizationInObjectLiteral
@@ -3301,6 +3308,7 @@ compiler/jsxNamespaceNoElementChildrenAttributeReactJsx(jsx=react-jsxdev)
 compiler/jsxNamespacePrefixIntrinsics
 compiler/jsxNamespaceReexports
 compiler/jsxNamespacedNameNotComparedToNonMatchingIndexSignature
+compiler/jsxNestedIndentation
 compiler/jsxNestedIndentation
 compiler/jsxNestedWithinTernaryParsesCorrectly
 compiler/jsxNumericEntityLoneSurrogate
@@ -5744,6 +5752,7 @@ conformance/asiPreventsParsingAsNamespace04
 conformance/asiPreventsParsingAsNamespace05
 conformance/asiPreventsParsingAsTypeAlias01
 conformance/asiPreventsParsingAsTypeAlias02
+conformance/assertionsAndNonReturningFunctions
 conformance/assignAnyToEveryType
 conformance/assignFromBooleanInterface
 conformance/assignFromBooleanInterface2
@@ -6094,6 +6103,7 @@ conformance/callbackTagNestedParameter
 conformance/checkJsdocParamOnVariableDeclaredFunctionExpression
 conformance/checkJsdocParamTag1
 conformance/checkJsdocReturnTag1
+conformance/checkJsdocReturnTag2
 conformance/checkJsdocSatisfiesTag11
 conformance/checkJsdocSatisfiesTag2
 conformance/checkJsdocSatisfiesTag5
@@ -6264,6 +6274,7 @@ conformance/commaOperatorWithSecondOperandStringType
 conformance/commaOperatorsMultipleOperators
 conformance/commentEmittingInPreserveJsx1
 conformance/commonJSImportAsPrimaryExpression
+conformance/commonJSImportClassTypeReference
 conformance/commonJSImportExportedClassExpression
 conformance/commonJSImportNotAsPrimaryExpression
 conformance/commonJSReexport
@@ -6348,6 +6359,8 @@ conformance/computedPropertyNames37_ES5(target=es2015)
 conformance/computedPropertyNames37_ES6
 conformance/computedPropertyNames3_ES5(target=es2015)
 conformance/computedPropertyNames3_ES6
+conformance/computedPropertyNames40_ES5(target=es2015)
+conformance/computedPropertyNames40_ES6
 conformance/computedPropertyNames41_ES5(target=es2015)
 conformance/computedPropertyNames41_ES6
 conformance/computedPropertyNames42_ES5(target=es2015)
@@ -7631,6 +7644,7 @@ conformance/jsDeclarationsExportAssignedVisibility(target=es2015)
 conformance/jsDeclarationsExportAssignmentWithKeywordName(target=es2015)
 conformance/jsDeclarationsExportDefinePropertyEmit
 conformance/jsDeclarationsExportDoubleAssignmentInClosure
+conformance/jsDeclarationsExportForms(target=es2015)
 conformance/jsDeclarationsExportSpecifierNonlocal(target=es2015)
 conformance/jsDeclarationsExportedClassAliases
 conformance/jsDeclarationsFunctionJSDoc(target=es2015)
@@ -7641,6 +7655,7 @@ conformance/jsDeclarationsFunctionWithDefaultAssignedMember
 conformance/jsDeclarationsGetterSetter
 conformance/jsDeclarationsImportAliasExposedWithinNamespace
 conformance/jsDeclarationsImportAliasExposedWithinNamespaceCjs
+conformance/jsDeclarationsImportNamespacedType
 conformance/jsDeclarationsJSDocRedirectedLookups
 conformance/jsDeclarationsJson(target=es2015)
 conformance/jsDeclarationsMissingGenerics(target=es2015)
@@ -7655,7 +7670,6 @@ conformance/jsDeclarationsReexportedCjsAlias(target=es2015)
 conformance/jsDeclarationsSubclassWithExplicitNoArgumentConstructor
 conformance/jsDeclarationsThisTypes
 conformance/jsDeclarationsTypeAliases
-conformance/jsDeclarationsTypeReassignmentFromDeclaration
 conformance/jsDeclarationsTypeReferences(target=es2015)
 conformance/jsDeclarationsTypeReferences2(target=es2015)
 conformance/jsDeclarationsTypedefAndImportTypes
@@ -7673,6 +7687,7 @@ conformance/jsdocAugments_notAClass
 conformance/jsdocAugments_qualifiedName
 conformance/jsdocBindingInUnreachableCode
 conformance/jsdocClassNoTags
+conformance/jsdocConstructorFunctionTypeReference
 conformance/jsdocDestructuringParameterDeclaration
 conformance/jsdocImplementsTag
 conformance/jsdocImplements_namespacedInterface
@@ -7696,10 +7711,12 @@ conformance/jsdocPrivateName1
 conformance/jsdocReturnTag1
 conformance/jsdocSignatureOnReturnedFunction
 conformance/jsdocTemplateTag2
+conformance/jsdocTemplateTag5
 conformance/jsdocTemplateTag6
 conformance/jsdocTwoLineTypedef
 conformance/jsdocTypeDefAtStartOfFile
 conformance/jsdocTypeParameterTagConflict
+conformance/jsdocTypeReferenceToImport
 conformance/jsdocTypeReferenceToImportOfClassExpression
 conformance/jsdocTypeReferenceToMergedClass
 conformance/jsdocTypeReferenceToValue
@@ -8247,6 +8264,7 @@ conformance/octalIntegerLiteral(target=es2015)
 conformance/octalIntegerLiteralES6
 conformance/optionalBindingParameters1
 conformance/optionalBindingParameters2
+conformance/optionalBindingParameters3
 conformance/optionalBindingParameters4
 conformance/optionalBindingParametersInOverloads1
 conformance/optionalBindingParametersInOverloads2
@@ -8762,6 +8780,7 @@ conformance/parserRegularExpressionDivideAmbiguity6
 conformance/parserRegularExpressionDivideAmbiguity7
 conformance/parserReturnStatement1.d
 conformance/parserReturnStatement3
+conformance/parserReturnStatement4
 conformance/parserReturnStatement4
 conformance/parserS12.11_A3_T4
 conformance/parserS7.3_A1.1_T2
@@ -9899,6 +9918,7 @@ conformance/typeTagOnFunctionReferencesGeneric
 conformance/typeTagOnPropertyAssignment
 conformance/typeTagWithGenericSignature
 conformance/typeValueMerge1
+conformance/typedefCrossModule3
 conformance/typedefCrossModule4
 conformance/typedefModuleExportsIndirect1
 conformance/typedefModuleExportsIndirect2
