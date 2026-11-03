@@ -160,12 +160,23 @@ const Attach = struct {
         const f = n.data.func;
         var it = x.tags(host) orelse return;
         var position: usize = 0;
-        while (it.next()) |tag| switch (tag.kind) {
-            .type, .readonly => {},
+        var seen = false;
+        while (it.next()) |tag| : (seen = true) switch (tag.kind) {
+            // A leading `@type` types the whole function, and the tags after it are ignored.
+            .type => if (!seen) return,
+            .readonly => {},
             .returns => if (f.ret == null and f.kind != .ctor and f.kind != .setter) {
                 f.ret = if (parser.parseCommentType(x.a, x.src, tag.open, tag.close)) |t| t.node else null;
             },
             .param => {
+                if (std.mem.indexOfScalar(u8, tag.name, '.')) |dot| {
+                    // `@param {string} args.text` builds the type of `args` out of properties, which is
+                    // not modeled: `args` takes `any` rather than the `Object` its own tag names.
+                    const p = paramFor(f.params, tag.name[0..dot], f.params.len) orelse continue;
+                    const t = p.type orelse continue;
+                    if (t.start < n.start) t.data = .{ .kw_type = .any };
+                    continue;
+                }
                 defer position += 1;
                 const p = paramFor(f.params, tag.name, position) orelse continue;
                 if (p.type != null) continue;
@@ -277,9 +288,12 @@ fn declaredNames(a: Allocator, src: []const u8, body: usize, end: usize, scope: 
         }
         var j: usize = skipBlank(src, @intCast(i), @intCast(end));
         if (j < end and src[j] == '{') j = (closingBrace(src, @intCast(j), @intCast(end)) orelse continue) + 1;
+        var first = true;
         while (true) {
             j = skipSpaces(src, j, end);
             if (template and j < end and src[j] == '[') j += 1;
+            if (template and first and std.mem.startsWith(u8, src[j..end], "const ")) j = skipSpaces(src, j + "const".len, end);
+            first = false;
             const name_end = identEnd(src, j, end);
             if (name_end == j) break;
             out.append(a, .{ .text = src[j..name_end], .scope = scope }) catch oom();

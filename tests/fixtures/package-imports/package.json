@@ -1,0 +1,9 @@
+{
+  "name": "pkg",
+  "type": "module",
+  "imports": {
+    "#util": "./src/internal/util.ts",
+    "#internal/*": "./src/internal/*.ts",
+    "#cond": { "types": "./src/internal/cond.ts", "default": "./missing.js" }
+  }
+}

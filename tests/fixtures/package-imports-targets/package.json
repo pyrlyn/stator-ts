@@ -1,0 +1,12 @@
+{
+  "name": "package-imports-targets",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#dep": { "require": "./lib/cjs.js", "import": "./lib/esm.js" },
+    "#blocked": { "require": null, "types": "./lib/esm.js" },
+    "#stars/*/and/*": "./lib/esm.js",
+    "#lib/": "./lib/",
+    "#noext": "./lib/esm"
+  }
+}

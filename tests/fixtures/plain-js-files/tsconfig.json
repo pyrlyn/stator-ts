@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "allowJs": true,
+    "noEmit": true,
+    "target": "es2022"
+  },
+  "files": ["plain.js", "checked.js", "unchecked.ts", "typed.ts"]
+}

@@ -378,6 +378,10 @@ pub const Checker = struct {
     bind_call_apply: bool,
     exact_optional: bool,
     no_unchecked_index: bool,
+    no_unused_locals: bool,
+    no_unused_params: bool,
+    /// The meanings each symbol was read as, for `noUnusedLocals` and `noUnusedParameters`.
+    referenced: std.AutoHashMapUnmanaged(*binder.Symbol, u32) = .empty,
 
     t_any: *Type = undefined,
     /// The declared type of a property that only assignments in the constructor give a type.
@@ -470,6 +474,12 @@ pub const Checker = struct {
     const_keys: IdMap(*Node, ?[]const u8) = .empty,
     binding_busy: IdMap(*Node, void) = .empty,
     checked_funcs: IdMap(*Node, void) = .empty,
+    /// Blocks (and function bodies) already told that statements cannot appear in an ambient context.
+    ambient_reported: IdMap(*Node, void) = .empty,
+    /// Statements the binder found unreachable, while `allowUnreachableCode` is false, mapped to
+    /// whether an earlier sibling's error already covers them.
+    dead: IdMap(*Node, bool) = .empty,
+    within_unreachable: bool = false,
     /// A lambda's parameters get their contextual types once, from the first signature to reach it.
     context_assigned: IdMap(*Node, void) = .empty,
     context_assigning: IdMap(*Node, void) = .empty,
@@ -501,6 +511,7 @@ pub const Checker = struct {
     assigned_syms: IdMap(*Symbol, u32) = .empty,
     /// Functions and files already searched for assignments.
     assigned_scopes: IdMap(*Node, void) = .empty,
+    /// JavaScript files, by root, already searched for a CommonJS export or `require`.
     /// The function blocks this checker has parsed for itself.
     bodies: IdMap(*Node, binder.Body) = .empty,
     /// Contextual types pushed for an expression that is being checked against a candidate.
@@ -518,9 +529,13 @@ pub const Checker = struct {
     flow_operands: IdMap(*Node, Provisional) = .empty,
     flow_depth: u32 = 0,
     reach_cache: IdMap(*binder.FlowNode, bool) = .empty,
+    post_super: IdMap(*binder.FlowNode, bool) = .empty,
 
     diags: std.ArrayList(Diag) = .empty,
     seen_diags: std.StringHashMapUnmanaged(void) = .empty,
+    /// Per file, the tslib helpers already looked up and the module they come from.
+    helpers_requested: std.AutoHashMapUnmanaged(*ast.File, u32) = .empty,
+    helpers_module: std.AutoHashMapUnmanaged(*ast.File, ?*binder.Symbol) = .empty,
     /// Files this checker answers for. Another checker owns the rest and reports on them itself.
     owned: IdMap(*ast.File, void) = .empty,
     /// Function bodies wait until the expression that holds them has been fully typed.
@@ -535,6 +550,9 @@ pub const Checker = struct {
     resolving_calls: IdMap(*Node, void) = .empty,
     regular_objs: IdMap(*Type, *Type) = .empty,
     declaring_enums: std.AutoHashMapUnmanaged(*binder.Symbol, void) = .empty,
+    /// Symbols and per-block declaration lists whose overloads were checked (tsc's
+    /// `constructorOrFunctionChecked`).
+    overloads_checked: std.AutoHashMapUnmanaged(*const anyopaque, void) = .empty,
     logical_left: IdMap(*Node, *Type) = .empty,
     current_node: ?*Node = null,
     current_is_type: bool = false,
@@ -569,6 +587,8 @@ pub const Checker = struct {
             .strict_builtin_iterator = o.flag("strictBuiltinIteratorReturn"),
             .exact_optional = o.exactOptionalPropertyTypes orelse false,
             .no_unchecked_index = o.noUncheckedIndexedAccess orelse false,
+            .no_unused_locals = o.noUnusedLocals orelse false,
+            .no_unused_params = o.noUnusedParameters orelse false,
         };
         c.t_any = c.mk(.any);
         c.t_auto = c.mk(.any);

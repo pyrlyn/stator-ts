@@ -1,0 +1,1 @@
+{ "compilerOptions": { "strict": true, "target": "es2022", "module": "es2020", "lib": ["esnext", "esnext.disposable"], "noEmit": true } }

@@ -1,5 +1,6 @@
 //! Types of expressions: names, member access, operators, literals, contextual typing and calls.
 const std = @import("std");
+const project = @import("project.zig");
 const ast = @import("ast.zig");
 const binder = @import("binder.zig");
 const lexer = @import("lexer.zig");
@@ -8,6 +9,7 @@ const d = @import("decls.zig");
 const spelling = @import("spelling.zig");
 const relate = @import("relate.zig");
 const flow = @import("flow.zig");
+const unused = @import("unused.zig");
 const print = @import("print.zig");
 const emit = @import("emit.zig");
 const checker = @import("checker.zig");
@@ -89,7 +91,7 @@ fn quickType(c: *Checker, n: *Node) ?*Type {
         .as_expr => |y| if (isConstRef(y.type)) null else d.typeFromNode(c, y.type),
         .type_assertion => |y| if (isConstRef(y.type)) null else d.typeFromNode(c, y.type),
         .call => |y| blk: {
-            const special = y.callee.data == .import_kw or y.callee.data == .super_expr or namesSymbol(y.callee) or isRequireCall(x);
+            const special = y.callee.data == .import_kw or y.callee.data == .super_expr or namesSymbol(y.callee) or isRequireCall(x, true);
             if (special or y.optional or flow.isOptionalChain(y.callee)) break :blk null;
             const t = nonNull(c, checkSilent(c, y.callee));
             if (t.data != .obj) break :blk null;
@@ -108,10 +110,12 @@ fn quickType(c: *Checker, n: *Node) ?*Type {
     };
 }
 
-fn isRequireCall(n: *Node) bool {
+/// tsc's `isRequireCall`, which asks for a string argument only where the module is resolved.
+pub fn isRequireCall(n: *Node, string_arg: bool) bool {
+    if (n.data != .call) return false;
     const x = n.data.call;
     if (x.callee.data != .identifier or !std.mem.eql(u8, x.callee.data.identifier, "require")) return false;
-    return x.args.len == 1 and (x.args[0].data == .string_lit or x.args[0].data == .no_subst_template);
+    return x.args.len == 1 and (!string_arg or x.args[0].data == .string_lit or x.args[0].data == .no_subst_template);
 }
 
 /// Types an expression without reporting: narrowing reads operands the statement walker visits anyway.
@@ -204,8 +208,13 @@ fn unresolved(c: *Checker, n: *Node, name: []const u8) *Type {
         err(c, n, 2708, c.fmt("Cannot use namespace '{s}' as a value.", .{name}));
         return c.t_unresolved;
     }
-    // tsc lets `exports` stand for the file's own module, which nothing here types yet.
-    if (std.mem.eql(u8, name, "exports")) if (d.fileOf(c, n)) |f| if (f.is_commonjs) return c.t_any;
+    if (commonJsName(c, n, name)) {
+        if (!std.mem.eql(u8, name, "module")) return c.t_any;
+        // tsc gives `module` a single member; the module's own shape is not modelled yet.
+        const m = c.membersFor(1);
+        m.props.put(c.a, "exports", c.create(Prop, .{ .name = "exports", .ty = c.t_any })) catch oom();
+        return c.newObj(.{ .kind = .anon, .members = m });
+    }
     if (hints.get(name)) |code| {
         const sweep = sweepsTypes(c);
         switch (code) {
@@ -267,7 +276,7 @@ pub fn isAssignTarget(n0: *Node) bool {
     return false;
 }
 
-fn isPatternTarget(n0: *Node) bool {
+pub fn isPatternTarget(n0: *Node) bool {
     var n = n0;
     while (n.parent) |p| {
         switch (p.data) {
@@ -745,10 +754,14 @@ fn aliasIsTypeOnly(s: *Symbol) bool {
 /// Builds `this.<name>` as read at the end of `ctor`, for a question no source node asks.
 pub fn thisAccess(c: *Checker, name: *Node, ctor: *Node) ?*Node {
     const end = (d.bodyOf(c, ctor) orelse return null).end_flow orelse return null;
+    return thisAccessAt(c, name, ctor, end);
+}
+
+pub fn thisAccessAt(c: *Checker, name: *Node, owner: *Node, end: *binder.FlowNode) *Node {
     const this = c.a.create(Node) catch oom();
     const ref = c.a.create(Node) catch oom();
-    this.* = .{ .start = ctor.start, .end = ctor.start, .parent = ref, .data = .this_expr };
-    ref.* = Node.atFlow(end, ctor.start, ctor.start, ctor, .{ .prop_access = .{ .expr = this, .name = name, .optional = false } });
+    this.* = .{ .start = owner.start, .end = owner.start, .parent = ref, .data = .this_expr };
+    ref.* = Node.atFlow(end, owner.start, owner.start, owner, .{ .prop_access = .{ .expr = this, .name = name, .optional = false } });
     return ref;
 }
 
@@ -779,6 +792,12 @@ fn thisOfClass(c: *Checker, cls: *Node, is_static: bool) *Type {
 }
 
 pub fn checkThisAt(c: *Checker, n: *Node) *Type {
+    // In JavaScript a function can be a class, which is not modeled.
+    return thisTypeAt(c, n) orelse if (inJs(c, n)) c.t_err else c.t_any;
+}
+
+/// Null where tsc's `tryGetThisTypeAt` finds nothing: `this` is then an implicit `any`.
+fn thisTypeAt(c: *Checker, n: *Node) ?*Type {
     var cur = n.parent;
     while (cur) |x| : (cur = x.parent) {
         switch (x.data) {
@@ -788,12 +807,8 @@ pub fn checkThisAt(c: *Checker, n: *Node) *Type {
                     if (d.thisParam(x)) |p| if (p.data.param.type) |ann| return d.typeFromNode(c, ann);
                     if (x.parent) |p| if (p.data == .property_assign or p.data == .object_lit) return objectThis(c, x);
                     if (contextualThis(c, x)) |t| return t;
-                    // In JavaScript a function can be a class, which is not modeled.
-                    if (inJs(c, x)) return c.t_err;
-                    if (!c.no_implicit_this) return c.t_any;
-                    if (assignedThis(c, x)) |t| return t;
-                    err(c, n, 2683, "'this' implicitly has type 'any' because it does not have a type annotation.");
-                    return c.t_any;
+                    if (d.thisParam(x) != null or checker.jsDocHas(c, x, &.{ "@this", "@type" })) return c.t_err;
+                    return assignedThis(c, x);
                 },
                 .method, .getter, .setter, .ctor => {
                     if (d.thisParam(x)) |p| if (p.data.param.type) |ann| return d.typeFromNode(c, ann);
@@ -812,7 +827,8 @@ pub fn checkThisAt(c: *Checker, n: *Node) *Type {
                 return thisOfClass(c, owner, true);
             },
             // A member does not own its own name: `this` there belongs to what surrounds the literal.
-            .computed_name => return checkThisAt(c, x.parent orelse break),
+            .computed_name => return thisTypeAt(c, x.parent orelse break),
+            .module_decl, .enum_decl => return null,
             .class => {},
             .interface, .type_literal => return d.typeFromNode(c, n),
             else => {},
@@ -821,20 +837,78 @@ pub fn checkThisAt(c: *Checker, n: *Node) *Type {
     return c.t_err;
 }
 
-/// `o.f = function () {}`: the function is about to be called as a member of `o`.
+/// `obj.m = function () { this }` sees `obj`, except `exports.m = ...` in a CommonJS file.
 fn assignedThis(c: *Checker, fnode: *Node) ?*Type {
+    if (!c.no_implicit_this and !inJs(c, fnode)) return null;
     var at = fnode;
-    while (at.parent) |p| : (at = p) {
-        if (p.data != .paren) break;
-    }
+    while (at.parent) |p| : (at = p) if (p.data != .paren) break;
     const p = at.parent orelse return null;
     if (p.data != .binary or !isAssignOp(p.data.binary.op) or p.data.binary.right != at) return null;
-    const target = binder.stripParens(p.data.binary.left);
-    return switch (target.data) {
-        .prop_access => |x| widenFresh(c, checkSilent(c, x.expr)),
-        .elem_access => |x| widenFresh(c, checkSilent(c, x.expr)),
-        else => null,
+    const target = p.data.binary.left;
+    const obj = switch (target.data) {
+        .prop_access => |x| x.expr,
+        .elem_access => |x| x.expr,
+        else => return null,
     };
+    if (obj.data == .identifier and inJs(c, fnode) and commonJsName(c, obj, obj.data.identifier)) return null;
+    return widenFresh(c, checkExpr(c, obj));
+}
+
+/// tsc's `checkThisExpression` diagnostics: where `this` may not appear, and where it is an implicit `any`.
+fn checkThisPlace(c: *Checker, n: *Node) void {
+    var captured = false;
+    var in_computed = false;
+    var cur = n.parent;
+    var container: ?*Node = null;
+    while (cur) |x| : (cur = x.parent) {
+        switch (x.data) {
+            .func => |f| {
+                if (f.kind == .arrow) {
+                    captured = true;
+                    continue;
+                }
+                container = x;
+                break;
+            },
+            .property_decl, .static_block, .module_decl, .enum_decl, .index_sig => {
+                container = x;
+                break;
+            },
+            .computed_name => {
+                // A class member's name is evaluated outside the class body.
+                const member = x.parent orelse continue;
+                if (member.parent) |cls| if (cls.data == .class) {
+                    in_computed = true;
+                    cur = cls;
+                    continue;
+                };
+                // An object literal member's name belongs to what surrounds the literal.
+                cur = member;
+                continue;
+            },
+            .decorator => {
+                // Decorators run outside the class or member they decorate.
+                const owner = x.parent orelse continue;
+                cur = if (owner.data == .param) owner.parent orelse owner else owner;
+                continue;
+            },
+            else => {},
+        }
+    }
+    if (in_computed) {
+        err(c, n, 2465, "'this' cannot be referenced in a computed property name.");
+    } else if (container) |k| switch (k.data) {
+        .module_decl => err(c, n, 2331, "'this' cannot be referenced in a module or namespace body."),
+        .enum_decl => err(c, n, 2332, "'this' cannot be referenced in current location."),
+        else => {},
+    };
+    if (!c.no_implicit_this) return;
+    if (container == null) {
+        const f = d.fileOf(c, n) orelse return;
+        if (captured and !f.is_module) err(c, n, 7041, "The containing arrow function captures the global value of 'this'.");
+        return;
+    }
+    if (thisTypeAt(c, n) == null) err(c, n, 2683, "'this' implicitly has type 'any' because it does not have a type annotation.");
 }
 
 fn contextualThis(c: *Checker, fnode: *Node) ?*Type {
@@ -918,23 +992,16 @@ fn contextualReturn(c: *Checker, fnode: *Node) ?*Type {
     if (f.asterisk) return null;
     if (d.setterAnnotation(c, fnode)) |t| return t;
     const sig = contextualSig(c, fnode) orelse {
-        const t = contextualType(c, immediateCall(fnode) orelse return null) orelse return null;
+        const t = iifeContext(c, fnode) orelse return null;
         return if (fnode.mods.async) asyncReturnContext(c, t) else t;
     };
     const t = d.returnOf(c, sig);
     return if (fnode.mods.async) asyncReturnContext(c, awaitableMembers(c, t)) else t;
 }
 
-/// The call that runs a function expression where it stands.
-fn immediateCall(fnode: *Node) ?*Node {
-    const f = fnode.data.func;
-    if (f.kind != .expr and f.kind != .arrow) return null;
-    var at = fnode;
-    while (at.parent) |p| : (at = p) {
-        if (p.data == .paren) continue;
-        return if (p.data == .call and p.data.call.callee == at) p else null;
-    }
-    return null;
+/// tsc's `getContextualReturnType`: `(() => …)()` returns whatever its call is expected to give.
+fn iifeContext(c: *Checker, fnode: *Node) ?*Type {
+    return contextualType(c, binder.callOnTheSpot(fnode) orelse return null);
 }
 
 fn hasThen(c: *Checker, t: *Type) bool {
@@ -991,7 +1058,7 @@ fn iteratorArg(c: *Checker, t: *Type, ch: Channel, is_async: bool) ?*Type {
 
 pub fn generatorContext(c: *Checker, fnode: *Node, ch: Channel) ?*Type {
     const f = fnode.data.func;
-    const t = if (f.ret) |r| d.typeFromNode(c, r) else d.returnOf(c, contextualSig(c, fnode) orelse return null);
+    const t = if (f.ret) |r| d.typeFromNode(c, r) else if (contextualSig(c, fnode)) |sig| d.returnOf(c, sig) else iifeContext(c, fnode) orelse return null;
     return iteratorArg(c, t, ch, fnode.mods.async);
 }
 
@@ -1251,7 +1318,14 @@ fn rawContext(c: *Checker, n: *Node) ?*Type {
         },
         .call => |x| return argContext(c, p, n, x.args),
         .new_expr => |x| return argContext(c, p, n, x.args),
-        .jsx_expr, .jsx_attr, .jsx_spread_attr => return c.t_err,
+        .jsx_attr => return jsxAttrContext(c, p) orelse c.t_err,
+        .jsx_expr => {
+            const a = p.parent orelse return c.t_err;
+            if (a.data == .jsx_attr) return jsxAttrContext(c, a) orelse c.t_err;
+            if (a.data == .jsx_element) return jsxChildContext(c, p, a) orelse c.t_err;
+            return c.t_err;
+        },
+        .jsx_spread_attr => return c.t_err,
         else => return null,
     }
 }
@@ -2130,12 +2204,12 @@ pub fn predicateFromBody(c: *Checker, s: *Sig, fnode: *Node) ?*T.Pred {
     if (f.body == null) return null;
     const offset: usize = if (d.thisParam(fnode) != null) 1 else 0;
     // A lambda typed from context has no parameter types yet; it is asked again once it does.
-    for (f.params[offset..]) |p| {
+    if (!neverContextual(fnode)) for (f.params[offset..]) |p| {
         if (p.data.param.type == null and p.data.param.init == null and !c.param_types.contains(p)) {
             s.pred_done = false;
             return null;
         }
-    }
+    };
     const body = d.bodyOf(c, fnode).?;
     var single: ?*Node = null;
     if (body.block.data != .block) {
@@ -2162,6 +2236,17 @@ pub fn predicateFromBody(c: *Checker, s: *Sig, fnode: *Node) ?*T.Pred {
         }
     }
     return null;
+}
+
+/// No context ever types this function's parameters, so the untyped ones stay `any`.
+fn neverContextual(fnode: *Node) bool {
+    const parent = fnode.parent orelse return false;
+    return switch (fnode.data.func.kind) {
+        .decl => true,
+        .method => parent.data == .class,
+        .arrow, .expr => parent.data == .var_decl and parent.data.var_decl.type == null,
+        else => false,
+    };
 }
 
 /// The initializer of a `const` declared without a type, which flow may read through.
@@ -2444,7 +2529,10 @@ pub fn iteratedOf(c: *Checker, n: *Node, t: *Type, is_await: bool) *Type {
             const v = d.getProp(c, m, "value") orelse continue;
             parts.append(c.a, d.propType(c, v)) catch oom();
         }
-        return if (parts.items.len == 0) c.t_err else c.getUnion(parts.items);
+        if (parts.items.len == 0) return c.t_err;
+        const v = c.getUnion(parts.items);
+        // `for await` over a sync iterable waits for each value it yields.
+        return if (is_await and std.mem.eql(u8, key, "__@iterator")) awaitedOf(c, v) else v;
     }
     if (t.data == .param or t.data == .access or t.data == .cond or t.data == .inter) {
         const k = d.baseConstraint(c, t);
@@ -2555,10 +2643,16 @@ pub fn destructuredType(c: *Checker, parent: *Type, pat: *Node, el: *Node) *Type
         }
         if (base.data == .unknown or base.vars and base.data != .obj) {
             const ap = d.getApparent(c, base);
-            if (d.getProp(c, ap, name)) |p| return d.propType(c, p);
+            if (d.getProp(c, ap, name)) |p| {
+                unused.noteProperty(c, el, p);
+                return d.propType(c, p);
+            }
             return c.t_err;
         }
-        if (d.getProp(c, base, name)) |p| return d.propType(c, p);
+        if (d.getProp(c, base, name)) |p| {
+            unused.noteProperty(c, el, p);
+            return d.propType(c, p);
+        }
         if (d.indexValue(c, base, d.nameToKey(c, name))) |v| return if (c.no_unchecked_index) d.addOptional(c, v) else v;
         if (base.data == .obj and (base.data.obj.open or base.data.obj.any_base)) return c.t_err;
         err(c, key, 2339, c.fmt("Property '{s}' does not exist on type '{s}'.", .{ name, show(c, base) }));
@@ -2622,6 +2716,7 @@ fn restOf(c: *Checker, t: *Type, skip: []const []const u8) *Type {
         if (p.private or p.protected or p.method) continue;
         const q = c.create(Prop, p.*);
         q.ty = d.propType(c, p);
+        // tsc's `getSpreadSymbol(prop, false)`: the rest is a fresh object the code owns.
         q.readonly = false;
         m.props.put(c.a, p.name, q) catch oom();
     }
@@ -2633,7 +2728,7 @@ fn isDestructuringTarget(n: *Node) bool {
     const p = n.parent orelse return false;
     return switch (p.data) {
         .binary => |x| x.op == .assign and x.left == n,
-        .array_lit => isDestructuringTarget(p),
+        .array_lit, .spread_elem => isDestructuringTarget(p),
         .property_assign => |x| x.value == n and if (p.parent) |o| isDestructuringTarget(o) else false,
         else => false,
     };
@@ -2712,7 +2807,8 @@ pub fn assignedType(c: *Checker, n: *Node) ?*Type {
 fn exprName(c: *Checker, n: *Node) ?[]const u8 {
     return switch (n.data) {
         .identifier => |v| v,
-        .this_expr => "this",
+        // tsc parses `this` in `typeof this.x` as a name; elsewhere it is no entity name.
+        .this_expr => if (inTypeQuery(n)) "this" else null,
         .paren => |x| exprName(c, x.expr),
         .prop_access => |x| blk: {
             const l = exprName(c, x.expr) orelse break :blk null;
@@ -2721,6 +2817,16 @@ fn exprName(c: *Checker, n: *Node) ?[]const u8 {
         .non_null => |x| exprName(c, x.expr),
         else => null,
     };
+}
+
+fn inTypeQuery(n: *Node) bool {
+    var cur = n.parent;
+    while (cur) |x| : (cur = x.parent) switch (x.data) {
+        .type_query => return true,
+        .prop_access, .qualified_name => {},
+        else => return false,
+    };
+    return false;
 }
 
 fn nullFlags(t: *Type) struct { n: bool, u: bool } {
@@ -2846,6 +2952,37 @@ fn checkVisibility(c: *Checker, n: *Node, left: *Type, p: *Prop, name_node: *Nod
     err(c, name_node, 2445, c.fmt("Property '{s}' is protected and only accessible within class '{s}' and its subclasses.", .{ name, cls }));
 }
 
+/// tsc's `checkPrivateIdentifierPropertyAccess`: a private name is the declaring class's own, so
+/// only code inside that class reaches it, and a nearer class with the same name hides it.
+fn privateNameOutside(c: *Checker, n: *Node, left: *Type, p: *Prop, name_node: *Node) bool {
+    if (p.name.len == 0 or p.name[0] != '#') return false;
+    const owner = ownerClass(p.decl orelse return false) orelse return false;
+    var cur = enclosingClass(n);
+    while (cur) |x| : (cur = enclosingClass(x)) {
+        if (x == owner) return false;
+        if (!declaresPrivate(x, p.name)) continue;
+        // A subclass's own `#x` hides this class's in the member table, but tsc keeps both.
+        if (derivesFrom(c, owner, x)) return false;
+        var up: ?*Node = x;
+        while (up) |y| : (up = y.parent) if (y == owner) {
+            err(c, name_node, 18014, c.fmt("The property '{s}' cannot be accessed on type '{s}' within this class because it is shadowed by another private identifier with the same spelling.", .{ p.name, show(c, left) }));
+            return true;
+        };
+        break;
+    }
+    const cls = if (owner.symbol()) |s| s.name else "?";
+    err(c, name_node, 18013, c.fmt("Property '{s}' is not accessible outside class '{s}' because it has a private identifier.", .{ p.name, cls }));
+    return true;
+}
+
+fn declaresPrivate(cls: *Node, name: []const u8) bool {
+    for (cls.data.class.members) |m| {
+        const nm = binder.nameNode(m) orelse continue;
+        if (nm.data == .private_name and std.mem.eql(u8, nm.data.private_name, name)) return true;
+    }
+    return false;
+}
+
 /// A function written outside the class may still declare, or be promised, a `this` of it.
 fn thisDerivesFrom(c: *Checker, n: *Node, owner: ?*Node) bool {
     const sym = (owner orelse return false).symbol() orelse return false;
@@ -2886,15 +3023,28 @@ fn baseHas(c: *Checker, t: *Type, b: *Node, depth: u32) bool {
     return false;
 }
 
+/// An instance read of a member that exists only on the class itself.
+fn hasStaticProp(c: *Checker, t: *Type, name: []const u8) bool {
+    const h = if (t.data == .obj and t.data.obj.kind == .ref) t.data.obj.target.? else t;
+    if (h.data != .obj) return false;
+    const s = h.data.obj.sym orelse return false;
+    if (s.flags & F.class == 0) return false;
+    const p = d.getProp(c, d.typeOfSymbol(c, s), name) orelse return false;
+    const decl = p.decl orelse (p.sym orelse return false).value_decl orelse return false;
+    return decl.mods.static;
+}
+
 fn missingProp(c: *Checker, n: *Node, name_node: *Node, name: []const u8, t: *Type) void {
+    // A private name the type has but this code cannot reach is `privateNameOutside`'s.
     if (name.len > 0 and name[0] == '#') {
-        err(c, name_node, 18013, c.fmt("Property '{s}' is not accessible outside class because it has a private identifier.", .{name}));
+        err(c, name_node, 2339, c.fmt("Property '{s}' does not exist on type '{s}'.", .{ name, show(c, t) }));
         return;
     }
     _ = n;
     const ap = d.getApparent(c, t);
-    if (hasStaticMember(c, t, name)) {
-        err(c, name_node, 2576, c.fmt("Property '{s}' does not exist on type '{s}'. Did you mean to access the static member '{s}.{s}' instead?", .{ name, show(c, t), show(c, t), name }));
+    if (hasStaticProp(c, t, name)) {
+        const shown = show(c, t);
+        err(c, name_node, 2576, c.fmt("Property '{s}' does not exist on type '{s}'. Did you mean to access the static member '{s}.{s}' instead?", .{ name, shown, shown, name }));
         return;
     }
     // An empty name is the parser's stand-in for one that is missing, and it has said so already.
@@ -2906,17 +3056,6 @@ fn missingProp(c: *Checker, n: *Node, name_node: *Node, name: []const u8, t: *Ty
     }
 }
 
-/// Whether the class of `t` has `name`, as a static, where only an instance was asked.
-fn hasStaticMember(c: *Checker, t: *Type, name: []const u8) bool {
-    if (t.data != .obj) return false;
-    const o = t.data.obj;
-    const s = o.sym orelse if (o.target) |g| g.data.obj.sym orelse return false else return false;
-    if (s.flags & F.class == 0) return false;
-    const p = d.getProp(c, d.typeOfSymbol(c, s), name) orelse return false;
-    const decl = p.decl orelse if (p.sym) |k| k.value_decl orelse return false else return false;
-    return decl.mods.static;
-}
-
 /// JavaScript adds members to functions and classes in ways that are not modeled.
 fn declaredInJs(c: *Checker, s: *Symbol) bool {
     return s.decls.len > 0 and inJs(c, s.decls[0]);
@@ -2924,8 +3063,32 @@ fn declaredInJs(c: *Checker, s: *Symbol) bool {
 
 pub fn inJs(c: *Checker, n: *Node) bool {
     const f = d.fileOf(c, n) orelse return false;
-    for ([_][]const u8{ ".js", ".jsx", ".mjs", ".cjs" }) |ext| if (std.mem.endsWith(u8, f.path, ext)) return true;
-    return false;
+    return project.isJsFile(f.path);
+}
+
+/// tsc's binder declares `module` and `exports` in a JavaScript file it saw export through
+/// CommonJS, and its name resolver takes `require` in `require(x)` as the module loader.
+pub fn commonJsName(c: *Checker, n: *Node, name: []const u8) bool {
+    if (!inJs(c, n)) return false;
+    if (std.mem.eql(u8, name, "require")) {
+        const p = n.parent orelse return false;
+        return isRequireCall(p, false) and p.data.call.callee == n;
+    }
+    if (!std.mem.eql(u8, name, "module") and !std.mem.eql(u8, name, "exports")) return false;
+    const f = d.fileOf(c, n) orelse return false;
+    return f.is_commonjs;
+}
+
+fn isIdent(n: *Node, name: []const u8) bool {
+    return n.data == .identifier and std.mem.eql(u8, n.data.identifier, name);
+}
+
+fn isModuleExports(n: *Node) bool {
+    return n.data == .prop_access and isIdent(n.data.prop_access.expr, "module") and isIdent(n.data.prop_access.name, "exports");
+}
+
+fn isExportsRef(n: *Node) bool {
+    return isIdent(n, "exports") or isModuleExports(n);
 }
 
 /// `import * as f from 'cjs'` under interop: the module comes back as `default`.
@@ -3044,13 +3207,16 @@ fn propAccessType(c: *Checker, n: *Node, left: *Type, name_node: *Node, name: []
         missingProp(c, n, name_node, name, left);
         return c.t_unresolved;
     };
+    if (privateNameOutside(c, n, left, p, name_node)) return c.t_err;
     checkVisibility(c, n, left, p, name_node);
+    unused.noteProperty(c, n, p);
+    checkUsedBeforeInit(c, n, p, name_node);
     if (isWriteOnly(n)) return d.propWriteType(c, p);
     const declared = d.propType(c, p);
     if (n.flow() == null or T.isAny(declared)) return declared;
     if (p.method and declared.data != .union_) return declared;
     const narrowable = narrowableRef(c, n, declared);
-    if (c.strict_null and addedHere(n, p)) {
+    if (c.strict_null and addedHere(c, n, p)) {
         const r = flow.flowType(c, n, narrowable, d.addOptional(c, narrowable), containingFunc(n));
         if (!canBeUndefined(narrowable) and canBeUndefined(r)) {
             err(c, name_node, 2565, c.fmt("Property '{s}' is used before being assigned.", .{name}));
@@ -3061,9 +3227,160 @@ fn propAccessType(c: *Checker, n: *Node, left: *Type, name_node: *Node, name: []
     return flow.flowType(c, n, narrowable, narrowable, containingFunc(n));
 }
 
+/// Field initializers and static blocks run in document order, before the fields below them exist.
+fn checkUsedBeforeInit(c: *Checker, n: *Node, p: *Prop, name_node: *Node) void {
+    const decl = (if (p.sym) |s| s.value_decl else null) orelse p.decl orelse return;
+    if (d.fileOf(c, n)) |f| if (f.is_dts) return;
+    if (!inFieldInitializer(n)) return;
+    if (decl.data == .property_decl and decl.data.property_decl.question and !decl.mods.accessor) return;
+    if (n.data == .prop_access and isAccess(n.data.prop_access.expr)) return;
+    if (decl.data == .func and decl.data.func.kind == .method and decl.mods.static) return;
+    if (memberDeclaredBefore(c, decl, n, name_node)) return;
+    // Without define semantics the base class's field is already there when the derived initializer runs.
+    if (!useDefineForClassFields(c) and declaredInBaseClass(c, decl, p.name)) return;
+    err(c, name_node, 2729, c.fmt("Property '{s}' is used before its initialization.", .{ast.memberText(name_node)}));
+}
+
+fn isAccess(n: *Node) bool {
+    return n.data == .prop_access or n.data == .elem_access;
+}
+
+fn inFieldInitializer(n: *Node) bool {
+    var prev = n;
+    var cur = n.parent;
+    while (cur) |x| : ({
+        prev = x;
+        cur = x.parent;
+    }) switch (x.data) {
+        .property_decl, .static_block => return true,
+        .type_query, .jsx_closing => return false,
+        // A function body runs later, but its computed name is evaluated in place.
+        .func => |f| if (f.kind == .arrow or prev == f.body) return false,
+        else => {},
+    };
+    return false;
+}
+
+pub fn useDefineForClassFields(c: *Checker) bool {
+    const o = c.prog.cfg.options;
+    return o.useDefineForClassFields orelse (d.targetYear(o.target orelse "esnext") >= 2022);
+}
+
+/// Fields are emitted as class fields, so a parameter property is assigned after them.
+fn emitStandardClassFields(c: *Checker) bool {
+    return useDefineForClassFields(c) and d.targetYear(c.prog.cfg.options.target orelse "esnext") >= 2022;
+}
+
+fn declaredInBaseClass(c: *Checker, decl: *Node, name: []const u8) bool {
+    const cls = enclosingClass(decl) orelse return false;
+    const s = cls.symbol() orelse return false;
+    const bases = d.basesOf(c, d.declaredType(c, s));
+    if (bases.len == 0) return false;
+    const bp = d.getProp(c, bases[0], name) orelse return false;
+    return (bp.sym orelse return false).value_decl != null;
+}
+
+fn isParamProperty(n: *Node) bool {
+    return n.data == .param and d.isParamProp(n);
+}
+
+/// tsc's `isBlockScopedNameDeclaredBeforeUse` for a class member read through `access`.
+fn memberDeclaredBefore(c: *Checker, decl: *Node, access: *Node, usage: *Node) bool {
+    if (d.fileOf(c, decl) != d.fileOf(c, usage)) return true;
+    const container = blockScopeContainer(decl);
+    const uninitialized_this = decl.data == .property_decl and access.data == .prop_access and
+        access.data.prop_access.expr.data == .this_expr and decl.data.property_decl.init == null and !decl.data.property_decl.excl;
+    if (decl.start <= usage.start and !uninitialized_this) {
+        if (decl.data == .property_decl) return !referencedWithin(decl, usage, false);
+        if (isParamProperty(decl)) return !(emitStandardClassFields(c) and enclosingClass(decl) == enclosingClass(usage) and usedDeferred(c, usage, decl, container));
+        return true;
+    }
+    if (usedDeferred(c, usage, decl, container)) {
+        if (emitStandardClassFields(c) and (decl.data == .property_decl or isParamProperty(decl))) return !referencedWithin(decl, usage, true);
+        return true;
+    }
+    return false;
+}
+
+fn blockScopeContainer(n: *Node) ?*Node {
+    var cur = n.parent;
+    while (cur) |x| : (cur = x.parent) switch (x.data) {
+        .switch_stmt, .catch_clause, .module_decl, .for_stmt, .for_in, .for_of, .func, .property_decl, .static_block => return x,
+        .block => if (x.parent == null or (x.parent.?.data != .func and x.parent.?.data != .static_block)) return x,
+        else => if (x.parent == null) return x,
+    };
+    return null;
+}
+
+/// tsc's `isUsedInFunctionOrInstanceProperty`: the read happens only after the declaration has run.
+fn usedDeferred(c: *Checker, usage: *Node, decl: *Node, container: ?*Node) bool {
+    var cur: ?*Node = usage;
+    while (cur) |x| : (cur = x.parent) {
+        if (x == container) return false;
+        switch (x.data) {
+            .func => if (!isCallee(x)) return true,
+            .static_block => if (decl.start < usage.start) return true,
+            else => {},
+        }
+        const p = x.parent orelse continue;
+        if (p.data != .property_decl or p.data.property_decl.init != x) continue;
+        if (p.mods.static) {
+            if (decl.data == .func and decl.data.func.kind == .method) return true;
+            if (decl.data == .property_decl and enclosingClass(usage) == decl.parent and initializedInStaticBlocks(c, decl, x.start)) return true;
+        } else {
+            const instance_field = decl.data == .property_decl and !decl.mods.static;
+            if (!instance_field or enclosingClass(usage) != enclosingClass(decl)) return true;
+        }
+    }
+    return false;
+}
+
+/// tsc's `isPropertyInitializedInStaticBlocks`: blocks run in document order, so only those above `until` count.
+fn initializedInStaticBlocks(c: *Checker, decl: *Node, until: u32) bool {
+    const name = decl.data.property_decl.name;
+    if (name.data != .identifier and name.data != .private_name) return false;
+    const cls = decl.parent orelse return false;
+    const t = d.typeOfSymbol(c, decl.symbol() orelse return false);
+    for (cls.data.class.members) |m| {
+        if (m.data != .static_block or m.start > until) continue;
+        // A block that never completes leaves nothing unassigned behind it.
+        const end = m.data.static_block.end_flow orelse return true;
+        const r = flow.flowType(c, thisAccessAt(c, name, m, end), t, d.addOptional(c, t), m);
+        if (!canBeUndefined(r)) return true;
+    }
+    return false;
+}
+
+/// tsc's `isPropertyImmediatelyReferencedWithinDeclaration`.
+fn referencedWithin(decl: *Node, usage: *Node, stop_at_any_field: bool) bool {
+    if (usage.end > decl.end) return false;
+    var prev = usage;
+    var cur: ?*Node = usage;
+    while (cur) |x| : ({
+        prev = x;
+        cur = x.parent;
+    }) {
+        if (x == decl) break;
+        switch (x.data) {
+            .func => |f| switch (f.kind) {
+                .arrow => return false,
+                .method, .getter, .setter => if (prev == f.body) return false,
+                else => {},
+            },
+            .property_decl => return stop_at_any_field and
+                ((decl.data == .property_decl and x.parent == decl.parent) or
+                    (isParamProperty(decl) and decl.parent != null and x.parent == decl.parent.?.parent)),
+            else => {},
+        }
+    }
+    return true;
+}
+
 /// `f.x` next to the `f.x = 1` that declares it: the property exists only past that statement.
-fn addedHere(n: *Node, p: *T.Prop) bool {
+fn addedHere(c: *Checker, n: *Node, p: *T.Prop) bool {
     const decl = (p.sym orelse return false).value_decl orelse return false;
+    // tsc's strictPropertyInitialization rule for `this.x` looks only at declared fields.
+    if (c.strict_prop_init and n.data == .prop_access and n.data.prop_access.expr.data == .this_expr) return false;
     return decl.data == .prop_access and flowScope(n) == flowScope(decl);
 }
 
@@ -3073,8 +3390,28 @@ fn canBeUndefined(t: *Type) bool {
     return false;
 }
 
-/// `super` is the base instance in an instance member and the base class in a static one.
-fn superValue(c: *Checker, n: *Node) *Type {
+/// tsc's `checkThisBeforeSuper`, for `this` or `super` directly in a derived class's constructor:
+/// an arrow function may run later, so one in between ends the check.
+fn checkBeforeSuper(c: *Checker, n: *Node, code: u32, msg: []const u8) void {
+    const ctor = blk: {
+        var cur = n.parent;
+        while (cur) |x| : (cur = x.parent) switch (x.data) {
+            .func => |f| break :blk if (f.kind == .ctor) x else return,
+            .property_decl, .class, .computed_name, .static_block, .decorator => return,
+            else => {},
+        };
+        return;
+    };
+    const cls = ctor.parent orelse return;
+    if (cls.data != .class) return;
+    const base = d.extendsClause(cls) orelse return;
+    if (binder.stripParens(base.data.expr_with_type_args.expr).data == .null_lit) return;
+    const f = n.flow() orelse return;
+    if (!flow.isPostSuper(c, f)) err(c, n, code, msg);
+}
+
+/// In static code `super` is the base class's constructor, elsewhere an instance of it.
+fn superType(c: *Checker, n: *Node) *Type {
     const info = superBase(c, n) orelse return c.t_err;
     if (!info.is_static) return info.base;
     const s = if (info.base.data == .obj) info.base.data.obj.sym else null;
@@ -3083,7 +3420,8 @@ fn superValue(c: *Checker, n: *Node) *Type {
 
 fn checkSuperProp(c: *Checker, n: *Node, name: []const u8) *Type {
     const x = n.data.prop_access;
-    const base = superValue(c, n);
+    checkBeforeSuper(c, x.expr, 17011, "'super' must be called before accessing a property of 'super' in the constructor of a derived class.");
+    const base = superType(c, n);
     if (base == c.t_err) return base;
     if (T.isAny(base)) return base;
     const p = d.getProp(c, base, name) orelse {
@@ -3267,8 +3605,16 @@ fn anyKeyValue(c: *Checker, n: *Node, index_node: *Node, idx: *Type, left: *Type
 }
 
 fn reportImplicitIndex(c: *Checker, n: *Node, index_node: *Node, idx: *Type, left: *Type, ap: *Type) void {
-    if (d.indexValue(c, ap, c.t_number) != null) {
+    const name = d.literalName(c, idx);
+    const file = d.fileOf(c, n);
+    if (name != null and file != null and hasStaticProp(c, left, name.?)) {
+        const shown = show(c, left);
+        const arg = file.?.src[index_node.start..index_node.end];
+        err(c, n, 2576, c.fmt("Property '{s}' does not exist on type '{s}'. Did you mean to access the static member '{s}[{s}]' instead?", .{ name.?, shown, shown, arg }));
+    } else if (d.indexValue(c, ap, c.t_number) != null) {
         err(c, index_node, 7015, "Element implicitly has an 'any' type because index expression is not of type 'number'.");
+    } else if (if (name) |nm| similarProp(c, nm, ap) else null) |close| {
+        err(c, index_node, 2551, c.fmt("Property '{s}' does not exist on type '{s}'. Did you mean '{s}'?", .{ name.?, show(c, left), close }));
     } else {
         err(c, n, 7053, c.fmt("Element implicitly has an 'any' type because expression of type '{s}' can't be used to index type '{s}'.", .{ show(c, idx), show(c, left) }));
     }
@@ -3471,21 +3817,25 @@ fn checkObjectLit(c: *Checker, n: *Node) *Type {
             },
             .func => |f| {
                 const nm = f.name orelse continue;
-                const name = propNameOf(c, nm) orelse {
-                    const key = if (f.kind == .setter) null else computedKeyOf(c, nm);
-                    if (key) |k| {
-                        const v = checkFunctionExpr(c, p);
-                        computed.append(c.a, .{ .key = k, .ty = if (f.kind == .getter) d.returnOf(c, d.sigOfDecl(c, p)) else v }) catch oom();
-                    } else open = true;
-                    continue;
-                };
-                if (f.kind == .getter or f.kind == .setter) {
+                const is_accessor = f.kind == .getter or f.kind == .setter;
+                // An accessor's body, and with it a computed name, is checked once the literal is done.
+                if (is_accessor) {
                     if (d.outerTParams(c, p).len > 0) vars = true;
                     assignContext(c, p);
                     if (!quiet(c)) {
                         const gop = c.checked_funcs.getOrPut(c.a, p) catch oom();
                         if (!gop.found_existing) c.deferred.append(c.a, p) catch oom();
                     }
+                }
+                const name = propNameOf(c, nm) orelse {
+                    const key = if (f.kind == .setter) null else computedKeyOf(c, nm);
+                    if (key) |k| {
+                        const ty = if (f.kind == .getter) d.returnOf(c, d.sigOfDecl(c, p)) else checkFunctionExpr(c, p);
+                        computed.append(c.a, .{ .key = k, .ty = ty }) catch oom();
+                    } else open = true;
+                    continue;
+                };
+                if (is_accessor) {
                     if (p.symbol()) |s| m.props.put(c.a, name, c.create(Prop, .{ .name = name, .sym = s, .readonly = f.kind == .getter and s.flags & F.setter == 0, .decl = p })) catch oom();
                     continue;
                 }
@@ -3765,10 +4115,14 @@ fn isStringLike(c: *Checker, t: *Type) bool {
     return relate.isAssignable(c, t, c.t_string) and t.data != .never;
 }
 
+fn isArithOperand(c: *Checker, t: *Type) bool {
+    if (T.isAny(t) or isNumberLike(c, t) or isBigLike(c, t)) return true;
+    return t.vars and isNumberLike(c, d.baseConstraint(c, t));
+}
+
 fn arithOperand(c: *Checker, t0: *Type, n: *Node, code: u32) void {
     const t = checkNonNull(c, t0, n);
-    if (T.isAny(t) or isNumberLike(c, t) or isBigLike(c, t)) return;
-    if (t.vars) if (isNumberLike(c, d.baseConstraint(c, t))) return;
+    if (isArithOperand(c, t)) return;
     err(c, n, code, if (code == 2362) "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type." else "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
 }
 
@@ -3842,13 +4196,169 @@ fn checkBinary(c: *Checker, n: *Node) *Type {
     if (isAssignOp(op)) return checkCompound(c, n);
     if (op == .comma) {
         _ = checkExpr(c, x.left);
+        if (!(c.prog.cfg.options.allowUnreachableCode orelse false) and isSideEffectFree(x.left) and !isIndirectCall(n) and !inJsxParentError(c, x.left)) {
+            err(c, x.left, 2695, "Left side of comma operator is unused and has no side effects.");
+        }
         return checkExpr(c, x.right);
     }
     const l0 = checkExpr(c, x.left);
     // Checking the left operand again for each right one's context is exponential on `a || b || c`.
     if (op == .pipe2 or op == .qq) c.logical_left.put(c.a, n, l0) catch oom();
     const r0 = checkExpr(c, x.right);
+    if (op == .amp2 or op == .pipe2) checkTruthiness(c, l0, x.left);
+    if (op == .qq) checkNullishLeft(c, x.left);
     return binaryResult(c, n, op, x.left, x.right, l0, r0);
+}
+
+/// tsc's `checkTruthinessExpression`: a condition is checked, then tested for truthiness.
+pub fn checkCondition(c: *Checker, n: *Node) *Type {
+    const t = checkExpression(c, n);
+    checkTruthiness(c, t, n);
+    return t;
+}
+
+/// tsc's `checkTruthinessOfType`: `void` cannot be tested, and some expressions can be told
+/// truthy or falsy from their syntax alone.
+fn checkTruthiness(c: *Checker, t: *Type, n: *Node) void {
+    if (t.data == .void) return err(c, n, 1345, "An expression of type 'void' cannot be tested for truthiness.");
+    switch (truthySemantics(c, n)) {
+        .always => errSpan(c, n, spanStart(c, n), n.end, 2872, "This kind of expression is always truthy."),
+        .never => errSpan(c, n, spanStart(c, n), n.end, 2873, "This kind of expression is always falsy."),
+        else => {},
+    }
+}
+
+/// Where tsc's `getErrorSpanForNode` starts: at the name of a named function or class
+/// expression, and at the keyword of `x satisfies T`.
+fn spanStart(c: *Checker, n: *Node) u32 {
+    return switch (n.data) {
+        .func => |f| if (f.name) |name| name.start else n.start,
+        .class => |k| if (k.name) |name| name.start else n.start,
+        .satisfies_expr => |x| blk: {
+            const f = d.fileOf(c, n) orelse break :blk n.start;
+            break :blk skipTrivia(f.src, x.expr.end);
+        },
+        else => n.start,
+    };
+}
+
+pub fn skipTrivia(src: []const u8, from: u32) u32 {
+    var i: usize = from;
+    while (i < src.len) {
+        if (std.ascii.isWhitespace(src[i])) {
+            i += 1;
+        } else if (std.mem.startsWith(u8, src[i..], "//")) {
+            i = std.mem.indexOfScalarPos(u8, src, i, '\n') orelse src.len;
+        } else if (std.mem.startsWith(u8, src[i..], "/*")) {
+            i = if (std.mem.indexOfPos(u8, src, i + 2, "*/")) |e| e + 2 else src.len;
+        } else break;
+    }
+    return @intCast(i);
+}
+
+/// tsc's `skipOuterExpressions` with `OuterExpressionKinds.All`.
+fn skipOuter(n0: *Node) *Node {
+    var n = binder.stripParens(n0);
+    while (n.data == .expr_with_type_args) n = binder.stripParens(n.data.expr_with_type_args.expr);
+    return n;
+}
+
+/// tsc's `PredicateSemantics`: whether a predicate holds always, never, or either way.
+const Semantics = enum(u2) {
+    none = 0,
+    always = 1,
+    never = 2,
+    sometimes = 3,
+
+    fn either(a: Semantics, b: Semantics) Semantics {
+        return @enumFromInt(@intFromEnum(a) | @intFromEnum(b));
+    }
+};
+
+fn isUndefinedName(c: *Checker, n: *Node) bool {
+    return n.data == .identifier and std.mem.eql(u8, n.data.identifier, "undefined") and symbolOf(c, n) == null;
+}
+
+/// tsc's `getSyntacticTruthySemantics`.
+fn truthySemantics(c: *Checker, n0: *Node) Semantics {
+    const n = skipOuter(n0);
+    return switch (n.data) {
+        // `while (0)` and `while (1)` are idioms, not mistakes.
+        .numeric_lit => |v| if (emit.parseNumber(v)) |x| if (x == 0 or x == 1) .sometimes else .always else .always,
+        .array_lit, .bigint_lit, .object_lit, .regex_lit, .jsx_element, .jsx_self_closing => .always,
+        .func => |f| if (f.kind == .expr or f.kind == .arrow) .always else .sometimes,
+        .class => |k| if (k.is_expr) .always else .sometimes,
+        .void_expr, .null_lit => .never,
+        .string_lit, .no_subst_template => |v| if (v.len > 0) .always else .never,
+        .conditional => |x| truthySemantics(c, x.then).either(truthySemantics(c, x.els)),
+        .identifier => if (isUndefinedName(c, n)) .never else .sometimes,
+        else => .sometimes,
+    };
+}
+
+/// tsc's `checkNullishCoalesceOperandLeft`.
+fn checkNullishLeft(c: *Checker, left: *Node) void {
+    const target = skipOuter(left);
+    switch (nullishSemantics(c, target)) {
+        .always => err(c, target, 2871, "This expression is always nullish."),
+        .never => err(c, target, 2869, "Right operand of ?? is unreachable because the left operand is never nullish."),
+        else => {},
+    }
+}
+
+/// tsc's `getSyntacticNullishnessSemantics`.
+fn nullishSemantics(c: *Checker, n0: *Node) Semantics {
+    const n = skipOuter(n0);
+    return switch (n.data) {
+        .await_expr, .call, .tagged_template, .elem_access, .meta_property, .new_expr, .prop_access, .yield_expr, .this_expr => .sometimes,
+        .binary => |x| switch (x.op) {
+            .pipe2, .pipe2_assign, .amp2, .amp2_assign => .sometimes,
+            // The right operand is the value.
+            .comma, .assign => nullishSemantics(c, x.right),
+            .qq, .qq_assign => blk: {
+                const l = nullishSemantics(c, x.left);
+                var out: Semantics = if (@intFromEnum(l) & @intFromEnum(Semantics.never) != 0) .never else .none;
+                if (@intFromEnum(l) & @intFromEnum(Semantics.always) != 0) out = out.either(nullishSemantics(c, x.right));
+                break :blk out;
+            },
+            else => .never,
+        },
+        .conditional => |x| nullishSemantics(c, x.then).either(nullishSemantics(c, x.els)),
+        .null_lit => .always,
+        .identifier => if (isUndefinedName(c, n)) .always else .sometimes,
+        else => .never,
+    };
+}
+
+fn isSideEffectFree(n0: *Node) bool {
+    const n = binder.stripParens(n0);
+    return switch (n.data) {
+        .identifier, .string_lit, .regex_lit, .tagged_template, .template_expr, .no_subst_template, .numeric_lit, .bigint_lit, .true_lit, .false_lit, .null_lit, .array_lit, .object_lit, .typeof_expr, .non_null, .jsx_self_closing, .jsx_element => true,
+        .func => |f| f.kind == .expr or f.kind == .arrow,
+        .class => |k| k.is_expr,
+        .conditional => |x| isSideEffectFree(x.then) and isSideEffectFree(x.els),
+        .binary => |x| !x.op.isAssignment() and isSideEffectFree(x.left) and isSideEffectFree(x.right),
+        .prefix => |x| x.op == .bang or x.op == .plus or x.op == .minus or x.op == .tilde,
+        else => false,
+    };
+}
+
+/// `(0, x.f)(…)` and `(0, eval)(…)` call without passing `this`, which is the point of the `0`.
+fn isIndirectCall(n: *Node) bool {
+    const x = n.data.binary;
+    const p = n.parent orelse return false;
+    if (p.data != .paren or x.left.data != .numeric_lit or !std.mem.eql(u8, x.left.data.numeric_lit, "0")) return false;
+    const pp = p.parent orelse return false;
+    const called = (pp.data == .call and pp.data.call.callee == p) or pp.data == .tagged_template;
+    const right_ok = x.right.data == .prop_access or x.right.data == .elem_access or isIdent(x.right, "eval");
+    return called and right_ok;
+}
+
+/// The parser already said that adjacent JSX elements need one parent there.
+fn inJsxParentError(c: *Checker, n: *Node) bool {
+    const f = d.fileOf(c, n) orelse return false;
+    for (f.diags) |x| if (x.code == 2657 and x.start <= n.start and n.start < x.start + x.len) return true;
+    return false;
 }
 
 /// A generic `x` that may be undefined says so only through its constraint, so in `x || y` the
@@ -3864,6 +4374,46 @@ fn hasUndefinedConstraint(c: *Checker, t: *Type) bool {
             if (hasUndefinedConstraint(c, m)) break true;
         } else false,
         .param, .access, .cond => mayBeUndefined(d.baseConstraint(c, t)),
+        else => false,
+    };
+}
+
+/// tsc's `checkDeleteExpression`, past checking the operand itself.
+fn checkDeleteOperand(c: *Checker, e: *Node) void {
+    const left, const name = switch (e.data) {
+        .prop_access => |x| blk: {
+            if (x.name.data == .private_name) err(c, e, 18011, "The operand of a 'delete' operator cannot be a private identifier.");
+            break :blk .{ x.expr, ast.memberText(x.name) };
+        },
+        .elem_access => |x| blk: {
+            const idx = checkSilent(c, x.index);
+            break :blk .{ x.expr, d.literalName(c, idx.regular orelse idx) orelse return };
+        },
+        else => return err(c, e, 2703, "The operand of a 'delete' operator must be a property reference."),
+    };
+    const base = nonNull(c, checkSilent(c, left));
+    if (T.isAny(base)) return;
+    const p = d.getProp(c, base, name) orelse return;
+    if (propReadonly(c, p, e)) return err(c, e, 2704, "The operand of a 'delete' operator cannot be a read-only property.");
+    if (!c.strict_null) return;
+    const t = d.propType(c, p);
+    if (T.isAny(t) or t.data == .unknown or t.data == .never) return;
+    const optional = if (c.exact_optional) p.optional else p.optional or holdsUndefined(c, t);
+    if (!optional) err(c, e, 2790, "The operand of a 'delete' operator must be optional.");
+}
+
+/// tsc's `TypeFactsIsUndefined`: a generic type answers through its constraint, and tsc
+/// counts neither `void` nor a missing constraint.
+fn holdsUndefined(c: *Checker, t: *Type) bool {
+    return switch (t.data) {
+        .undefined => true,
+        .union_ => |x| for (x) |m| {
+            if (holdsUndefined(c, m)) break true;
+        } else false,
+        .param, .access, .cond => blk: {
+            const k = d.baseConstraint(c, t);
+            break :blk k != t and holdsUndefined(c, k);
+        },
         else => false,
     };
 }
@@ -3960,10 +4510,13 @@ fn binaryResult(c: *Checker, n: *Node, op: Tok, ln: *Node, rn: *Node, l0: *Type,
             return c.t_boolean;
         },
         .kw_in => {
-            const r = checkNonNull(c, r0, rn);
-            if (!T.isAny(r) and !r.vars and isPrimitiveValue(c, r)) {
-                err(c, rn, 2322, c.fmt("Type '{s}' is not assignable to type 'object'.", .{show(c, r)}));
+            // A private name is looked up on the right instead.
+            if (ln.data != .private_name) {
+                const l = checkNonNull(c, l0, ln);
+                if (!T.isAny(l)) checkAssignable(c, l, c.getUnion(&.{ c.t_string, c.t_number, c.t_symbol }), null, ln);
             }
+            const r = checkNonNull(c, r0, rn);
+            if (!T.isAny(r)) checkAssignable(c, r, c.t_nonprim, null, rn);
             return c.t_boolean;
         },
         else => return c.t_err,
@@ -3990,45 +4543,6 @@ fn isFunctionLike(c: *Checker, t: *Type) bool {
     if (d.getProp(c, t, "__@hasInstance") != null) return true;
     if (d.globalType(c, "Function")) |f| return relate.isAssignable(c, t, f);
     return false;
-}
-
-fn checkDeleted(c: *Checker, n: *Node) void {
-    const left, const name = switch (n.data) {
-        .prop_access => |x| blk: {
-            if (x.name.data == .private_name) err(c, n, 18011, "The operand of a 'delete' operator cannot be a private identifier.");
-            break :blk .{ x.expr, ast.memberText(x.name) };
-        },
-        .elem_access => |x| blk: {
-            const idx = checkSilent(c, x.index);
-            break :blk .{ x.expr, d.literalName(c, idx.regular orelse idx) orelse return };
-        },
-        else => {
-            if (n.data == .identifier and c.strict_null) err(c, n, 1102, "'delete' cannot be called on an identifier in strict mode.");
-            return err(c, n, 2703, "The operand of a 'delete' operator must be a property reference.");
-        },
-    };
-    const base = nonNull(c, checkSilent(c, left));
-    if (T.isAny(base)) return;
-    const p = d.getProp(c, base, name) orelse return;
-    if (propReadonly(c, p, n)) return err(c, n, 2704, "The operand of a 'delete' operator cannot be a read-only property.");
-    const t = d.propType(c, p);
-    if (!c.strict_null or T.isAny(t) or t.data == .unknown or t.data == .never) return;
-    if (if (c.exact_optional) p.optional else hasUndefinedFact(c, t)) return;
-    err(c, n, 2790, "The operand of a 'delete' operator must be optional.");
-}
-
-fn hasUndefinedFact(c: *Checker, t: *Type) bool {
-    return switch (t.data) {
-        .undefined, .void, .unknown => true,
-        .union_ => |x| for (x) |m| {
-            if (hasUndefinedFact(c, m)) break true;
-        } else false,
-        .param, .access, .cond => blk: {
-            const k = d.baseConstraint(c, t);
-            break :blk k == t or hasUndefinedFact(c, k);
-        },
-        else => false,
-    };
 }
 
 pub fn isReadonlyTarget(c: *Checker, n0: *Node) bool {
@@ -4131,8 +4645,73 @@ fn checkAssign(c: *Checker, n: *Node) *Type {
 }
 
 fn checkDestructuringAssign(c: *Checker, left: *Node, right: *Node) *Type {
-    _ = left;
-    return checkExpr(c, right);
+    const source = checkExpr(c, right);
+    destructureInto(c, binder.stripParens(left), source);
+    return source;
+}
+
+/// tsc's `checkDestructuringAssignment`: every target in the pattern takes the part of `source`
+/// it is written from.
+pub fn destructureInto(c: *Checker, target0: *Node, source0: *Type) void {
+    var target = target0;
+    var source = source0;
+    if (target.data == .shorthand_assign) {
+        const x = target.data.shorthand_assign;
+        if (x.init) |i| {
+            // A default that cannot be undefined fills in for a missing value.
+            if (c.strict_null and !hasUndefined(checkExpr(c, i))) source = removeUndefined(c, source);
+            const declared = checkExpr(c, x.name);
+            if (!T.isAny(declared)) checkAssignable(c, checkExpr(c, i), declared, i, x.name);
+        }
+        target = x.name;
+    }
+    if (target.data == .binary and target.data.binary.op == .assign) {
+        _ = checkExpr(c, target);
+        target = target.data.binary.left;
+        if (c.strict_null) source = removeUndefined(c, source);
+    }
+    switch (target.data) {
+        .object_lit => |x| for (x.props) |p| switch (p.data) {
+            .property_assign => |a| destructureInto(c, a.value, destructuredProp(c, source, a.name)),
+            .shorthand_assign => |a| destructureInto(c, p, destructuredProp(c, source, a.name)),
+            .spread_assign => |a| {
+                var skip = c.newList([]const u8);
+                for (x.props) |o| {
+                    const key = switch (o.data) {
+                        .property_assign => |q| q.name,
+                        .shorthand_assign => |q| q.name,
+                        else => continue,
+                    };
+                    skip.append(c.a, propNameOf(c, key) orelse return) catch oom();
+                }
+                destructureInto(c, a.expr, if (T.isAny(source)) source else restOf(c, source, skip.items));
+            },
+            else => {},
+        },
+        .array_lit => |x| for (x.elems, 0..) |e, i| switch (e.data) {
+            .omitted_expr => {},
+            .spread_elem => |s| {
+                const rest = if (T.isAny(source)) source else if (T.isTupleType(source)) restOfTuple(c, source, i) else d.arrayOf(c, destructuredElement(c, target, source, i));
+                destructureInto(c, s.expr, rest);
+            },
+            else => destructureInto(c, e, destructuredElement(c, target, source, i)),
+        },
+        else => {
+            const declared = checkExpr(c, target);
+            if (!T.isAny(source) and !T.isAny(declared) and !isReadonlyTarget(c, target)) checkAssignable(c, source, declared, target, target);
+        },
+    }
+}
+
+fn destructuredProp(c: *Checker, source: *Type, name: *Node) *Type {
+    const key = propNameOf(c, name) orelse return c.t_err;
+    return destructuredMember(c, nonNull(c, source), key) orelse c.t_err;
+}
+
+fn restOfTuple(c: *Checker, t: *Type, i: usize) *Type {
+    const o = t.data.obj;
+    if (i >= o.tuple.elems.len) return c.makeTuple(&.{}, &.{}, false, &.{});
+    return c.makeTuple(o.tuple.elems[i..], o.tuple.eflags[i..], false, &.{});
 }
 
 fn isNamedProperty(c: *Checker, target: *Node) bool {
@@ -4173,6 +4752,13 @@ fn checkCompound(c: *Checker, n: *Node) *Type {
         else => return c.t_err,
     };
     const result = binaryResult(c, n, op, x.left, x.right, l, r);
+    const arith = switch (op) {
+        .minus, .star, .star2, .slash, .percent, .shl, .shr, .ushr, .amp, .pipe, .caret => true,
+        else => false,
+    };
+    // tsc checks the assignment only when both operands were fit for arithmetic.
+    const fit = !arith or (isArithOperand(c, nonNull(c, l)) and isArithOperand(c, nonNull(c, r)));
+    if (!fit) return result;
     if (!T.isAny(l) and !T.isAny(result) and op != .amp2 and op != .pipe2 and op != .qq) {
         checkAssignable(c, result, l, x.left, x.left);
     } else if (op == .pipe2 or op == .qq or op == .amp2) {
@@ -4186,6 +4772,7 @@ fn checkPrefix(c: *Checker, n: *Node) *Type {
     const t = checkExpr(c, x.expr);
     switch (x.op) {
         .bang => {
+            checkTruthiness(c, t, x.expr);
             // tsc answers `false` for an operand that is always truthy and `true` for one that
             // is always falsy; `never` has neither fact and stays `boolean`.
             if (t.data == .never or T.isAny(t)) return c.t_boolean;
@@ -4343,6 +4930,10 @@ fn reportNotAssignable(c: *Checker, s: *Type, t0: *Type, n: *Node, value: ?*Node
     const t = reportedTarget(c, s, t0);
     if (relate.excessProp(c, s, t)) |p| {
         const at = if (p.decl) |x| propNameNode(x) else n;
+        if (relate.isJsxAttributes(s)) {
+            err(c, at, 2322, c.fmt("Type '{s}' is not assignable to type '{s}'.", .{ show(c, s), show(c, t) }));
+            return;
+        }
         err(c, at, 2353, c.fmt("Object literal may only specify known properties, and '{s}' does not exist in type '{s}'.", .{ p.name, show(c, t) }));
         return;
     }
@@ -4413,7 +5004,7 @@ fn isSettled(c: *Checker, s: *Type) bool {
 }
 
 /// tsc looks for a common property before comparing anything, so this message has no head.
-fn reportWeak(c: *Checker, s: *Type, t: *Type, n: *Node) bool {
+pub fn reportWeak(c: *Checker, s: *Type, t: *Type, n: *Node) bool {
     if (!relate.isWeak(c, t)) return false;
     const a = d.getApparent(c, s);
     if ((a.data != .obj and a.data != .inter) or relate.hasCommonProp(c, a, t)) return false;
@@ -5826,9 +6417,334 @@ fn checkJsx(c: *Checker, n: *Node) void {
             return;
         },
         .identifier, .prop_access, .this_expr => return,
+        .jsx_opening => |x| {
+            checkIntrinsicTag(c, n, x.tag);
+            if (checkJsxAttributes(c, n, x.tag, x.attrs)) return;
+        },
+        .jsx_self_closing => |x| {
+            checkIntrinsicTag(c, n, x.tag);
+            if (checkJsxAttributes(c, n, x.tag, x.attrs)) return;
+        },
+        .jsx_closing => |x| checkIntrinsicTag(c, n, x.tag),
         else => {},
     }
     ast.forEachChild(n, c, checkJsx);
+}
+
+/// tsc's `getIntrinsicTagSymbol`: a lower-case tag is looked up in `JSX.IntrinsicElements`, and
+/// without that interface the element is `any`.
+fn checkIntrinsicTag(c: *Checker, n: *Node, tag: *Node) void {
+    if (!c.no_implicit_any or tag.data != .identifier) return;
+    const name = tag.data.identifier;
+    if (name.len == 0 or !(std.ascii.isLower(name[0]) or std.mem.indexOfAny(u8, name, "-:") != null)) return;
+    const ns = jsxNamespace(c, n) orelse return;
+    if (ns) |x| if (x.exports) |e| if (e.get("IntrinsicElements")) |ie| if (ie.resolve().flags & F.type != 0) return;
+    err(c, n, 7026, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
+}
+
+fn isIntrinsicTag(tag: *Node) bool {
+    if (tag.data != .identifier) return false;
+    const name = tag.data.identifier;
+    return name.len > 0 and (std.ascii.isLower(name[0]) or std.mem.indexOfAny(u8, name, "-:") != null);
+}
+
+/// tsc's `getIntrinsicAttributesTypeFromJsxOpeningLikeElement`: `JSX.IntrinsicElements[tag]`, or
+/// its string index. Null when there is nothing to check against.
+fn intrinsicProps(c: *Checker, el: *Node, tag: *Node, report: bool) ?*Type {
+    if (!isIntrinsicTag(tag)) return null;
+    const ns = (jsxNamespace(c, el) orelse return null) orelse return null;
+    const ie = (ns.exports orelse return null).get("IntrinsicElements") orelse return null;
+    if (ie.resolve().flags & F.type == 0) return null;
+    const t = d.declaredType(c, ie.resolve());
+    if (T.isAny(t)) return null;
+    const name = tag.data.identifier;
+    if (d.getProp(c, t, name)) |p| return d.propType(c, p);
+    if (d.indexValue(c, t, c.t_string)) |v| return v;
+    if (report) err(c, el, 2339, c.fmt("Property '{s}' does not exist on type 'JSX.IntrinsicElements'.", .{name}));
+    return null;
+}
+
+fn jsxTag(el: *Node) ?*Node {
+    return switch (el.data) {
+        .jsx_opening => |x| x.tag,
+        .jsx_self_closing => |x| x.tag,
+        else => null,
+    };
+}
+
+/// tsc's `getContextualTypeForJsxAttribute`: the attribute's property in what the element takes.
+fn jsxAttrContext(c: *Checker, attr: *Node) ?*Type {
+    const el = attr.parent orelse return null;
+    const targets = jsxTargets(c, el, jsxTag(el) orelse return null, false) orelse return null;
+    if (targets.len != 1) return null;
+    const name = attr.data.jsx_attr.name;
+    if (name.data != .identifier) return null;
+    const attrs = switch (el.data) {
+        .jsx_opening => |x| x.attrs,
+        .jsx_self_closing => |x| x.attrs,
+        else => return null,
+    };
+    return targetProp(c, discriminateJsx(c, attrs, targets[0]), name.data.identifier);
+}
+
+/// tsc's `discriminateContextualTypeByJSXAttributes`, as `discriminate` does for object literals.
+fn discriminateJsx(c: *Checker, attrs: []*Node, t: *Type) *Type {
+    if (t.data != .union_) return t;
+    const types = t.data.union_;
+    const keep = c.a.alloc(Keep, types.len) catch oom();
+    for (types, keep) |m, *k| k.* = if (m.data == .obj or m.data == .inter or m.data == .param or m.data == .access) .yes else .no;
+    for (attrs) |a| {
+        if (a.data != .jsx_attr) continue;
+        const x = a.data.jsx_attr;
+        if (x.name.data != .identifier or !relate.isDiscriminant(c, types, x.name.data.identifier)) continue;
+        const value = if (x.value) |v| blk: {
+            const e = if (v.data == .jsx_expr) v.data.jsx_expr.expr orelse continue else v;
+            if (!possiblyDiscriminant(e)) continue;
+            break :blk contextFree(c, e);
+        } else c.t_true;
+        keepMatching(c, types, keep, x.name.data.identifier, value);
+    }
+    // An attribute left out reads as `undefined`, and that discriminates too.
+    outer: for (d.propsOf(c, types[0])) |x| {
+        for (attrs) |a| if (a.data == .jsx_attr and a.data.jsx_attr.name.data == .identifier and std.mem.eql(u8, a.data.jsx_attr.name.data.identifier, x.name)) continue :outer;
+        if (partlyOptional(c, types, x.name) and relate.isDiscriminant(c, types, x.name)) keepMatching(c, types, keep, x.name, c.t_undefined);
+    }
+    if (std.mem.indexOfScalar(Keep, keep, .no) == null) return t;
+    var rest = c.newList(*Type);
+    for (types, keep) |m, k| if (k == .yes) rest.append(c.a, m) catch oom();
+    return if (rest.items.len == 0) t else c.getUnion(rest.items);
+}
+
+/// tsc's `getContextualTypeForChildJsxExpression`: the children property, or its element at the
+/// child's place when there are several.
+fn jsxChildContext(c: *Checker, child: *Node, elem: *Node) ?*Type {
+    const open = elem.data.jsx_element.open;
+    const name = jsxChildrenName(c, open) orelse return null;
+    const targets = jsxTargets(c, open, jsxTag(open) orelse return null, false) orelse return null;
+    if (targets.len != 1) return null;
+    const ct = targetProp(c, discriminateJsx(c, open.data.jsx_opening.attrs, targets[0]), name) orelse return null;
+    var count: usize = 0;
+    var index: usize = 0;
+    for (elem.data.jsx_element.children) |k| {
+        if (!isSemanticChild(k)) continue;
+        if (k == child) index = count;
+        count += 1;
+    }
+    if (count == 1) return ct;
+    return elemOfCtx(c, child, ct, index);
+}
+
+/// tsc's `getSemanticJsxChildren`: whitespace-only text and empty `{}` are not children.
+fn isSemanticChild(k: *Node) bool {
+    return switch (k.data) {
+        .jsx_text => |text| std.mem.indexOfNone(u8, text, " \t\r\n") != null,
+        .jsx_expr => |x| x.expr != null,
+        else => true,
+    };
+}
+
+fn jsxExport(ns: ?*Symbol, name: []const u8) ?*Symbol {
+    const s = ((ns orelse return null).exports orelse return null).get(name) orelse return null;
+    const r = s.resolve();
+    return if (r.flags & F.type != 0) r else null;
+}
+
+/// tsc's `getNameFromJsxElementAttributesContainer`: the one member of a `JSX` interface such as
+/// `ElementAttributesProperty`. Null without the interface, empty when it has no members.
+fn jsxContainerName(c: *Checker, ns: ?*Symbol, container: []const u8) ?[]const u8 {
+    const s = jsxExport(ns, container) orelse return null;
+    const props = d.propsOf(c, d.declaredType(c, s));
+    if (props.len == 0) return "";
+    return if (props.len == 1) props[0].name else null;
+}
+
+fn jsxChildrenName(c: *Checker, el: *Node) ?[]const u8 {
+    const ns = jsxNamespace(c, el) orelse return null;
+    const name = jsxContainerName(c, ns, "ElementChildrenAttribute") orelse return null;
+    return if (name.len > 0) name else null;
+}
+
+/// What the element's attributes are checked against: one type per signature the tag can be
+/// called with (tsc's `getEffectiveFirstArgumentForJsxSignature`). Null when that cannot be told
+/// here, which leaves the attributes unchecked.
+fn jsxTargets(c: *Checker, el: *Node, tag: *Node, report: bool) ?[]*Type {
+    if (isIntrinsicTag(tag)) {
+        const t = intrinsicProps(c, el, tag, report) orelse return null;
+        return c.a.dupe(*Type, &.{t}) catch oom();
+    }
+    const ns = jsxNamespace(c, el) orelse return null;
+    const tt = checkExpr(c, tag);
+    // A class's static side mentions its `this` type, so `vars` alone does not mean generic; the
+    // props are checked for type variables below.
+    if (T.isAny(tt) or tt.data == .param) return null;
+    const ap = d.getApparent(c, tt);
+    const ctors = d.ctorSigs(c, ap);
+    const is_class = ctors.len > 0;
+    const sigs = if (is_class) ctors else d.callSigs(c, ap);
+    if (sigs.len == 0) return null;
+    const out = c.a.alloc(*Type, sigs.len) catch oom();
+    for (sigs, out) |sig, *o| {
+        if (sig.tparams.len > 0) return null;
+        var props = if (is_class) jsxClassProps(c, ns, sig) orelse return null else relate.typeAt(c, sig, 0) orelse c.t_unknown;
+        if (jsxExport(ns, "LibraryManagedAttributes")) |lma| props = d.instantiateWithDefaults(c, lma, &.{ tt, props }) orelse props;
+        if (T.isAny(props) or props.vars) return null;
+        if (is_class) if (jsxExport(ns, "IntrinsicClassAttributes")) |ica| {
+            const host = d.instantiateWithDefaults(c, ica, &.{d.returnOf(c, sig)}) orelse return null;
+            props = c.getIntersection(&.{ host, props });
+        };
+        if (jsxExport(ns, "IntrinsicAttributes")) |ia| props = c.getIntersection(&.{ d.declaredType(c, ia), props });
+        o.* = props;
+    }
+    return out;
+}
+
+/// tsc's `getJsxPropsTypeFromClassType`: where `JSX.ElementAttributesProperty` says the props are.
+fn jsxClassProps(c: *Checker, ns: ?*Symbol, sig: *Sig) ?*Type {
+    const name = jsxContainerName(c, ns, "ElementAttributesProperty") orelse return relate.typeAt(c, sig, 0) orelse c.t_unknown;
+    const instance = d.returnOf(c, sig);
+    if (name.len == 0 or T.isAny(instance)) return instance;
+    const p = d.getProp(c, instance, name) orelse return null;
+    return d.propType(c, p);
+}
+
+/// tsc's `createJsxAttributesTypeFromAttributesProperty` and the check `resolveJsxOpeningLikeElement`
+/// makes of it. False when the attributes are left to the generic walk.
+fn checkJsxAttributes(c: *Checker, el: *Node, tag: *Node, attrs: []*Node) bool {
+    const targets = jsxTargets(c, el, tag, true) orelse return false;
+    var m = c.membersFor(attrs.len);
+    var open = false;
+    var vars = false;
+    var written = false;
+    var unknown = false;
+    for (attrs) |a| switch (a.data) {
+        .jsx_attr => |x| {
+            const v = if (x.value) |val| blk: {
+                const e = if (val.data == .jsx_expr) val.data.jsx_expr.expr orelse break :blk c.t_err else val;
+                break :blk mutableLocation(c, e, checkExpr(c, e));
+            } else c.t_true;
+            if (x.name.data != .identifier) {
+                unknown = true;
+                continue;
+            }
+            if (v.vars) vars = true;
+            written = true;
+            const name = x.name.data.identifier;
+            m.props.put(c.a, name, c.create(Prop, .{ .name = name, .ty = v, .decl = a })) catch oom();
+        },
+        .jsx_spread_attr => |x| {
+            const s = checkExpr(c, x.expr);
+            if (s.data != .obj or s.vars) {
+                unknown = true;
+                continue;
+            }
+            m = spreadInto(c, m, s, false, false, &open);
+        },
+        else => {},
+    };
+    if (jsxChildrenName(c, el)) |name| if (el.parent) |p| if (p.data == .jsx_element and p.data.jsx_element.open == el) {
+        var kids = c.newList(*Type);
+        for (p.data.jsx_element.children) |k| {
+            if (!isSemanticChild(k)) continue;
+            kids.append(c.a, switch (k.data) {
+                .jsx_text => c.t_string,
+                .jsx_expr => |x| checkSilent(c, x.expr.?),
+                else => c.t_err,
+            }) catch oom();
+        }
+        if (kids.items.len > 0) {
+            const v = if (kids.items.len == 1) kids.items[0] else d.arrayOf(c, c.getUnion(kids.items));
+            m.props.put(c.a, name, c.create(Prop, .{ .name = name, .ty = v })) catch oom();
+        }
+    };
+    if (unknown) return true;
+    // Attributes are fresh, spreads and all, once one of them is written out.
+    const s = c.newObj(.{ .kind = .anon, .members = m, .lit = written, .literal = el, .open = open });
+    s.vars = vars;
+    for (targets) |t| if (relate.isAssignable(c, s, t)) return true;
+    if (quiet(c)) return true;
+    const last = targets[targets.len - 1];
+    if (targets.len > 1) {
+        err(c, jsxBlame(c, s, last, attrs, tag), 2769, "No overload matches this call.");
+        return true;
+    }
+    // tsc's `elaborateJsxComponents`: an attribute that does not fit takes the blame.
+    var blamed = false;
+    for (attrs) |a| {
+        const x = mismatchedAttr(c, s, last, a) orelse continue;
+        blamed = true;
+        if (x.value) |val| if (val.data == .jsx_expr) if (val.data.jsx_expr.expr) |e| if (elaborate(c, e, x.st, x.tt)) continue;
+        reportNotAssignable(c, x.st, x.tt, x.name, null);
+    }
+    if (blameJsxChildren(c, el, s, last)) blamed = true;
+    if (!blamed) reportNotAssignable(c, s, last, tag, null);
+    return true;
+}
+
+/// The children half of tsc's `elaborateJsxComponents`: a child expression that does not fit the
+/// children property, or its element when there are several, takes the blame.
+fn blameJsxChildren(c: *Checker, el: *Node, s: *Type, t: *Type) bool {
+    const p = el.parent orelse return false;
+    if (p.data != .jsx_element or p.data.jsx_element.open != el) return false;
+    const name = jsxChildrenName(c, el) orelse return false;
+    const sp = d.getProp(c, s, name) orelse return false;
+    const tt = targetProp(c, t, name) orelse return false;
+    if (relate.isAssignable(c, d.propType(c, sp), tt)) return false;
+    var kids = c.newList(*Node);
+    for (p.data.jsx_element.children) |k| if (isSemanticChild(k)) kids.append(c.a, k) catch oom();
+    var blamed = false;
+    for (kids.items, 0..) |k, i| {
+        if (k.data != .jsx_expr) continue;
+        const e = k.data.jsx_expr.expr.?;
+        const want = if (kids.items.len == 1) tt else elemOfCtx(c, k, tt, i) orelse continue;
+        const got = checkSilent(c, e);
+        if (relate.isAssignable(c, got, want)) continue;
+        blamed = true;
+        if (!elaborate(c, e, got, want)) reportNotAssignable(c, got, want, e, null);
+    }
+    return blamed;
+}
+
+const AttrMismatch = struct { name: *Node, value: ?*Node, st: *Type, tt: *Type };
+
+fn mismatchedAttr(c: *Checker, s: *Type, t: *Type, a: *Node) ?AttrMismatch {
+    if (a.data != .jsx_attr) return null;
+    const x = a.data.jsx_attr;
+    if (x.name.data != .identifier or std.mem.indexOfScalar(u8, x.name.data.identifier, '-') != null) return null;
+    const sp = d.getProp(c, s, x.name.data.identifier) orelse return null;
+    const tt = targetProp(c, t, x.name.data.identifier) orelse return null;
+    const st = d.propType(c, sp);
+    if (relate.isAssignable(c, st, tt)) return null;
+    return .{ .name = x.name, .value = x.value, .st = st, .tt = tt };
+}
+
+/// Where the check against `t` would report, which is where tsc puts a failed overload set.
+fn jsxBlame(c: *Checker, s: *Type, t: *Type, attrs: []*Node, tag: *Node) *Node {
+    for (attrs) |a| if (mismatchedAttr(c, s, t, a)) |x| return x.name;
+    if (relate.excessProp(c, s, t)) |p| if (p.decl) |x| return propNameNode(x);
+    return tag;
+}
+
+/// tsc's `getJsxNamespaceAt`: `JSX` under the factory's namespace, else the global one. Null when
+/// it cannot be told here (automatic runtimes, `@jsx` pragmas); an inner null when there is none.
+fn jsxNamespace(c: *Checker, at: *Node) ??*Symbol {
+    const o = c.prog.cfg.options;
+    switch (o.jsxMode()) {
+        .react_jsx, .react_jsxdev => return null,
+        else => {},
+    }
+    const f = d.fileOf(c, at) orelse return null;
+    if (std.mem.indexOf(u8, f.src, "@jsx") != null) return null;
+    const entity = o.jsxFactory orelse o.reactNamespace orelse "React";
+    const root = entity[0 .. std.mem.indexOfScalar(u8, entity, '.') orelse entity.len];
+    if (d.resolveName(c, at, root, F.namespace | F.alias)) |s| {
+        const target = c.prog.resolveAlias(s, 0) orelse return null;
+        if (target.resolve().exports) |e| if (e.get("JSX")) |exported| {
+            const jsx = (c.prog.resolveAlias(exported, 0) orelse return null).resolve();
+            if (jsx.flags & F.namespace != 0) return jsx;
+        };
+    }
+    const global = d.globalSym(c, "JSX") orelse return @as(?*Symbol, null);
+    return global.resolve();
 }
 
 pub fn checkExpr(c: *Checker, n: *Node) *Type {
@@ -5853,11 +6769,13 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         .false_lit => c.freshOf(c.t_false),
         .null_lit => c.t_null,
         .this_expr => blk: {
+            checkThisPlace(c, n);
+            checkBeforeSuper(c, n, 17009, "'super' must be called before accessing 'this' in the constructor of a derived class.");
             const t = checkThisAt(c, n);
             if (n.flow() == null or T.isAny(t)) break :blk t;
             break :blk flow.flowType(c, n, t, t, containingFunc(n));
         },
-        .super_expr => superValue(c, n),
+        .super_expr => superType(c, n),
         .paren => |x| if (x.cast) |t| checkAsExpr(c, n, x.expr, t) else checkExpr(c, x.expr),
         .template_expr => checkTemplate(c, n),
         .tagged_template => checkTagged(c, n),
@@ -5883,14 +6801,14 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         },
         .delete_expr => |x| blk: {
             _ = checkExpr(c, x.expr);
-            checkDeleted(c, binder.stripParens(x.expr));
+            if (!quiet(c)) checkDeleteOperand(c, binder.stripParens(x.expr));
             break :blk c.t_boolean;
         },
         .await_expr => |x| awaitedOf(c, checkExpr(c, x.expr)),
         .yield_expr => checkYield(c, n),
         .binary => checkBinary(c, n),
         .conditional => |x| blk: {
-            _ = checkExpr(c, x.cond);
+            checkTruthiness(c, checkExpr(c, x.cond), x.cond);
             const a = checkExpr(c, x.then);
             const b = checkExpr(c, x.els);
             break :blk reduceSubtypes(c, &.{ a, b });
@@ -5919,7 +6837,7 @@ pub fn checkExpr(c: *Checker, n: *Node) *Type {
         .spread_elem => |x| iteratedOf(c, x.expr, checkExpr(c, x.expr), false),
         .meta_property => |x| metaProperty(c, n, x.keyword),
         .jsx_element, .jsx_self_closing, .jsx_fragment => blk: {
-            ast.forEachChild(n, c, checkJsx);
+            checkJsx(c, n);
             break :blk c.t_err;
         },
         .omitted_expr => c.t_undefined,

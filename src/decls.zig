@@ -12,6 +12,8 @@ const flow = @import("flow.zig");
 const emit = @import("emit.zig");
 const parser = @import("parser.zig");
 const checker = @import("checker.zig");
+const unused = @import("unused.zig");
+const project = @import("project.zig");
 const Node = ast.Node;
 const Symbol = binder.Symbol;
 const F = binder.F;
@@ -61,7 +63,10 @@ pub fn resolveName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?*S
     const hashed = binder.HashedName.of(name);
     var cur: ?*Node = from;
     var last: ?*Node = null;
+    // The declaration the name is looked up from inside of: naming itself does not use it.
+    var self: ?*Node = null;
     while (cur) |n| : ({
+        if (unused.isSelfReference(n, last)) self = n;
         last = n;
         cur = n.parent;
     }) {
@@ -69,20 +74,38 @@ pub fn resolveName(c: *Checker, from: *Node, name: []const u8, meaning: u32) ?*S
         const hidden = n.data == .conditional_type and last != n.data.conditional_type.then;
         if (!hidden) if (localsOf(c, n)) |l| if (l.getHashed(hashed)) |s| {
             if (matches(c, s, meaning)) |r| {
-                if (n.data != .func or visibleInFunc(c, n, last, r, meaning)) return r;
+                // A static member belongs to the constructor, which no instantiation reaches.
+                if (n.data == .class and r.flags & F.type_param != 0 and isStaticMember(last)) return null;
+                if (n.data != .func or visibleInFunc(c, n, last, r, meaning)) return unused.noteUse(c, from, r, self, meaning);
             } else if (n.data == .source_file) if (fileOf(c, n)) |f| if (f.symbol) |m| if (m.exports) |e| if (e.getHashed(hashed)) |x| {
-                if (x != s and !binder.isExportSpecifierOnly(x)) if (matches(c, x, meaning)) |r| return r;
+                if (x != s and !binder.isExportSpecifierOnly(x)) if (matches(c, x, meaning)) |r| return unused.noteUse(c, from, r, self, meaning);
             };
         };
         switch (n.data) {
             .module_decl, .enum_decl => if (n.symbol()) |sym| if (sym.resolve().exports) |e| if (e.getHashed(hashed)) |x| {
-                if (!binder.isExportSpecifierOnly(x)) if (matches(c, x, meaning)) |r| return r;
+                if (!binder.isExportSpecifierOnly(x)) if (matches(c, x, meaning)) |r| return unused.noteUse(c, from, r, self, meaning);
             },
             else => {},
         }
     }
     if (c.prog.globals.getHashed(hashed)) |s| if (matches(c, s, meaning)) |r| return r;
     return null;
+}
+
+fn isStaticMember(n: ?*Node) bool {
+    const m = n orelse return false;
+    return m.data == .static_block or (m.mods.static and m.parent != null and m.parent.?.data == .class);
+}
+
+/// The class type parameter a failed type lookup stopped at, which a static member cannot see.
+fn classTypeParamFromStatic(c: *Checker, from: *Node, name: []const u8) bool {
+    var last: ?*Node = null;
+    var cur: ?*Node = from;
+    while (cur) |n| : ({
+        last = n;
+        cur = n.parent;
+    }) if (n.data == .class) if (localsOf(c, n)) |l| if (l.get(name)) |s| if (s.flags & F.type_param != 0) return isStaticMember(last);
+    return false;
 }
 
 /// One table holds a function's parameters and what its block declares, but `last`, the way in,
@@ -133,7 +156,7 @@ fn paramsMoveToBody(c: *Checker, params: []const *Node) bool {
     return scan.found;
 }
 
-fn targetYear(target: []const u8) u32 {
+pub fn targetYear(target: []const u8) u32 {
     if (std.ascii.eqlIgnoreCase(target, "es3") or std.ascii.eqlIgnoreCase(target, "es5")) return 2009;
     if (std.ascii.eqlIgnoreCase(target, "es6")) return 2015;
     if (target.len < 2) return std.math.maxInt(u32);
@@ -880,11 +903,46 @@ fn isEntity(n: *Node) bool {
 
 pub fn entitySymbol(c: *Checker, n: *Node, meaning: u32) ?*Symbol {
     switch (n.data) {
-        .identifier => |name| return resolveName(c, n, name, meaning),
+        .identifier => |name| return resolveName(c, n, name, meaning) orelse if (meaning & F.namespace != 0) requiredModule(c, n, name) else null,
         .prop_access => |x| return memberSym(c, entitySymbol(c, x.expr, F.namespace | F.alias), x.name.data.identifier, meaning),
         .qualified_name => |x| return memberSym(c, entitySymbol(c, x.left, F.namespace | F.alias), x.right.data.identifier, meaning),
         else => return null,
     }
+}
+
+/// tsc binds `const x = require("m")` in JavaScript as an alias of the module, so `x.T` names its types.
+fn requiredModule(c: *Checker, n: *Node, name: []const u8) ?*Symbol {
+    const r = requireOf(c, n, name) orelse return null;
+    return if (r.prop == null) r.module else null;
+}
+
+/// What a JavaScript `const x = require("m")` or `const { p } = require("m")` binds `name` to.
+const Required = struct { module: ?*Symbol, prop: ?[]const u8 = null };
+
+fn requireOf(c: *Checker, n: *Node, name: []const u8) ?Required {
+    if (!expr.inJs(c, n)) return null;
+    const s = resolveName(c, n, name, F.value) orelse return null;
+    if (s.decls.len == 0) return null;
+    var decl = s.decls[0];
+    var prop: ?[]const u8 = null;
+    if (decl.data == .binding_elem) {
+        const b = decl.data.binding_elem;
+        const key = b.prop_name orelse b.name;
+        if (b.dotdotdot or key.data != .identifier) return null;
+        prop = key.data.identifier;
+        const pattern = decl.parent orelse return null;
+        if (pattern.data != .object_pattern) return null;
+        decl = pattern.parent orelse return null;
+    }
+    if (decl.data != .var_decl) return null;
+    const init = binder.stripParens(decl.data.var_decl.init orelse return null);
+    if (!expr.isRequireCall(init, true)) return null;
+    const spec = switch (init.data.call.args[0].data) {
+        .string_lit, .no_subst_template => |v| v,
+        else => return null,
+    };
+    const sf = c.prog.sourceOf(fileOf(c, decl) orelse return null) orelse return null;
+    return .{ .module = c.prog.resolveModuleName(sf, spec), .prop = prop };
 }
 
 fn memberSym(c: *Checker, base: ?*Symbol, name: []const u8, meaning: u32) ?*Symbol {
@@ -1118,6 +1176,7 @@ fn typeOfQuery(c: *Checker, name: *Node) *Type {
         .identifier => {
             const s = resolveName(c, name, name.data.identifier, F.value) orelse {
                 const v = name.data.identifier;
+                if (expr.commonJsName(c, name, v)) return expr.checkExpr(c, name);
                 if (expr.suggestName(c, name, v, F.value)) |sug| {
                     report(c, name, 2552, c.fmt("Cannot find name '{s}'. Did you mean '{s}'?", .{ v, sug }));
                 } else {
@@ -1173,7 +1232,9 @@ pub fn typeRefFromSymbol(c: *Checker, n: *Node, s: *Symbol, targs: []*Node) *Typ
         const outer_len = o.tparams().len - o.localTparams().len;
         const min = minArgs(c, o.localTparams());
         if (o.localTparams().len == 0) {
-            if (targs.len > 0) report(c, refNameNode(n), 2315, c.fmt("Type '{s}' is not generic.", .{s.name}));
+            // A class in JavaScript takes its type parameters from `@template`, which is not modeled.
+            const from_js = s.decls.len > 0 and expr.inJs(c, s.decls[0]);
+            if (targs.len > 0 and !from_js) report(c, refNameNode(n), 2315, c.fmt("Type '{s}' is not generic.", .{s.name}));
             return g;
         }
         // JavaScript fills what is missing with `any`, and says so only under `noImplicitAny`.
@@ -1276,6 +1337,34 @@ pub fn verifyConstraints(c: *Checker, p: T.PendingConstraint) void {
     }
 }
 
+/// tsc's `instantiateAliasOrInterfaceWithDefaults`: `given` in front, defaults for the rest.
+pub fn instantiateWithDefaults(c: *Checker, s: *Symbol, given: []const *Type) ?*Type {
+    if (s.flags & F.type_alias != 0) {
+        const params = aliasParams(c, s);
+        if (params.len < given.len) return null;
+        if (params.len == 0) return declaredType(c, s);
+        return instantiateAlias(c, s, params, withDefaults(c, params, given));
+    }
+    const g = declaredType(c, s);
+    if (g.data != .obj or g.data.obj.kind != .iface) return null;
+    const params = g.data.obj.tparams();
+    if (params.len < given.len) return null;
+    if (params.len == 0) return g;
+    return c.internRef(g, withDefaults(c, params, given), null);
+}
+
+fn withDefaults(c: *Checker, params: []*Type, given: []const *Type) []*Type {
+    const out = c.a.alloc(*Type, params.len) catch oom();
+    @memcpy(out[0..given.len], given);
+    @memset(out[given.len..], c.t_unknown);
+    const m = arrayMapper(c, params, out);
+    for (given.len..params.len) |i| {
+        const x = defaultOf(c, params[i]) orelse continue;
+        out[i] = instantiate(c, x, m);
+    }
+    return out;
+}
+
 pub fn instantiateAlias(c: *Checker, s: *Symbol, params: []*Type, args: []*Type) *Type {
     const key = c.keyOf('A', args.len + 1);
     key[1] = @truncate(@intFromPtr(s) >> 3);
@@ -1291,11 +1380,13 @@ pub fn instantiateAlias(c: *Checker, s: *Symbol, params: []*Type, args: []*Type)
 fn typeFromRef(c: *Checker, n: *Node, name: *Node, targs: []*Node) *Type {
     if (expr.inJs(c, n)) {
         if (isJsdocName(c, leftmostName(name))) return c.t_err;
+        // `/** @type {m.Foo} */` with `m = require("./m")` reaches a `@typedef` of that module.
+        if (name.data == .qualified_name and isJsdocName(c, name.data.qualified_name.right)) return c.t_err;
         if (jsdocIntended(c, name, targs)) |t| return t;
     }
     const meaning = F.type;
     const s = switch (name.data) {
-        .identifier => |v| resolveName(c, n, v, meaning),
+        .identifier => |v| resolveName(c, n, v, meaning) orelse requiredType(c, n, v) catch return c.t_err,
         else => entitySymbol(c, name, meaning),
     } orelse {
         reportUnresolved(c, name);
@@ -1304,6 +1395,15 @@ fn typeFromRef(c: *Checker, n: *Node, name: *Node, targs: []*Node) *Type {
     const target = targetOf(c, s) orelse return unresolvedRef(c, name, targs);
     if (name.data == .identifier and target.flags & F.type_param != 0) return tparamOf(c, target);
     return typeRefFromSymbol(c, n, target, targs);
+}
+
+/// The export `const { T } = require("m")` takes, when it is a type. CommonJS exports are not
+/// modeled, so a name the module does not export is left alone.
+fn requiredType(c: *Checker, n: *Node, name: []const u8) error{Unmodeled}!?*Symbol {
+    const r = requireOf(c, n, name) orelse return null;
+    const p = r.prop orelse return null;
+    const e = c.prog.exportOf(r.module orelse return error.Unmodeled, p) orelse return error.Unmodeled;
+    return matches(c, e, F.type);
 }
 
 fn leftmostName(name: *Node) *Node {
@@ -1318,7 +1418,9 @@ fn isJsdocName(c: *Checker, name: *Node) bool {
     if (name.data != .identifier) return false;
     const own = fileOf(c, name);
     for (c.prog.files.items) |sf| for (sf.file.jsdoc_names) |x| {
-        if (!std.mem.eql(u8, x.text, name.data.identifier)) continue;
+        // `@typedef {number} NS.T` declares `NS` as well, and a reference reaches it by its leftmost name.
+        const head = x.text[0 .. std.mem.indexOfScalar(u8, x.text, '.') orelse x.text.len];
+        if (!std.mem.eql(u8, head, name.data.identifier)) continue;
         const s = x.scope orelse return true;
         if (sf.file == own and s.start <= name.start and name.start < s.end) return true;
     };
@@ -1395,6 +1497,7 @@ fn reportUnresolved(c: *Checker, name: *Node) void {
     switch (name.data) {
         .identifier => |v| {
             if (v.len == 0) return;
+            if (classTypeParamFromStatic(c, name, v)) return report(c, name, 2302, "Static members cannot reference class type parameters.");
             const value = resolveName(c, name, v, F.value);
             if (value != null and value.?.flags & F.namespace == 0) {
                 report(c, name, 2749, c.fmt("'{s}' refers to a value, but is being used as a type here. Did you mean 'typeof {s}'?", .{ v, v }));
@@ -1866,6 +1969,7 @@ fn typeOfSymbolWorker(c: *Checker, s: *Symbol) *Type {
             else => {},
         };
     }
+    if (s.flags & F.value_module != 0 and project.isShorthandAmbient(s)) return c.t_any;
     if (s.flags & (F.function | F.method | F.class | F.value_module) != 0) {
         const v = valueObject(c, s);
         if (s.flags & F.class != 0) if (baseTypeVariable(c, s)) |b| return c.getIntersection(&.{ v, b });
@@ -1952,7 +2056,12 @@ fn thisPropertyType(c: *Checker, s: *Symbol) *Type {
     for (s.decls) |left| {
         if (!binder.isThisAssignment(left)) continue;
         const value = left.parent.?.data.binary.right;
-        const t = expr.widenInit(c, value, expr.checkSilent(c, value), false);
+        // `this.x = this.x + 1` says nothing about `x` that the other assignments do not.
+        if (readsThisProperty(value, s.name)) continue;
+        const t = if (value.data == .array_lit and value.data.array_lit.elems.len == 0) blk: {
+            implicitMember(c, s, left, "any[]");
+            break :blk arrayOf(c, c.t_any);
+        } else expr.widenInit(c, value, expr.checkSilent(c, value), false);
         all.append(c.a, t) catch oom();
         if (isInConstructor(left)) {
             in_ctor = true;
@@ -1967,8 +2076,37 @@ fn thisPropertyType(c: *Checker, s: *Symbol) *Type {
         if (hasValue(t)) break true;
     } else false;
     const declared = c.getUnion(if (ctor_decides) from_ctor.items else all.items);
-    if (!hasValue(declared)) return c.t_any;
+    if (!hasValue(declared)) {
+        if (all.items.len > 0) implicitMember(c, s, s.value_decl orelse s.decls[0], "any");
+        return c.t_any;
+    }
     return if (in_method and !in_ctor) addOptional(c, declared) else declared;
+}
+
+fn implicitMember(c: *Checker, s: *Symbol, left: *Node, shown: []const u8) void {
+    if (!c.no_implicit_any) return;
+    report(c, left.parent.?, 7008, c.fmt("Member '{s}' implicitly has an '{s}' type.", .{ s.name, shown }));
+}
+
+const ThisRead = struct { name: []const u8, found: bool = false };
+
+fn readsThisProperty(value: *Node, name: []const u8) bool {
+    var ctx = ThisRead{ .name = name };
+    findThisRead(&ctx, value);
+    return ctx.found;
+}
+
+fn findThisRead(ctx: *ThisRead, n: *Node) void {
+    if (ctx.found) return;
+    switch (n.data) {
+        .prop_access => |x| if (x.expr.data == .this_expr and std.mem.eql(u8, ast.memberText(x.name), ctx.name)) {
+            ctx.found = true;
+            return;
+        },
+        .func => return,
+        else => {},
+    }
+    ast.forEachChild(n, ctx, findThisRead);
 }
 
 /// `f.x = 1; f.x = 'a'` declares one property that holds either.
@@ -2020,26 +2158,54 @@ pub fn nonMissingPropType(c: *Checker, p: *Prop) *Type {
 
 fn propDecl(c: *Checker, d: *Node, ann: ?*Node, init: ?*Node, question: bool) *Type {
     var t = if (ann) |n| typeFromNode(c, n) else if (init) |i| expr.widenInit(c, i, expr.checkInit(c, i), d.mods.readonly) else typeFromConstructor(c, d) orelse c.t_any;
+    if (t == c.t_auto) t = c.t_any;
     if (question) t = addMissing(c, t);
     return t;
 }
 
-/// A property with neither type nor initializer takes what the constructor leaves in `this.x`,
-/// unless it only ever gets `null` or `undefined`.
-fn typeFromConstructor(c: *Checker, d: *Node) ?*Type {
-    if (!(c.no_implicit_any or expr.inJs(c, d)) or d.mods.static or d.mods.declare) return null;
+/// tsc's `getFlowTypeInConstructor` and `getFlowTypeInStaticBlocks`: a property with neither type
+/// nor initializer takes what the constructor (or a static block) leaves in `this.x`, unless it only
+/// ever gets `null` or `undefined`. `t_auto` means nothing was assigned on some path.
+pub fn typeFromConstructor(c: *Checker, d: *Node) ?*Type {
+    if (!(c.no_implicit_any or expr.inJs(c, d)) or d.mods.declare) return null;
     const cls = d.parent orelse return null;
     if (cls.data != .class) return null;
-    const ctor = for (cls.data.class.members) |m| {
-        if (m.data == .func and m.data.func.kind == .ctor and m.data.func.body != null) break m;
-    } else return null;
-    return flowInConstructor(c, d.data.property_decl.name, ctor, c.t_undefined);
+    const name = thisRefName(c, d.data.property_decl.name) orelse return null;
+    if (!d.mods.static) {
+        const ctor = for (cls.data.class.members) |m| {
+            if (m.data == .func and m.data.func.kind == .ctor and m.data.func.body != null) break m;
+        } else return null;
+        const ref = expr.thisAccess(c, name, ctor) orelse return null;
+        return inferredFromFlow(c, flow.flowType(c, ref, c.t_auto, c.t_undefined, ctor));
+    }
+    for (cls.data.class.members) |m| {
+        if (m.data != .static_block) continue;
+        const end = m.data.static_block.end_flow orelse continue;
+        const ref = expr.thisAccessAt(c, name, m, end);
+        if (inferredFromFlow(c, flow.flowType(c, ref, c.t_auto, c.t_undefined, m))) |t| return t;
+    }
+    return null;
 }
 
 /// What `this.name` holds when `ctor` returns, or null when that says nothing beyond `undefined`.
 fn flowInConstructor(c: *Checker, name: *Node, ctor: *Node, initial: *Type) ?*Type {
     const ref = expr.thisAccess(c, name, ctor) orelse return null;
     const t = flow.flowType(c, ref, c.t_auto, initial, ctor);
+    if (flow.isAuto(c, t)) return flow.fromAuto(c, t);
+    return if (hasValue(t)) t else null;
+}
+
+/// `this.x` needs an identifier, so `0` and `"x"` members are referenced by their symbol name,
+/// which `this[0]` and `this["x"]` match.
+fn thisRefName(c: *Checker, n: *Node) ?*Node {
+    if (n.data == .identifier or n.data == .private_name) return n;
+    const id = c.a.create(Node) catch oom();
+    id.* = .{ .start = n.start, .end = n.end, .parent = n.parent, .data = .{ .identifier = expr.propNameOf(c, n) orelse return null } };
+    return id;
+}
+
+fn inferredFromFlow(c: *Checker, t: *Type) ?*Type {
+    if (t == c.t_auto) return t;
     if (flow.isAuto(c, t)) return flow.fromAuto(c, t);
     return if (hasValue(t)) t else null;
 }
@@ -2085,7 +2251,8 @@ fn typeOfVarDecl(c: *Checker, d: *Node) *Type {
         return c.t_auto;
     }
     if (v.init) |i| {
-        if (binder.isEmptyObject(i) and expr.inJs(c, d)) return containerObject(c, d.symbol().?);
+        // `const util = exports = module.exports = {}` holds the `{}` the chain ends in.
+        if (expr.inJs(c, d) and binder.isEmptyObject(binder.chainedValue(i))) return containerObject(c, d.symbol().?);
         // tsc lets such an array evolve with each write, which is not modeled: any element is
         // what a read of it has before the first write.
         if (isEmptyArrayLit(i) and v.name.data == .identifier and (c.no_implicit_any or (c.js_follows_flow and expr.inJs(c, d))) and !isReadElsewhere(c, list, d)) return flow.autoArray(c);
@@ -2176,11 +2343,41 @@ fn padPattern(c: *Checker, t: *Type, init: *Node, pat: *Node) *Type {
 }
 
 /// A setter's parameter takes its type from the getter of the same property.
-pub fn setterGetter(fnode: *Node) ?*Node {
+pub fn setterGetter(c: *Checker, fnode: *Node) ?*Node {
     if (fnode.data.func.kind != .setter and fnode.data.func.kind != .setter_sig) return null;
+    return accessorPartner(c, fnode, isGetter);
+}
+
+pub fn getterSetter(c: *Checker, fnode: *Node) ?*Node {
+    if (!isGetter(fnode)) return null;
+    return accessorPartner(c, fnode, isSetter);
+}
+
+fn accessorPartner(c: *Checker, fnode: *Node, comptime wanted: fn (*Node) bool) ?*Node {
     const s = fnode.symbol() orelse return null;
-    for (s.decls) |x| if (x.data == .func and (x.data.func.kind == .getter or x.data.func.kind == .getter_sig)) return x;
+    for (s.decls) |x| if (wanted(x)) return x;
+    // A name like `[k]` is bound late, so each accessor has its own symbol until the name's value
+    // pairs them.
+    const name = fnode.data.func.name orelse return null;
+    if (name.data != .computed_name) return null;
+    const p = fnode.parent orelse return null;
+    if (p.data != .class) return null;
+    const want = expr.propNameOf(c, name) orelse return null;
+    for (p.data.class.members) |m| {
+        if (!wanted(m) or m.mods.static != fnode.mods.static) continue;
+        const mn = m.data.func.name orelse continue;
+        if (mn.data != .computed_name) continue;
+        if (std.mem.eql(u8, expr.propNameOf(c, mn) orelse continue, want)) return m;
+    }
     return null;
+}
+
+fn isGetter(n: *Node) bool {
+    return n.data == .func and (n.data.func.kind == .getter or n.data.func.kind == .getter_sig);
+}
+
+fn isSetter(n: *Node) bool {
+    return n.data == .func and (n.data.func.kind == .setter or n.data.func.kind == .setter_sig);
 }
 
 /// A getter that says nothing answers to what its setter says.
@@ -2205,7 +2402,7 @@ pub fn typeOfParam(c: *Checker, d: *Node) *Type {
     }
     if (c.param_types.get(d)) |t| return t;
     if (d.parent) |fnode| if (fnode.data == .func) {
-        if (setterGetter(fnode)) |g| return returnOf(c, sigOfDecl(c, g));
+        if (setterGetter(c, fnode)) |g| return returnOf(c, sigOfDecl(c, g));
         expr.assignContext(c, fnode);
         if (c.param_types.get(d)) |t| return t;
     };
@@ -2890,7 +3087,7 @@ fn paramPropOf(c: *Checker, pn: *Node, s: *Symbol, mapper: ?*Mapper, owner: *Typ
     return p;
 }
 
-fn isParamProp(pn: *Node) bool {
+pub fn isParamProp(pn: *Node) bool {
     return pn.mods.public or pn.mods.private or pn.mods.protected or pn.mods.readonly;
 }
 
@@ -3080,7 +3277,11 @@ fn resolveAnon(c: *Checker, t: *Type) *Members {
         if (s.decls.len > 0) {
             for (basesOf(c, cls)) |_| {
                 if (classBaseValue(c, s)) |v| if (v.data == .obj or v.data == .inter) {
-                    for (propsOf(c, v)) |p| if (!m.props.contains(p.name)) m.props.put(c.a, p.name, p) catch oom();
+                    for (propsOf(c, v)) |p| {
+                        // tsc's `addInheritedMembers` leaves the base's static private names behind.
+                        if (p.name.len > 0 and p.name[0] == '#') continue;
+                        if (!m.props.contains(p.name)) m.props.put(c.a, p.name, p) catch oom();
+                    }
                 };
                 break;
             }
@@ -3108,18 +3309,34 @@ fn eraseArgs(c: *Checker, t: *Type) *Type {
     return c.internRef(t, args, null);
 }
 
-fn classBaseValue(c: *Checker, s: *Symbol) ?*Type {
-    for (s.decls) |d| {
-        if (d.data != .class) continue;
-        for (d.data.class.heritage) |h| {
-            if (h.data != .heritage_clause or h.data.heritage_clause.tok != .kw_extends) continue;
-            for (h.data.heritage_clause.types) |e| {
-                if (e.data != .expr_with_type_args) continue;
-                return expr.checkExpression(c, e.data.expr_with_type_args.expr);
-            }
-        }
+fn classExtends(s: *Symbol) ?*Node {
+    for (s.decls) |d| if (d.data == .class) if (extendsClause(d)) |e| return e;
+    return null;
+}
+
+pub fn extendsClause(cls: *Node) ?*Node {
+    for (cls.data.class.heritage) |h| {
+        if (h.data != .heritage_clause or h.data.heritage_clause.tok != .kw_extends) continue;
+        for (h.data.heritage_clause.types) |e| if (e.data == .expr_with_type_args) return e;
     }
     return null;
+}
+
+pub fn classBaseValue(c: *Checker, s: *Symbol) ?*Type {
+    const e = classExtends(s) orelse return null;
+    return expr.checkExpression(c, e.data.expr_with_type_args.expr);
+}
+
+/// The type arguments `extends B<...>` gives a generic base constructor: from the base instance
+/// when it is a plain reference, else straight from the clause, as tsc reads them.
+fn extendsTypeArgs(c: *Checker, s: *Symbol, base: *Type, count: usize) ?[]*Type {
+    if (base.data == .obj and base.data.obj.args != null and base.data.obj.args.?.len == count) return base.data.obj.args.?;
+    const e = classExtends(s) orelse return null;
+    const nodes = e.data.expr_with_type_args.type_args.items;
+    if (nodes.len != count) return null;
+    const args = c.a.alloc(*Type, count) catch oom();
+    for (nodes, args) |n, *a| a.* = typeFromNode(c, n);
+    return args;
 }
 
 fn classCtors(c: *Checker, s: *Symbol) []*Sig {
@@ -3158,9 +3375,8 @@ fn classCtors(c: *Checker, s: *Symbol) []*Sig {
                 q.tparams = o.localTparams();
                 if (b.tparams.len > 0 and basesOf(c, cls).len > 0) {
                     // Base type arguments are fixed by the extends clause; map them in.
-                    const base0 = basesOf(c, cls)[0];
-                    if (base0.data == .obj and base0.data.obj.args != null and base0.data.obj.args.?.len == b.tparams.len) {
-                        const inst = applySig(c, b, arrayMapper(c, b.tparams, base0.data.obj.args.?));
+                    if (extendsTypeArgs(c, s, basesOf(c, cls)[0], b.tparams.len)) |args| {
+                        const inst = applySig(c, b, arrayMapper(c, b.tparams, args));
                         const q2 = c.create(Sig, inst.*);
                         q2.ret = q.ret;
                         q2.tparams = o.localTparams();
@@ -3347,16 +3563,7 @@ pub fn numName(c: *Checker, v: f64) []const u8 {
 /// The one spelling of a numeric property name, shared with the binder so that declarations and
 /// lookups agree on it.
 pub fn numNameAlloc(a: Allocator, v: f64) []const u8 {
-    if (std.math.isNan(v)) return "NaN";
-    if (std.math.isInf(v)) return if (v > 0) "Infinity" else "-Infinity";
-    if (@floor(v) == v and @abs(v) < 1e15) return std.fmt.allocPrint(a, "{d}", .{@as(i64, @intFromFloat(v))}) catch oom();
-    if (v != 0 and (@abs(v) >= 1e21 or @abs(v) < 1e-6)) {
-        const text = std.fmt.allocPrint(a, "{e}", .{v}) catch oom();
-        const e = std.mem.indexOfScalar(u8, text, 'e').?;
-        if (text[e + 1] == '-') return text;
-        return std.mem.concat(a, u8, &.{ text[0 .. e + 1], "+", text[e + 1 ..] }) catch oom();
-    }
-    return std.fmt.allocPrint(a, "{d}", .{v}) catch oom();
+    return emit.numberText(a, v);
 }
 
 /// `{ '1': x }` has a string key and `{ 1: x }` a numeric one; the name alone cannot tell.
@@ -3583,7 +3790,15 @@ fn sigsOf(c: *Checker, t0: *Type, ctor: bool) []*Sig {
         },
         .inter => |x| {
             var out = c.newList(*Sig);
-            for (x) |y| for (sigsOf(c, y, ctor)) |s| out.append(c.a, s) catch oom();
+            const mixins = if (ctor) mixinFlags(c, x) else null;
+            for (x, 0..) |y, i| {
+                const flags = mixins orelse {
+                    for (sigsOf(c, y, ctor)) |s| out.append(c.a, s) catch oom();
+                    continue;
+                };
+                if (flags[i]) continue;
+                for (sigsOf(c, y, ctor)) |s| out.append(c.a, withMixins(c, s, x, flags, i)) catch oom();
+            }
             return out.items;
         },
         .union_ => |x| {
@@ -3598,6 +3813,49 @@ fn sigsOf(c: *Checker, t0: *Type, ctor: bool) []*Sig {
         },
         else => return &.{},
     }
+}
+
+/// tsc's `findMixins`: in an intersection, a constructor taking only `...args: any[]` lends its
+/// instance to the other constructors instead of standing as one. If all are mixins, the first stays.
+fn mixinFlags(c: *Checker, x: []*Type) ?[]bool {
+    const flags = c.a.alloc(bool, x.len) catch oom();
+    var ctors: usize = 0;
+    var mixins: usize = 0;
+    for (x, flags) |y, *f| {
+        const sigs = sigsOf(c, y, true);
+        if (sigs.len > 0) ctors += 1;
+        f.* = isMixinCtor(c, sigs);
+        if (f.*) mixins += 1;
+    }
+    if (mixins == 0) return null;
+    if (ctors == mixins) flags[std.mem.indexOfScalar(bool, flags, true).?] = false;
+    return flags;
+}
+
+fn isMixinCtor(c: *Checker, sigs: []*Sig) bool {
+    if (sigs.len != 1) return false;
+    const s = sigs[0];
+    if (s.tparams.len != 0 or s.params.len != 1 or !s.has_rest) return false;
+    const t = paramTypeAt(c, s, 0);
+    if (t.data == .any) return true;
+    return c.isArrayType(t) and t.data.obj.args.?[0].data == .any;
+}
+
+/// tsc's `includeMixinType`: `s` builds the intersection of its own instance and every mixin's.
+fn withMixins(c: *Checker, s: *Sig, x: []*Type, flags: []bool, at: usize) *Sig {
+    var mixed = c.newList(*Type);
+    for (x, flags, 0..) |y, f, i| {
+        if (i == at) {
+            mixed.append(c.a, returnOf(c, s)) catch oom();
+        } else if (f) {
+            mixed.append(c.a, returnOf(c, sigsOf(c, y, true)[0])) catch oom();
+        }
+    }
+    const q = c.create(Sig, s.*);
+    q.ret = c.getIntersection(mixed.items);
+    q.erased = null;
+    q.shape = null;
+    return q;
 }
 
 /// tsc: `(A[] | B[])["member"]` reads as `(A | B)[]["member"]`, because the overloads of two
@@ -4330,7 +4588,7 @@ test "numeric property names normalize like tsc" {
 }
 
 test "a constraint depth limit marks its answer provisional" {
-    const project = @import("project.zig");
+
     const pool = @import("pool.zig");
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

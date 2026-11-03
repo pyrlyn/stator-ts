@@ -11,6 +11,11 @@ const d = @import("decls.zig");
 const expr = @import("expr.zig");
 const relate = @import("relate.zig");
 const flow = @import("flow.zig");
+const unused = @import("unused.zig");
+const overloads = @import("overloads.zig");
+const modifiers = @import("modifiers.zig");
+const helpers = @import("helpers.zig");
+const lexer = @import("lexer.zig");
 const Node = ast.Node;
 const Symbol = binder.Symbol;
 const F = binder.F;
@@ -48,7 +53,10 @@ fn implicitAny(c: *Checker, p: *Node, fnode: ?*Node) void {
     }
     if (x.type != null or x.init != null) return;
     if (c.param_types.contains(p)) return;
-    if (fnode) |f| if (f.data == .func and d.setterGetter(f) != null) return;
+    if (fnode) |f| if (f.data == .func) {
+        if (d.setterGetter(c, f) != null or privateWithinAmbient(c, f, f.data.func.name)) return;
+    };
+    if (jsDocTyped(c, p)) return;
     if (x.name.data == .identifier) {
         const name = x.name.data.identifier;
         if (std.mem.eql(u8, name, "this")) return;
@@ -60,6 +68,111 @@ fn implicitAny(c: *Checker, p: *Node, fnode: ?*Node) void {
     } else {
         checkPatternAny(c, x.name);
     }
+}
+
+/// tsc's `isPrivateWithinAmbient`: nothing outside can use such a member, so its implicit `any`
+/// harms no one.
+fn privateWithinAmbient(c: *Checker, n: *Node, name: ?*Node) bool {
+    const private = n.mods.private or (if (name) |x| x.data == .private_name else false);
+    return private and isAmbient(c, n);
+}
+
+/// tsc's `widenTypeForVariableLikeDeclaration` for a property with neither a type nor an initializer.
+fn implicitAnyMember(c: *Checker, n: *Node) void {
+    if (!c.no_implicit_any) return;
+    const name, const typed = switch (n.data) {
+        .property_decl => |x| .{ x.name, x.type != null or x.init != null },
+        .property_sig => |x| .{ x.name, x.type != null },
+        else => return,
+    };
+    if (typed) return;
+    const f = d.fileOf(c, n) orelse return;
+    // JSDoc may type it, and is not modeled.
+    if (project.isJsFile(f.path)) return;
+    if (privateWithinAmbient(c, n, name)) return;
+    if (n.data == .property_decl) {
+        if (d.typeFromConstructor(c, n)) |t| if (t != c.t_auto) return;
+        // tsc takes a `declare`d member's type from the base class, which this does not look up.
+        if (n.mods.declare and n.parent.?.data == .class and n.parent.?.data.class.heritage.len > 0) return;
+    }
+    err(c, name, 7008, c.fmt("Member '{s}' implicitly has an 'any' type.", .{f.src[name.start..name.end]}));
+}
+
+/// JSDoc types are not modeled, so a JavaScript parameter that JSDoc may type stays `any`, silently:
+/// a `@param` naming it, or a `@type` or `@overload` on it or on what holds its function.
+fn jsDocTyped(c: *Checker, p: *Node) bool {
+    const f = d.fileOf(c, p) orelse return false;
+    if (!project.isJsFile(f.path)) return false;
+    const name_node = p.data.param.name;
+    const name = if (name_node.data == .identifier) name_node.data.identifier else "";
+    var n: ?*Node = p;
+    while (n) |x| : (n = x.parent) {
+        switch (x.data) {
+            .block, .source_file, .module_block => return false,
+            else => {},
+        }
+        const doc = jsDocBefore(f.src, x.start) orelse continue;
+        if (std.mem.indexOf(u8, doc, "@type") != null or std.mem.indexOf(u8, doc, "@overload") != null) return true;
+        // A `@callback` or `@typedef` comment's tags describe the type it declares, not `p`.
+        const own = doc[0 .. std.mem.indexOf(u8, doc, "@callback") orelse std.mem.indexOf(u8, doc, "@typedef") orelse doc.len];
+        if (name.len > 0 and documentsParam(own, name)) return true;
+    }
+    return false;
+}
+
+/// Whether a JSDoc comment on `n`, or on what holds it within its statement, names one of `tags`.
+pub fn jsDocHas(c: *Checker, n: *Node, tags: []const []const u8) bool {
+    const f = d.fileOf(c, n) orelse return false;
+    if (!project.isJsFile(f.path)) return false;
+    var cur: ?*Node = n;
+    while (cur) |x| : (cur = x.parent) {
+        switch (x.data) {
+            .block, .source_file, .module_block => return false,
+            else => {},
+        }
+        const doc = jsDocBefore(f.src, x.start) orelse continue;
+        for (tags) |t| if (std.mem.indexOf(u8, doc, t) != null) return true;
+    }
+    return false;
+}
+
+fn jsDocBefore(src: []const u8, pos: u32) ?[]const u8 {
+    const before = std.mem.trimEnd(u8, src[0..@min(pos, src.len)], " \t\r\n");
+    if (!std.mem.endsWith(u8, before, "*/")) return null;
+    const open = std.mem.lastIndexOf(u8, before[0 .. before.len - 2], "/*") orelse return null;
+    if (!std.mem.startsWith(u8, before[open..], "/**")) return null;
+    return before[open..];
+}
+
+/// `@param {T} name`, `@param [name]` and the `@arg` and `@argument` spellings.
+fn documentsParam(doc: []const u8, name: []const u8) bool {
+    var i: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, doc, i, '@')) |at| {
+        i = at + 1;
+        var rest = doc[i..];
+        const tag_end = std.mem.indexOfAny(u8, rest, " \t\r\n{") orelse rest.len;
+        const tag = rest[0..tag_end];
+        if (!std.mem.eql(u8, tag, "param") and !std.mem.eql(u8, tag, "arg") and !std.mem.eql(u8, tag, "argument")) continue;
+        rest = std.mem.trimStart(u8, rest[tag_end..], " \t\r\n*");
+        if (std.mem.startsWith(u8, rest, "{")) {
+            var depth: usize = 0;
+            var k: usize = 0;
+            while (k < rest.len) : (k += 1) {
+                if (rest[k] == '{') depth += 1;
+                if (rest[k] == '}') {
+                    depth -= 1;
+                    if (depth == 0) break;
+                }
+            }
+            rest = std.mem.trimStart(u8, rest[@min(k + 1, rest.len)..], " \t\r\n*");
+        }
+        if (std.mem.startsWith(u8, rest, "[")) rest = rest[1..];
+        if (std.mem.startsWith(u8, rest, name)) {
+            const after = rest[name.len..];
+            if (after.len == 0 or !(std.ascii.isAlphanumeric(after[0]) or after[0] == '_' or after[0] == '$')) return true;
+        }
+    }
+    return false;
 }
 
 fn checkPatternAny(c: *Checker, pat: *Node) void {
@@ -106,13 +219,14 @@ fn checkParams(c: *Checker, n: *Node) void {
         for (x.decorators) |dn| _ = expr.checkExpression(c, dn.data.decorator.expr);
         // Signatures without a body are reported by walkTypes, which also reaches the ones in types.
         if (f.body != null) implicitAny(c, p, n);
-        if (x.init) |i| {
+        // Without a body the initializer is only TS2371, from checkParameter; tsc checks nothing inside it.
+        if (x.init) |i| if (f.body != null) {
             const t = expr.checkExpression(c, i);
             if (x.type) |ann| {
                 const want = d.typeFromNode(c, ann);
                 expr.checkAssignable(c, t, want, i, x.name);
             }
-        }
+        };
         if (x.name.data != .identifier) {
             // Only the side effects matter: the pattern's type is resolved and cached before its bindings are checked.
             _ = d.typeOfParam(c, p);
@@ -152,13 +266,14 @@ fn checkReturnEnd(c: *Checker, n: *Node) void {
     }
 }
 
-const RetScan = struct { found: bool = false };
+const RetScan = struct { found: bool = false, any: bool = false };
 
 fn scanRet(s: *RetScan, n: *Node) void {
     switch (n.data) {
         .func, .class => return,
-        .return_stmt => |x| if (x.expr != null) {
-            s.found = true;
+        .return_stmt => |x| {
+            s.any = true;
+            if (x.expr != null) s.found = true;
         },
         .throw_stmt => {},
         else => {},
@@ -170,6 +285,72 @@ fn hasReturnValue(body: *Node) bool {
     var s = RetScan{};
     ast.forEachChild(body, &s, scanRet);
     return s.found;
+}
+
+/// tsc's `HasExplicitReturn` node flag: any `return`, with a value or not.
+fn hasReturn(body: *Node) bool {
+    var s = RetScan{};
+    ast.forEachChild(body, &s, scanRet);
+    return s.any;
+}
+
+/// tsc's `checkAccessorDeclaration`: a getter whose end is reachable must have some `return`.
+/// tsc's `getTypeOfAccessors`: with no annotation on either accessor and no getter body to infer
+/// from, the property is `any`. The setter takes the blame when there is one.
+fn implicitAnyAccessor(c: *Checker, n: *Node) void {
+    if (!c.no_implicit_any) return;
+    const f = n.data.func;
+    const getter, const setter = switch (f.kind) {
+        .getter, .getter_sig => .{ n, d.getterSetter(c, n) },
+        .setter, .setter_sig => .{ d.setterGetter(c, n), n },
+        else => return,
+    };
+    // The pair is judged once, from the setter if there is one.
+    if (setter != null and setter != n) return;
+    // A literal written to, as in `({ set s(v) {} } = o)`, is never typed.
+    if (n.parent) |p| if (p.data == .object_lit and expr.isPatternTarget(p)) return;
+    if (getter) |g| if (g.data.func.ret != null or g.data.func.body != null) return;
+    if (setter) |x| {
+        const ps = x.data.func.params;
+        if (ps.len > 0 and ps[0].data.param.type != null) return;
+    }
+    const file = d.fileOf(c, n) orelse return;
+    // JSDoc may type it, and is not modeled.
+    if (project.isJsFile(file.path)) return;
+    const name = f.name orelse return;
+    if (privateWithinAmbient(c, n, name)) return;
+    const shown = file.src[name.start..name.end];
+    if (setter != null) {
+        err(c, name, 7032, c.fmt("Property '{s}' implicitly has type 'any', because its set accessor lacks a parameter type annotation.", .{shown}));
+    } else {
+        err(c, name, 7033, c.fmt("Property '{s}' implicitly has type 'any', because its get accessor lacks a return type annotation.", .{shown}));
+    }
+}
+
+fn checkGetterReturns(c: *Checker, n: *Node) void {
+    const f = n.data.func;
+    if (f.kind != .getter or f.body == null or isAmbient(c, n)) return;
+    const b = d.bodyOf(c, n) orelse return;
+    if (b.end_flow == null or hasReturn(b.block)) return;
+    err(c, f.name orelse n, 2378, "A 'get' accessor must return a value.");
+}
+
+/// tsc's `checkFunctionOrMethodDeclaration`: a signature without a body or a return type returns `any`.
+fn implicitAnyReturn(c: *Checker, n: *Node) void {
+    const f = n.data.func;
+    if (!c.no_implicit_any or f.ret != null or f.body != null or f.body_missing) return;
+    if (f.kind != .decl and f.kind != .method and f.kind != .method_sig) return;
+    // tsc checks object literal methods as function expressions, which do not get here.
+    if (f.kind == .method and n.parent != null and n.parent.?.data == .object_lit) return;
+    const file = d.fileOf(c, n) orelse return;
+    // Where parsing failed, tsc's recovery often keeps a body this parser does not.
+    if (project.isJsFile(file.path) or file.diags.len > 0) return;
+    const name = f.name orelse {
+        err(c, n, 7011, "Function expression, which lacks return-type annotation, implicitly has an 'any' return type.");
+        return;
+    };
+    if (privateWithinAmbient(c, n, name)) return;
+    err(c, name, 7010, c.fmt("'{s}', which lacks return-type annotation, implicitly has an 'any' return type.", .{file.src[name.start..name.end]}));
 }
 
 fn checkFuncBody(c: *Checker, n: *Node) void {
@@ -249,14 +430,16 @@ fn checkVarDecl(c: *Checker, n: *Node) void {
         if (v.init) |i| {
             const t = expr.checkExpression(c, i);
             if (v.type) |ann| expr.checkAssignable(c, t, d.typeFromNode(c, ann), i, v.name);
-        }
+        } else if (c.no_implicit_any and v.type == null and inVarStmt(n) and !expr.inJs(c, n)) checkPatternAny(c, v.name);
         checkBindings(c, v.name);
         return;
     }
     if (n.symbol()) |s| {
         const declared = d.typeOfSymbol(c, s);
-        // Exported and ambient variables are read from elsewhere, so no flow can type them.
-        if (c.no_implicit_any and v.type == null and v.init == null and declared.data == .err and isPlainDeclaration(n) and !expr.inJs(c, n) and d.isReadElsewhere(c, n.parent.?, n)) {
+        // Exported and ambient variables are read from elsewhere, and a `const` or `using` is never
+        // assigned, so no flow can type them.
+        const unflowed = (isPlainDeclaration(n) and d.isReadElsewhere(c, n.parent.?, n)) or (inVarStmt(n) and n.parent.?.data.var_list.kind != .@"var" and n.parent.?.data.var_list.kind != .let);
+        if (c.no_implicit_any and v.type == null and v.init == null and declared.data == .err and unflowed and !expr.inJs(c, n)) {
             expr.err(c, v.name, 7005, c.fmt("Variable '{s}' implicitly has an 'any' type.", .{s.name}));
         }
         checkRedeclared(c, n, s, v.name);
@@ -359,6 +542,12 @@ fn isNodeCoreModule(name: []const u8) bool {
     return node_core.has(if (std.mem.startsWith(u8, name, "node:")) name[5..] else name);
 }
 
+fn inVarStmt(n: *Node) bool {
+    const list = n.parent orelse return false;
+    const st = list.parent orelse return false;
+    return list.data == .var_list and st.data == .var_stmt;
+}
+
 fn isPlainDeclaration(n: *Node) bool {
     const list = n.parent orelse return false;
     if (list.data != .var_list or list.data.var_list.kind == .@"const") return false;
@@ -373,12 +562,20 @@ pub fn checkModuleRef(c: *Checker, n: *Node, spec: *Node) void {
     const sf = c.prog.sourceOf(f) orelse return;
     const name = spec.data.string_lit;
     if (c.prog.resolveModuleName(sf, name) != null) return;
-    if (isSideEffectImport(n)) return;
-    if (project.isUntypedImport(sf, spec) and !c.prog.cfg.options.flag("noImplicitAny")) return;
+    const side_effect = isSideEffectImport(n);
+    if (side_effect and !(c.prog.cfg.options.noUncheckedSideEffectImports orelse true)) return;
+    // A script runs when imported, though it exports nothing.
+    if (side_effect and sf.resolvedFile(name) != null) return;
     // Whichever pass asks first is the only one: a type is read once, and silently or not.
     const silent = c.silent;
     c.silent = 0;
     defer c.silent = silent;
+    if (sf.untypedPath(name)) |path| {
+        // JavaScript is something to run, which is all a side-effect import asks for.
+        if (c.no_implicit_any and !side_effect) err(c, spec, 7016, c.fmt("Could not find a declaration file for module '{s}'. '{s}' implicitly has an 'any' type.", .{ name, path }));
+        return;
+    }
+    if (side_effect) return err(c, spec, 2882, c.fmt("Cannot find module or type declarations for side-effect import of '{s}'.", .{name}));
     if (isNodeCoreModule(name)) return expr.reportNodeTypes(c, spec, name);
     err(c, spec, 2307, c.fmt("Cannot find module '{s}' or its corresponding type declarations.", .{name}));
 }
@@ -391,6 +588,292 @@ fn grammarErr(c: *Checker, n: *Node, code: u32, msg: []const u8) void {
     if (f.diags.len == 0) err(c, n, code, msg);
 }
 
+/// tsc's `grammarErrorOnFirstToken`.
+fn grammarErrFirstToken(c: *Checker, n: *Node, code: u32, msg: []const u8) bool {
+    const f = d.fileOf(c, n) orelse return false;
+    if (f.diags.len > 0) return false;
+    var lx = lexer.Lexer{ .src = f.src, .a = c.a, .pos = n.start };
+    _ = lx.next();
+    d.reportSpan(c, n, lx.start, lx.pos, code, msg);
+    return true;
+}
+
+/// tsc's `checkGrammarStatementInAmbientContext`: reported once per block, at its first statement.
+fn statementInAmbient(c: *Checker, n: *Node) bool {
+    switch (n.data) {
+        .block, .empty_stmt, .debugger_stmt, .if_stmt, .do_stmt, .while_stmt, .for_stmt, .for_in, .for_of, .break_stmt, .continue_stmt, .return_stmt, .with_stmt, .switch_stmt, .labeled, .throw_stmt, .try_stmt, .expr_stmt => {},
+        else => return false,
+    }
+    if (!isAmbient(c, n)) return false;
+    const p = n.parent orelse return false;
+    const owner, const code, const msg = switch (p.data) {
+        .func => .{ n, @as(u32, 1183), @as([]const u8, "An implementation cannot be declared in ambient contexts.") },
+        // A statement inside another statement is covered by its parent's report.
+        .block, .module_block, .source_file => .{ p, 1036, "Statements are not allowed in ambient contexts." },
+        else => return false,
+    };
+    if (c.ambient_reported.contains(owner)) return false;
+    if (!grammarErrFirstToken(c, n, code, msg)) return false;
+    c.ambient_reported.put(c.a, owner, {}) catch oom();
+    return true;
+}
+
+/// tsc's `checkGrammarVariableDeclaration`.
+fn varDeclGrammar(c: *Checker, n: *Node) void {
+    const v = n.data.var_decl;
+    const list = n.parent orelse return;
+    if (list.data != .var_list) return;
+    const kind = list.data.var_list.kind;
+    const pattern = v.name.data != .identifier;
+    const using: ?[]const u8 = switch (kind) {
+        .using => "using",
+        .await_using => "await using",
+        else => null,
+    };
+    if (pattern) if (using) |k| return grammarErr(c, n, 1492, c.fmt("'{s}' declarations may not have binding patterns.", .{k}));
+    const stmt = list.parent orelse return;
+    const ambient = isAmbient(c, n);
+    if (stmt.data != .for_in and stmt.data != .for_of and !ambient and v.init == null) {
+        if (pattern) return grammarErr(c, n, 1182, "A destructuring declaration must have an initializer.");
+        const k: ?[]const u8 = using orelse if (kind == .@"const") @as([]const u8, "const") else null;
+        if (k) |x| return grammarErr(c, n, 1155, c.fmt("'{s}' declarations must be initialized.", .{x}));
+    }
+    if (v.excl and (stmt.data != .var_stmt or v.type == null or v.init != null or ambient)) {
+        exclGrammar(c, n, v.ann_span.start, v.init != null, v.type == null);
+    }
+}
+
+/// The `!` half of tsc's `checkGrammarProperty`.
+/// tsc's `checkGrammarAwaitOrAwaitUsing`, the `for await` half of `checkGrammarForInOrForOfStatement`
+/// and the static block check in `checkForOfStatement`.
+fn awaitGrammar(c: *Checker, n: *Node) void {
+    const Form = enum { expr, using, loop };
+    const form: Form = switch (n.data) {
+        .await_expr => .expr,
+        // tsc reports these declarations for where they are first.
+        .var_list => |x| if (x.kind == .await_using and !isAmbient(c, n) and !misplacedUsing(n)) .using else return,
+        .for_of => |x| if (x.is_await) .loop else return,
+        else => return,
+    };
+    const f = d.fileOf(c, n) orelse return;
+    var at = n.start;
+    if (form == .loop) {
+        var lx = lexer.Lexer{ .src = f.src, .a = c.a, .pos = n.start };
+        _ = lx.next();
+        _ = lx.next();
+        at = lx.start;
+    }
+    if (form == .expr and inParamInitializer(n)) err(c, n, 2524, "'await' expressions cannot be used in a parameter initializer.");
+    var in_await = false;
+    var prev = n;
+    var cur = n.parent;
+    while (cur) |x| : ({
+        prev = x;
+        cur = x.parent;
+    }) switch (x.data) {
+        // A method's computed name is parsed in the context around it.
+        .func => |fx| if (fx.name != prev) {
+            in_await = x.mods.async;
+            break;
+        },
+        .static_block => return switch (form) {
+            .expr => err(c, n, 18037, "'await' expression cannot be used inside a class static block."),
+            .using => err(c, n, 18054, "'await using' statements cannot be used inside a class static block."),
+            .loop => grammarErrSpan(c, n, at, at + 5, 18038, "'for await' loops cannot be used inside a class static block."),
+        },
+        // tsc parses a property initializer outside the await context of its class.
+        .property_decl => |px| if (px.init == prev) break,
+        // tsc's parser gives an exported top-level class the await context of the module.
+        .class => if (x.mods.@"export" and x.parent != null and x.parent.?.data == .source_file) {
+            in_await = true;
+            break;
+        },
+        else => {},
+    } else {
+        // Outside any function tsc reparses a module's `await (x)` in an await context, and in a
+        // script it is a call: only the `await x` form stays an operator without one.
+        if (form == .expr) {
+            var lx = lexer.Lexer{ .src = f.src, .a = c.a, .pos = n.data.await_expr.expr.start };
+            const t = lx.next();
+            if (!(t == .identifier or t.isKeyword() or t == .numeric or t == .bigint or t == .string)) return;
+        }
+    }
+    if (in_await or f.diags.len > 0) return;
+    if (!inTopLevelContext(n)) return d.reportSpan(c, n, at, at + 5, switch (form) {
+        .expr => 1308,
+        .using => 2852,
+        .loop => 1103,
+    }, switch (form) {
+        .expr => "'await' expressions are only allowed within async functions and at the top levels of modules.",
+        .using => "'await using' statements are only allowed within async functions and at the top levels of modules.",
+        .loop => "'for await' loops are only allowed within async functions and at the top levels of modules.",
+    });
+    if (!f.is_module) d.reportSpan(c, n, at, at + 5, switch (form) {
+        .expr => 1375,
+        .using => 2853,
+        .loop => 1431,
+    }, switch (form) {
+        .expr => "'await' expressions are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.",
+        .using => "'await using' statements are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.",
+        .loop => "'for await' loops are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.",
+    });
+    const o = c.prog.cfg.options;
+    const eql = std.ascii.eqlIgnoreCase;
+    const m = o.module orelse "";
+    const format = o.moduleFormat();
+    if (format == .node and f.implied_cjs) return d.reportSpan(c, n, at, at + 5, 1309, "The current file is a CommonJS module and cannot use 'await' at the top level.");
+    const allowed = format == .node or eql(m, "es2022") or eql(m, "esnext") or eql(m, "preserve") or eql(m, "system");
+    if (allowed and d.targetYear(o.target orelse "esnext") >= 2017) return;
+    d.reportSpan(c, n, at, at + 5, switch (form) {
+        .expr => 1378,
+        .using => 2854,
+        .loop => 1432,
+    }, switch (form) {
+        .expr => "Top-level 'await' expressions are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.",
+        .using => "Top-level 'await using' statements are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.",
+        .loop => "Top-level 'for await' loops are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.",
+    });
+}
+
+fn misplacedUsing(list: *Node) bool {
+    const p = list.parent orelse return false;
+    if (p.data == .for_in) return true;
+    const pp = p.parent orelse return false;
+    return p.data == .var_stmt and (pp.data == .case_clause or pp.data == .default_clause);
+}
+
+/// tsc's `isInParameterInitializerBeforeContainingFunction`.
+fn inParamInitializer(n0: *Node) bool {
+    var n = n0;
+    var in_binding = false;
+    while (n.parent) |p| : (n = p) switch (p.data) {
+        .func => return false,
+        .param => |x| if (in_binding or x.init == n) return true,
+        .binding_elem => |x| if (x.init == n) {
+            in_binding = true;
+        },
+        else => {},
+    };
+    return false;
+}
+
+fn propertyExclGrammar(c: *Checker, n: *Node) void {
+    const p = n.data.property_decl;
+    if (!p.excl) return;
+    const cls = n.parent orelse return;
+    if (p.init != null or p.type == null or cls.data != .class or isAmbient(c, n) or n.mods.static or n.mods.abstract) {
+        exclGrammar(c, n, p.ann_span.start, p.init != null, p.type == null);
+    }
+}
+
+fn exclGrammar(c: *Checker, n: *Node, at: u32, has_init: bool, untyped: bool) void {
+    const code: u32, const msg: []const u8 = if (has_init)
+        .{ 1263, "Declarations with initializers cannot also have definite assignment assertions." }
+    else if (untyped)
+        .{ 1264, "Declarations with definite assignment assertions must also have type annotations." }
+    else
+        .{ 1255, "A definite assignment assertion '!' is not permitted in this context." };
+    grammarErrSpan(c, n, at, at + 1, code, msg);
+}
+
+fn isIteration(n: *Node, through_labels: bool) bool {
+    return switch (n.data) {
+        .do_stmt, .while_stmt, .for_stmt, .for_in, .for_of => true,
+        .labeled => |x| through_labels and isIteration(x.stmt, true),
+        else => false,
+    };
+}
+
+/// tsc's `checkGrammarBreakOrContinueStatement` and the duplicate-label half of `checkLabeledStatement`.
+fn jumpGrammar(c: *Checker, n: *Node) void {
+    if (n.data == .labeled) {
+        const name = n.data.labeled.label.data.identifier;
+        var cur = n.parent;
+        while (cur) |x| : (cur = x.parent) {
+            if (x.data == .func) return;
+            if (x.data == .labeled and std.mem.eql(u8, x.data.labeled.label.data.identifier, name)) {
+                return grammarErr(c, n.data.labeled.label, 1114, c.fmt("Duplicate label '{s}'.", .{name}));
+            }
+        }
+        return;
+    }
+    const label, const is_break = switch (n.data) {
+        .break_stmt => |x| .{ x.label, true },
+        .continue_stmt => |x| .{ x.label, false },
+        else => return,
+    };
+    var cur: ?*Node = n;
+    while (cur) |x| : (cur = x.parent) {
+        switch (x.data) {
+            .func, .static_block => return grammarErr(c, n, 1107, "Jump target cannot cross function boundary."),
+            .labeled => |l| if (label) |t| if (std.mem.eql(u8, l.label.data.identifier, t.data.identifier)) {
+                if (!is_break and !isIteration(l.stmt, true)) grammarErr(c, n, 1115, "A 'continue' statement can only jump to a label of an enclosing iteration statement.");
+                return;
+            },
+            .switch_stmt => if (is_break and label == null) return,
+            else => if (label == null and isIteration(x, false)) return,
+        }
+    }
+    if (label != null) {
+        if (is_break) grammarErr(c, n, 1116, "A 'break' statement can only jump to a label of an enclosing statement.") else grammarErr(c, n, 1115, "A 'continue' statement can only jump to a label of an enclosing iteration statement.");
+    } else {
+        if (is_break) grammarErr(c, n, 1105, "A 'break' statement can only be used within an enclosing iteration or switch statement.") else grammarErr(c, n, 1104, "A 'continue' statement can only be used within an enclosing iteration statement.");
+    }
+}
+
+/// tsc's `checkAmbientInitializer`: only a `const` or `readonly` without a type may keep a literal.
+fn ambientInitializer(c: *Checker, n: *Node) void {
+    const init, const typed, const const_like = switch (n.data) {
+        .var_decl => |x| blk: {
+            const list = n.parent orelse return;
+            if (list.data != .var_list) return;
+            if (list.parent) |st| if (st.data == .for_in or st.data == .for_of) return;
+            const k = list.data.var_list.kind;
+            break :blk .{ x.init, x.type != null, k == .@"const" or k == .using or k == .await_using };
+        },
+        // A decorator there is already an error, and tsc stops at the first one.
+        .property_decl => |x| if (x.decorators.len > 0) return else .{ x.init, x.type != null, n.mods.readonly },
+        else => return,
+    };
+    const i = init orelse return;
+    if (!isAmbient(c, n)) return;
+    if (!const_like or typed) return grammarErr(c, i, 1039, "Initializers are not allowed in ambient contexts.");
+    if (!simpleAmbientInit(c, i)) grammarErr(c, i, 1254, "A 'const' initializer in an ambient context must be a string or numeric literal or literal enum reference.");
+}
+
+fn simpleAmbientInit(c: *Checker, i: *Node) bool {
+    return switch (i.data) {
+        .string_lit, .no_subst_template, .numeric_lit, .bigint_lit, .true_lit, .false_lit => true,
+        .prefix => |x| x.op == .minus and (x.expr.data == .numeric_lit or x.expr.data == .bigint_lit),
+        .prop_access => enumLike(expr.checkExpression(c, i)),
+        .elem_access => |x| (x.index.data == .string_lit or x.index.data == .no_subst_template or x.index.data == .numeric_lit) and isEntityName(x.expr) and enumLike(expr.checkExpression(c, i)),
+        else => false,
+    };
+}
+
+fn isEntityName(n: *Node) bool {
+    return switch (n.data) {
+        .identifier => true,
+        .prop_access => |x| isEntityName(x.expr),
+        else => false,
+    };
+}
+
+fn enumLike(t: *T.Type) bool {
+    return switch (t.data) {
+        .enum_, .enum_lit => true,
+        .union_ => |ms| for (ms) |m| {
+            if (m.data != .enum_lit) break false;
+        } else true,
+        else => false,
+    };
+}
+
+fn grammarErrSpan(c: *Checker, n: *Node, start: u32, end: u32, code: u32, msg: []const u8) void {
+    const f = d.fileOf(c, n) orelse return;
+    if (f.diags.len == 0) d.reportSpan(c, n, start, end, code, msg);
+}
+
 /// Reports `n` when it sits outside a file or a module. What it would have checked stays unchecked.
 fn misplaced(c: *Checker, n: *Node, code: u32, msg: []const u8) bool {
     const p = n.parent orelse return false;
@@ -399,7 +882,7 @@ fn misplaced(c: *Checker, n: *Node, code: u32, msg: []const u8) bool {
     return true;
 }
 
-fn isAmbientModule(n: *Node) bool {
+pub fn isAmbientModule(n: *Node) bool {
     const x = n.data.module_decl;
     return x.is_global or x.name.data == .string_lit;
 }
@@ -428,21 +911,85 @@ fn checkExportAssign(c: *Checker, n: *Node) void {
         }
         return;
     }
+    // Exporting a name that is only a type or a namespace is fine; tsc checks it as a value
+    // only when it is one or does not resolve.
+    if (x.expr.data == .identifier) if (d.resolveName(c, x.expr, x.expr.data.identifier, F.value | F.@"type" | F.namespace | F.alias)) |s| {
+        const target = d.targetOf(c, s) orelse s;
+        if (target.flags & F.value == 0) return;
+    };
     _ = expr.checkExpression(c, x.expr);
 }
 
-/// `export` and `declare` mean something only at the top of a file or a module.
-fn checkStatementMods(c: *Checker, n: *Node) void {
-    const p = n.parent orelse return;
-    if (p.data == .source_file or p.data == .module_block) return;
-    var m = n.mods;
-    switch (n.data) {
-        .func => m.async = false,
-        .class => m.abstract = false,
-        .enum_decl => m.@"const" = false,
-        else => {},
+/// tsc's `nodeCanBeDecorated`, reported as `checkGrammarModifiers` does: at the declaration's
+/// first token, which is its first decorator.
+fn checkDecorators(c: *Checker, n: *Node) void {
+    // The parser has reported a decorated `this` parameter.
+    if (n.data == .param and n.parent.?.data == .func and d.thisParam(n.parent.?) == n) {} else if (n.data == .export_assign and n.mods.decorated and decoratedClass(n.data.export_assign.expr)) {
+        grammarErr(c, n.data.export_assign.expr, 8038, "Decorators may not appear after 'export' or 'export default' if they also appear before 'export'.");
+    } else if (decorated(n) and !canBeDecorated(c, n)) {
+        if (n.data == .func and n.data.func.kind == .method and n.data.func.body == null) {
+            grammarErr(c, n, 1249, "A decorator can only decorate a method implementation, not an overload.");
+        } else {
+            grammarErr(c, n, 1206, "Decorators are not valid here.");
+        }
     }
-    if (m != ast.Mods{}) grammarErr(c, n, 1184, "Modifiers cannot appear here.");
+    if (n.data == .func) if (n.data.func.body) |b| if (b.data == .lazy_body) {
+        for (n.data.func.params) |p| checkDecorators(c, p);
+        if (d.bodyOf(c, n)) |body| checkDecorators(c, body.block);
+        return;
+    };
+    ast.forEachChild(n, c, checkDecorators);
+}
+
+fn decorated(n: *Node) bool {
+    if (n.mods.decorated) return true;
+    return switch (n.data) {
+        .func => |x| x.decorators.len > 0,
+        .class => |x| x.decorators.len > 0,
+        .param => |x| x.decorators.len > 0,
+        .property_decl => |x| x.decorators.len > 0,
+        else => false,
+    };
+}
+
+fn decoratedClass(n: *Node) bool {
+    return n.data == .class and n.data.class.decorators.len > 0;
+}
+
+fn canBeDecorated(c: *Checker, n: *Node) bool {
+    const parent = n.parent orelse return false;
+    // `export default class` is a declaration, whichever side of `export` its decorators sit.
+    if (n.data == .export_assign) return !n.data.export_assign.is_equals and n.data.export_assign.expr.data == .class;
+    if (n.mods.decorated) return false;
+    const legacy = c.prog.cfg.options.experimentalDecorators orelse false;
+    if (n.data == .class and parent.data == .export_assign) return true;
+    const in_class_decl = parent.data == .class and !parent.data.class.is_expr;
+    switch (n.data) {
+        .class => |x| return !x.is_expr or !legacy,
+        .property_decl => |x| {
+            // Private names cannot be decorated yet under the legacy proposal.
+            if (legacy) return x.name.data != .private_name and in_class_decl;
+            return parent.data == .class and !n.mods.abstract and !n.mods.declare;
+        },
+        .func => |x| switch (x.kind) {
+            .method, .getter, .setter => {
+                if (legacy and x.name != null and x.name.?.data == .private_name) return false;
+                if (x.body == null) return false;
+                return if (legacy) in_class_decl else parent.data == .class;
+            },
+            else => return false,
+        },
+        .param => {
+            // Parameter decorators wait on the proposal to be standardized.
+            if (!legacy or parent.data != .func) return false;
+            const f = parent.data.func;
+            if (f.body == null or !(f.kind == .ctor or f.kind == .method or f.kind == .setter)) return false;
+            if (d.thisParam(parent) == n) return false;
+            const owner = parent.parent orelse return false;
+            return owner.data == .class and !owner.data.class.is_expr;
+        },
+        else => return false,
+    }
 }
 
 fn isSideEffectImport(n: *Node) bool {
@@ -480,12 +1027,14 @@ fn checkImport(c: *Checker, n: *Node) void {
         const s = e.data.import_spec;
         const nm = s.prop_name orelse s.name;
         const name = if (nm.data == .identifier) nm.data.identifier else if (nm.data == .string_lit) nm.data.string_lit else continue;
-        if (c.prog.exportOf(m, name) != null) continue;
+        if (c.prog.importedExport(d.fileOf(c, n), m, name) != null) continue;
         missingExport(c, m, nm, name);
     }
 }
 
 fn moduleName(m: *Symbol) []const u8 {
+    // An ambient module is named by its declaration, not by the file that holds it.
+    if (m.decls.len > 0 and m.decls[0].data == .module_decl) return m.name;
     return if (m.file) |f| f.path else m.name;
 }
 
@@ -530,7 +1079,7 @@ fn checkExportDecl(c: *Checker, n: *Node) void {
         if (nm.data != .identifier) continue;
         const name = nm.data.identifier;
         if (x.specifier != null) {
-            if (m) |mm| if (c.prog.exportOf(mm, name) == null and c.prog.exportOf(mm, "export=") == null) missingExport(c, mm, nm, name);
+            if (m) |mm| if (c.prog.importedExport(d.fileOf(c, n), mm, name) == null and c.prog.exportOf(mm, "export=") == null) missingExport(c, mm, nm, name);
         } else if (d.resolveName(c, n, name, F.value | F.type | F.namespace | F.alias) == null) {
             if (expr.suggestName(c, nm, name, F.value | F.type | F.namespace)) |sug| {
                 err(c, nm, 2552, c.fmt("Cannot find name '{s}'. Did you mean '{s}'?", .{ name, sug }));
@@ -546,29 +1095,28 @@ fn checkStmt(c: *Checker, n: *Node) void {
     switch (n.data) {
         .block => |x| checkBlock(c, x.stmts),
         .var_stmt => |x| {
-            checkStatementMods(c, n);
             checkStmt(c, x.list);
         },
         .var_list => |x| for (x.decls) |v| checkVarDecl(c, v),
         .expr_stmt => |x| _ = expr.checkExpression(c, x.expr),
         .if_stmt => |x| {
-            _ = expr.checkExpression(c, x.cond);
+            _ = expr.checkCondition(c, x.cond);
             checkStmt(c, x.then);
             if (x.els) |e| checkStmt(c, e);
         },
         .do_stmt => |x| {
             checkStmt(c, x.body);
-            _ = expr.checkExpression(c, x.cond);
+            _ = expr.checkCondition(c, x.cond);
         },
         .while_stmt => |x| {
-            _ = expr.checkExpression(c, x.cond);
+            _ = expr.checkCondition(c, x.cond);
             checkStmt(c, x.body);
         },
         .for_stmt => |x| {
             if (x.init) |i| {
                 if (i.data == .var_list) checkStmt(c, i) else _ = expr.checkExpression(c, i);
             }
-            if (x.cond) |e| _ = expr.checkExpression(c, e);
+            if (x.cond) |e| _ = expr.checkCondition(c, e);
             if (x.update) |e| _ = expr.checkExpression(c, e);
             checkStmt(c, x.body);
         },
@@ -581,13 +1129,20 @@ fn checkStmt(c: *Checker, n: *Node) void {
             checkStmt(c, x.body);
         },
         .for_of => |x| {
-            forInit(c, x.init);
+            if (x.init.data == .var_list) checkStmt(c, x.init);
             const t = expr.checkExpression(c, x.expr);
-            _ = expr.iteratedOf(c, x.expr, expr.nonNullReport(c, t, x.expr), x.is_await);
+            const elem = expr.iteratedOf(c, x.expr, expr.nonNullReport(c, t, x.expr), x.is_await);
+            // An expression on the left is assigned each element, as `x.init = elem` would be.
+            if (x.init.data != .var_list) expr.destructureInto(c, binder.stripParens(x.init), elem);
             checkStmt(c, x.body);
         },
         .return_stmt => checkReturn(c, n),
-        .with_stmt => |x| _ = expr.checkExpression(c, x.expr),
+        .with_stmt => |x| {
+            _ = expr.checkExpression(c, x.expr);
+            const f = d.fileOf(c, n).?;
+            const close = std.mem.lastIndexOfScalar(u8, f.src[n.start..x.body.start], ')') orelse x.body.start - n.start - 1;
+            grammarErrSpan(c, n, n.start, n.start + @as(u32, @intCast(close)) + 1, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
+        },
         .switch_stmt => |x| {
             const t = expr.checkExpression(c, x.expr);
             for (x.clauses) |cl| {
@@ -618,23 +1173,19 @@ fn checkStmt(c: *Checker, n: *Node) void {
             if (x.finally) |f| checkStmt(c, f);
         },
         .func => {
-            checkStatementMods(c, n);
+            overloads.check(c, n);
             checkFuncBody(c, n);
         },
         .class => {
-            checkStatementMods(c, n);
             checkClass(c, n);
         },
         .interface => {
-            checkStatementMods(c, n);
             checkInterface(c, n);
         },
         .type_alias => |x| {
-            checkStatementMods(c, n);
             _ = d.typeFromNode(c, x.type);
         },
         .enum_decl => |x| {
-            checkStatementMods(c, n);
             if (n.symbol()) |s| _ = d.declaredType(c, s);
             for (x.members) |m| {
                 const member = m.data.enum_member;
@@ -671,6 +1222,39 @@ fn isOverrideOk(c: *Checker, p: *T.Prop, b: *T.Prop) bool {
     return relate.isAssignable(c, d.propType(c, p), d.propType(c, b));
 }
 
+/// tsc's `getTypeWithoutSignatures`.
+/// tsc's `getTypeWithoutSignatures` for the static side of a class's base: properties only.
+fn staticBaseShape(c: *Checker, t: *Type) *Type {
+    if (t.data != .obj) return t;
+    const out = c.create(T.Members, .{});
+    for (d.propsOf(c, t)) |p| {
+        // Static private names are not inherited, and `prototype` repeats the instance-side
+        // check with `any` type arguments.
+        if (p.name.len > 0 and p.name[0] == '#') continue;
+        if (std.mem.eql(u8, p.name, "prototype")) continue;
+        out.props.put(c.a, p.name, p) catch oom();
+    }
+    return c.newObj(.{ .kind = .anon, .members = out });
+}
+
+/// tsc's `issueMemberSpecificError`: each member the class declares against the same one in
+/// `base`, before falling back to an error on the class as a whole.
+fn memberErrors(c: *Checker, n: *Node, t: *Type, this_t: *Type, base: *Type, shown: *Type) bool {
+    var any = false;
+    for (d.propsOf(c, base)) |bp| {
+        // A private name is its class's own: a subclass's `#x` is another member.
+        if (bp.name.len > 0 and bp.name[0] == '#') continue;
+        const p = d.ownProp(c, this_t, bp.name) orelse continue;
+        if (p == bp or p.decl == bp.decl) continue;
+        if (!isOverrideOk(c, p, bp)) {
+            const at = if (p.decl) |dn| nameOfMember(dn) else n;
+            err(c, at, 2416, c.fmt("Property '{s}' in type '{s}' is not assignable to the same property in base type '{s}'.", .{ p.name, expr.show(c, t), expr.show(c, shown) }));
+            any = true;
+        }
+    }
+    return any;
+}
+
 fn checkClass(c: *Checker, n: *Node) void {
     const x = n.data.class;
     for (x.decorators) |dn| _ = expr.checkExpression(c, dn.data.decorator.expr);
@@ -697,28 +1281,102 @@ fn checkClass(c: *Checker, n: *Node) void {
     for (d.basesOf(c, t)) |b0| {
         const base = d.withThis(c, b0, t.data.obj.thisType() orelse t);
         if (base.data != .obj) continue;
-        for (d.propsOf(c, base)) |bp| {
-            if (bp.private) continue;
-            const p = d.ownProp(c, this_t, bp.name) orelse continue;
-            if (p == bp or p.decl == bp.decl) continue;
-            if (!isOverrideOk(c, p, bp)) {
-                const at = if (p.decl) |dn| nameOfMember(dn) else n;
-                err(c, at, 2416, c.fmt("Property '{s}' in type '{s}' is not assignable to the same property in base type '{s}'.", .{ p.name, expr.show(c, t), expr.show(c, b0) }));
+        const at = x.name orelse n;
+        if (memberErrors(c, n, t, this_t, base, b0)) {
+            // tsc reports the static side only for a class whose instance side fits.
+        } else if (d.membersOf(c, base).ctors.len == 0 and !relate.isAssignable(c, this_t, base)) {
+            // A class instance here leaves out the construct signatures tsc inherits.
+            if (!expr.reportWeak(c, this_t, base, at)) err(c, at, 2415, c.fmt("Class '{s}' incorrectly extends base class '{s}'.", .{ expr.show(c, t), expr.show(c, b0) }));
+        } else if (d.classBaseValue(c, s)) |ctor| {
+            const static_t = d.typeOfSymbol(c, s);
+            const static_base = staticBaseShape(c, d.getApparent(c, ctor));
+            if (!T.isAny(static_base) and !relate.isAssignable(c, static_t, static_base)) {
+                err(c, at, 2417, c.fmt("Class static side '{s}' incorrectly extends base class static side '{s}'.", .{ expr.show(c, static_t), expr.show(c, ctor) }));
             }
         }
         checkAbstract(c, n, t, base);
+        checkMemberKinds(c, t, base, b0);
     }
     for (x.heritage) |h| {
         if (h.data != .heritage_clause or h.data.heritage_clause.tok != .kw_implements) continue;
         for (h.data.heritage_clause.types) |e| {
             const it = d.typeFromNode(c, e);
             if (T.isAny(it) or it.data != .obj) continue;
-            if (!relate.isAssignable(c, this_t, d.withThis(c, it, t.data.obj.thisType() orelse t))) {
-                err(c, e, 2420, c.fmt("Class '{s}' incorrectly implements interface '{s}'.", .{ s.name, expr.show(c, it) }));
+            const base = d.withThis(c, it, t.data.obj.thisType() orelse t);
+            if (!relate.isAssignable(c, this_t, base) and !memberErrors(c, n, t, this_t, base, it) and !expr.reportWeak(c, this_t, base, x.name orelse n)) {
+                const shown = expr.show(c, it);
+                const of_class = if (it.data.obj.sym) |cs| cs.flags & F.class != 0 else false;
+                if (of_class) {
+                    err(c, x.name orelse n, 2720, c.fmt("Class '{s}' incorrectly implements class '{s}'. Did you mean to extend '{s}' and inherit its members as a subclass?", .{ s.name, shown, shown }));
+                } else {
+                    err(c, x.name orelse n, 2420, c.fmt("Class '{s}' incorrectly implements interface '{s}'.", .{ s.name, shown }));
+                }
             }
         }
     }
+    checkIndexConstraints(c, this_t, s, n, false);
+    checkIndexConstraints(c, d.typeOfSymbol(c, s), s, n, true);
     checkPropInit(c, n);
+}
+
+// ---- index signatures: tsc's checkIndexConstraints ----
+
+/// Declared directly in the type being checked rather than inherited.
+fn declaredIn(decl: ?*Node, owner: ?*Symbol, node: *Node) bool {
+    const p = (decl orelse return false).parent orelse return false;
+    if (p == node) return true;
+    const o = owner orelse return false;
+    const s = p.symbol() orelse return false;
+    return s.resolve() == o.resolve();
+}
+
+/// The index signatures whose key a property name falls under.
+fn appliesTo(c: *Checker, key: *Type, name: []const u8) bool {
+    if (key == c.t_string) return true;
+    if (key == c.t_number) return expr.isNumericName(c, name);
+    if (key.data == .tmpl or key.data == .strmap) return relate.isAssignable(c, c.strLit(name), key);
+    return false;
+}
+
+fn appliesToIndex(c: *Checker, key: *Type, other: *Type) bool {
+    return relate.isAssignable(c, other, key) or (key == c.t_string and relate.isAssignable(c, other, c.t_number));
+}
+
+/// The interface can stand as the error site only when no single base brought both sides along.
+fn interfaceSite(c: *Checker, t: *Type, node: *Node, prop: ?[]const u8, key: *Type, other: *Type) ?*Node {
+    if (node.data != .interface) return null;
+    for (d.basesOf(c, t)) |b| {
+        const has_left = if (prop) |name| d.getProp(c, b, name) != null else d.indexValue(c, b, key) != null;
+        if (has_left and d.indexValue(c, b, other) != null) return null;
+    }
+    return node.data.interface.name;
+}
+
+fn checkIndexConstraints(c: *Checker, t: *Type, owner: ?*Symbol, node: *Node, is_static: bool) void {
+    const infos = d.indexesOf(c, t);
+    if (infos.len == 0) return;
+    for (d.propsOf(c, t)) |p| {
+        if (is_static and std.mem.eql(u8, p.name, "prototype")) continue;
+        if (p.name.len > 0 and (p.name[0] == '#' or std.mem.startsWith(u8, p.name, "__@"))) continue;
+        const local_prop = declaredIn(p.decl, owner, node);
+        const pt = d.propType(c, p);
+        for (infos) |info| {
+            if (!appliesTo(c, info.key, p.name)) continue;
+            const site = if (local_prop) binder.nameNode(p.decl.?) orelse p.decl.? else if (declaredIn(info.decl, owner, node)) info.decl.? else interfaceSite(c, t, node, p.name, info.key, info.key) orelse continue;
+            if (relate.isAssignable(c, pt, info.ty)) continue;
+            err(c, site, 2411, c.fmt("Property '{s}' of type '{s}' is not assignable to '{s}' index type '{s}'.", .{ p.name, expr.show(c, pt), expr.show(c, info.key), expr.show(c, info.ty) }));
+        }
+    }
+    if (infos.len < 2) return;
+    for (infos) |check| {
+        const local_check = declaredIn(check.decl, owner, node);
+        for (infos) |info| {
+            if (info.key == check.key or !appliesToIndex(c, info.key, check.key)) continue;
+            const site = if (local_check) check.decl.? else if (declaredIn(info.decl, owner, node)) info.decl.? else interfaceSite(c, t, node, null, check.key, info.key) orelse continue;
+            if (relate.isAssignable(c, check.ty, info.ty)) continue;
+            err(c, site, 2413, c.fmt("'{s}' index type '{s}' is not assignable to '{s}' index type '{s}'.", .{ expr.show(c, check.key), expr.show(c, check.ty), expr.show(c, info.key), expr.show(c, info.ty) }));
+        }
+    }
 }
 
 /// What `override` is judged against, and whether a member that overrides has to say so.
@@ -830,6 +1488,61 @@ fn nameOfMember(n: *Node) *Node {
     };
 }
 
+const MemberKind = enum { property, accessor, method };
+
+fn memberKind(p: *T.Prop) ?MemberKind {
+    const s = p.sym orelse return if (p.method) .method else .property;
+    if (s.flags & F.accessor != 0) return .accessor;
+    if (s.flags & F.method != 0) return .method;
+    if (s.flags & F.property == 0) return null;
+    const dn = p.decl orelse s.value_decl orelse return .property;
+    return if (dn.data == .property_decl and dn.mods.accessor) .accessor else .property;
+}
+
+/// tsc's `checkKindsOfPropertyMemberOverrides`: a base member keeps its kind in a subclass,
+/// except that a method may become a property and anything may override an abstract or
+/// interface member.
+fn checkMemberKinds(c: *Checker, t: *Type, base: *Type, shown: *Type) void {
+    for (d.propsOf(c, base)) |bp| {
+        if (bp.private or (bp.name.len > 0 and bp.name[0] == '#')) continue;
+        const p = d.ownProp(c, t, bp.name) orelse continue;
+        if (p == bp or p.decl == bp.decl or p.private) continue;
+        const bk = memberKind(bp) orelse continue;
+        const pk = memberKind(p) orelse continue;
+        const pd = p.decl orelse continue;
+        // A JavaScript `this.x = ...` declares no kind of its own.
+        if (pd.data != .property_decl and pd.data != .func and pd.data != .param) continue;
+        const at = nameOfMember(pd);
+        if (bk != .method and pk != .method) {
+            if (bk == pk or abstractOrInterface(bp)) continue;
+            if (pk == .property) {
+                err(c, at, 2610, c.fmt("'{s}' is defined as an accessor in class '{s}', but is overridden here in '{s}' as an instance property.", .{ bp.name, expr.show(c, shown), expr.show(c, t) }));
+            } else {
+                err(c, at, 2611, c.fmt("'{s}' is defined as a property in class '{s}', but is overridden here in '{s}' as an accessor.", .{ bp.name, expr.show(c, shown), expr.show(c, t) }));
+            }
+            continue;
+        }
+        const code: u32, const fmt = switch (bk) {
+            .method => if (pk == .accessor) .{ 2423, "function" } else continue,
+            .accessor => .{ 2426, "accessor" },
+            .property => .{ 2425, "property" },
+        };
+        const as = if (code == 2423) "accessor" else "function";
+        err(c, at, code, c.fmt("Class '{s}' defines instance member {s} '{s}', but extended class '{s}' defines it as instance member {s}.", .{ expr.show(c, shown), fmt, bp.name, expr.show(c, t), as }));
+    }
+}
+
+fn abstractOrInterface(bp: *T.Prop) bool {
+    const s = bp.sym orelse return false;
+    if (s.decls.len == 0) return false;
+    for (s.decls) |dn| {
+        const in_interface = if (dn.parent) |x| x.data == .interface else false;
+        const abstract_slot = bp.abstract and !(dn.data == .property_decl and dn.data.property_decl.init != null);
+        if (!in_interface and !abstract_slot) return false;
+    }
+    return true;
+}
+
 fn checkAbstract(c: *Checker, n: *Node, t: *Type, base: *Type) void {
     if (n.mods.abstract) return;
     var missing = c.newList(*T.Prop);
@@ -849,18 +1562,43 @@ fn checkAbstract(c: *Checker, n: *Node, t: *Type, base: *Type) void {
     }
 }
 
-fn hasDefiniteInit(c: *Checker, cls: *Node, name: []const u8) bool {
+fn hasDefiniteInit(c: *Checker, cls: *Node, name: *Node) bool {
     for (cls.data.class.members) |m| {
         if (m.data != .func or m.data.func.kind != .ctor) continue;
         const body = d.bodyOf(c, m) orelse continue;
-        var s = InitScan{ .c = c, .name = name };
+        var s = InitScan{ .c = c, .name = if (name.data == .computed_name) "" else ast.memberText(name) };
+        if (name.data == .computed_name) s.key = constKey(c, name.data.computed_name.expr) orelse return false;
         ast.forEachChild(body.block, &s, scanInit);
         return s.found;
     }
     return false;
 }
 
-const InitScan = struct { c: *Checker, name: []const u8, found: bool = false };
+/// tsc matches `this[key]` only when the key names a property statically: a literal, or a
+/// constant or enum member reached by name. `Symbol.iterator` is a plain property, so assigning
+/// it never counts, and neither does a key in parentheses.
+const Key = union(enum) { text: []const u8, sym: *Symbol };
+
+fn constKey(c: *Checker, n: *Node) ?Key {
+    switch (n.data) {
+        .string_lit, .numeric_lit => |v| return .{ .text = v },
+        .identifier, .prop_access => {},
+        else => return null,
+    }
+    const named = d.entitySymbol(c, n, F.value | F.alias) orelse return null;
+    const s = c.prog.resolveAlias(named, 0) orelse named;
+    if (!expr.isConstVar(s) and s.flags & F.enum_member == 0) return null;
+    return .{ .sym = s };
+}
+
+fn sameKey(a: Key, b: Key) bool {
+    return switch (a) {
+        .text => |x| b == .text and std.mem.eql(u8, x, b.text),
+        .sym => |x| b == .sym and x == b.sym,
+    };
+}
+
+const InitScan = struct { c: *Checker, name: []const u8, key: ?Key = null, found: bool = false };
 
 /// Any `this.x = …` counts: tsc proves it by flow, but only a miss would be a wrong error.
 fn scanInit(s: *InitScan, n: *Node) void {
@@ -873,8 +1611,13 @@ fn scanInit(s: *InitScan, n: *Node) void {
 fn scanTarget(s: *InitScan, n: *Node) void {
     const l = binder.stripParens(n);
     switch (l.data) {
-        .prop_access => |x| if (x.expr.data == .this_expr and std.mem.eql(u8, ast.memberText(x.name), s.name)) {
+        .prop_access => |x| if (s.key == null and x.expr.data == .this_expr and std.mem.eql(u8, ast.memberText(x.name), s.name)) {
             s.found = true;
+        },
+        .elem_access => |x| if (s.key) |k| if (x.expr.data == .this_expr) {
+            if (constKey(s.c, x.index)) |other| if (sameKey(k, other)) {
+                s.found = true;
+            };
         },
         .array_lit => |x| for (x.elems) |e| scanTarget(s, e),
         .object_lit => |x| for (x.props) |p| switch (p.data) {
@@ -890,20 +1633,23 @@ fn scanTarget(s: *InitScan, n: *Node) void {
 fn checkPropInit(c: *Checker, n: *Node) void {
     if (!c.strict_prop_init) return;
     if (n.mods.declare) return;
-    if (d.fileOf(c, n)) |f| if (f.is_dts) return;
+    const f = d.fileOf(c, n) orelse return;
+    if (f.is_dts) return;
     for (n.data.class.members) |m| {
         if (m.data != .property_decl) continue;
         const p = m.data.property_decl;
         if (m.mods.static or m.mods.abstract or m.mods.declare) continue;
         if (p.init != null or p.question or p.excl) continue;
-        const ann = p.type orelse continue;
-        const ty = d.typeFromNode(c, ann);
+        // tsc leaves string and numeric names alone.
+        switch (p.name.data) {
+            .identifier, .private_name, .computed_name => {},
+            else => continue,
+        }
+        const ty = d.typeFromNode(c, p.type orelse continue);
         if (T.isAny(ty) or ty.data == .unknown) continue;
         if (hasUndefinedType(c, ty)) continue;
-        const name = ast.memberText(p.name);
-        if (name.len == 0) continue;
-        if (hasDefiniteInit(c, n, name)) continue;
-        err(c, p.name, 2564, c.fmt("Property '{s}' has no initializer and is not definitely assigned in the constructor.", .{name}));
+        if (hasDefiniteInit(c, n, p.name)) continue;
+        err(c, p.name, 2564, c.fmt("Property '{s}' has no initializer and is not definitely assigned in the constructor.", .{f.src[p.name.start..p.name.end]}));
     }
 }
 
@@ -927,7 +1673,10 @@ fn checkMembers(c: *Checker, cls: *Node, members: []*Node) void {
     checkConstructors(c, members);
     for (members) |m| {
         switch (m.data) {
-            .func => checkFuncBody(c, m),
+            .func => {
+                overloads.check(c, m);
+                checkFuncBody(c, m);
+            },
             .property_decl => |p| {
                 for (p.decorators) |dn| _ = expr.checkExpression(c, dn.data.decorator.expr);
                 if (p.name.data == .computed_name) _ = expr.checkExpression(c, p.name.data.computed_name.expr);
@@ -950,6 +1699,11 @@ fn checkInterface(c: *Checker, n: *Node) void {
     const s = n.symbol() orelse return;
     const t = d.declaredType(c, s);
     if (t.data != .obj) return;
+    // tsc checks a merged interface once, at its first declaration.
+    const first = for (s.resolve().decls) |x| {
+        if (x.data == .interface) break x;
+    } else n;
+    if (first == n) checkIndexConstraints(c, if (t.data.obj.thisType()) |x| d.withThis(c, t, x) else t, s, n, false);
     for (d.basesOf(c, t)) |b0| {
         const tt = t.data.obj.thisType() orelse t;
         const base = d.withThis(c, b0, tt);
@@ -978,17 +1732,388 @@ fn isTypeNode(n: *Node) bool {
 /// unknown names and bad arguments in types are reported from there and nowhere else.
 fn walkTypes(c: *Checker, n: *Node) void {
     if (n.data == .lazy_body) {
-        if (d.bodyOf(c, n.parent.?)) |b| walkTypes(c, b.block);
+        if (d.bodyOf(c, n.parent.?)) |b| {
+            noteDead(c, b.dead);
+            walkTypes(c, b.block);
+        }
         return;
     }
+    if (n.data == .source_file) if (d.fileOf(c, n)) |f| noteDead(c, f.dead);
+    if (!c.within_unreachable and reportUnreachable(c, n)) {
+        c.within_unreachable = true;
+        defer c.within_unreachable = false;
+        return walkTypesIn(c, n);
+    }
+    walkTypesIn(c, n);
+}
+
+fn noteDead(c: *Checker, dead: []*Node) void {
+    if (!reportsUnreachable(c)) return;
+    for (dead) |x| c.dead.put(c.a, x, false) catch oom();
+}
+
+/// Left unset, tsc makes unreachable code a suggestion, which the command line never shows.
+fn reportsUnreachable(c: *Checker) bool {
+    return c.prog.cfg.options.allowUnreachableCode == false;
+}
+
+/// tsc's `checkSourceElementUnreachable`: one error spans a run of unreachable statements, and
+/// statements inside the run stay quiet even where they hold dead code of their own.
+fn reportUnreachable(c: *Checker, n: *Node) bool {
+    if (!reportsUnreachable(c)) return false;
+    if (c.dead.get(n) orelse false) return true;
+    if (!isUnreachable(c, n)) return false;
+    c.dead.put(c.a, n, true) catch oom();
+    var last = n;
+    const p = n.parent orelse return false;
+    const list: []*Node = switch (p.data) {
+        .block => |x| x.stmts,
+        .module_block => |x| x.stmts,
+        .default_clause => |x| x.stmts,
+        .case_clause => |x| x.stmts,
+        .source_file => |x| x.stmts,
+        else => &.{},
+    };
+    if (std.mem.indexOfScalar(*Node, list, n)) |i| for (list[i + 1 ..]) |next| {
+        if (!isUnreachable(c, next)) break;
+        c.dead.put(c.a, next, true) catch oom();
+        last = next;
+    };
+    d.reportSpan(c, n, n.start, last.end, 7027, "Unreachable code detected.");
+    return true;
+}
+
+/// tsc's `isSourceElementUnreachable`. What the binder left counts unless it emits nothing: a
+/// `const enum` that is not preserved or a namespace of types. Elsewhere the types decide, as
+/// after a call that never returns.
+fn isUnreachable(c: *Checker, n: *Node) bool {
+    if (c.dead.contains(n)) return switch (n.data) {
+        .enum_decl => !n.mods.@"const" or preservesConstEnums(c),
+        .module_decl => binder.Binder.isInstantiatedDecl(n),
+        else => true,
+    };
+    if (!binder.isStatement(n)) return false;
+    const f = n.flow() orelse return false;
+    return !flow.isReachable(c, f);
+}
+
+/// tsc's `ShouldPreserveConstEnums`.
+fn preservesConstEnums(c: *Checker) bool {
+    const o = c.prog.cfg.options;
+    return o.preserveConstEnums == true or o.isolatedModules == true or o.verbatimModuleSyntax == true;
+}
+
+fn walkTypesIn(c: *Checker, n: *Node) void {
     if (isAsConst(n)) return;
-    if (isTypeNode(n)) _ = d.typeFromNode(c, n);
+    checkStrictMode(c, n);
+    if (isTypeNode(n)) {
+        const t = d.typeFromNode(c, n);
+        if (n.data == .type_literal) checkIndexConstraints(c, t, null, n, false);
+    }
     if (n.data == .func) {
         // Also covers signature-only declarations, which have no body to check.
         const f = n.data.func;
         if (f.body == null) for (f.params) |p| implicitAny(c, p, n);
+        implicitAnyReturn(c, n);
+        // tsc's `checkGrammarAccessor`.
+        if (f.kind == .getter_sig or f.kind == .setter_sig) if (f.body) |b| grammarErr(c, b, 1183, "An implementation cannot be declared in ambient contexts.");
+        checkGetterReturns(c, n);
+        implicitAnyAccessor(c, n);
+        if (f.kind == .method_sig) overloads.check(c, n);
+    }
+    modifiers.check(c, n);
+    helpers.check(c, n);
+    if (!statementInAmbient(c, n)) {
+        jumpGrammar(c, n);
+        awaitGrammar(c, n);
+    }
+    if (n.data == .var_decl) varDeclGrammar(c, n);
+    if (n.data == .property_decl) propertyExclGrammar(c, n);
+    if (n.data == .computed_name) checkComputedNameType(c, n);
+    ambientInitializer(c, n);
+    if (n.data == .param) checkParameter(c, n);
+    if (n.data == .index_sig) checkIndexSignatureGrammar(c, n);
+    if (n.data == .property_decl or n.data == .property_sig) implicitAnyMember(c, n);
+    if (n.data == .with_stmt) {
+        // tsc checks only the object of a `with`; its binder still walks the body.
+        walkTypes(c, n.data.with_stmt.expr);
+        return walkStrictMode(c, n.data.with_stmt.body);
     }
     ast.forEachChild(n, c, walkTypes);
+}
+
+fn walkStrictMode(c: *Checker, n: *Node) void {
+    if (n.data == .lazy_body) {
+        if (d.bodyOf(c, n.parent.?)) |b| walkStrictMode(c, b.block);
+        return;
+    }
+    checkStrictMode(c, n);
+    ast.forEachChild(n, c, walkStrictMode);
+}
+
+/// tsc's `checkComputedPropertyName`: the key must be a string, number or symbol, never nullable.
+fn checkComputedNameType(c: *Checker, n: *Node) void {
+    // An enum member's computed name is its own grammar error, and tsc checks no type there.
+    if (n.parent) |m| if (m.data == .enum_member) return;
+    const e = n.data.computed_name.expr;
+    if (e.data == .binary and e.data.binary.op == .kw_in) if (n.parent) |m| if (m.parent) |owner| switch (owner.data) {
+        // `[k in K]` there is a mapped type gone wrong, which the grammar check reports.
+        .type_literal, .class, .interface => if (!isAccessor(m)) return,
+        else => {},
+    };
+    const t = expr.checkSilent(c, e);
+    if (t.data == .err) return;
+    if (t.data == .null or t.data == .undefined or !relate.isAssignable(c, t, c.t_key)) {
+        err(c, n, 2464, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
+    }
+}
+
+fn isAccessor(n: *Node) bool {
+    if (n.data != .func) return false;
+    return switch (n.data.func.kind) {
+        .getter, .setter, .getter_sig, .setter_sig => true,
+        else => false,
+    };
+}
+
+/// tsc's `checkGrammarIndexSignatureParameters`: the first problem only.
+fn checkIndexSignatureGrammar(c: *Checker, n: *Node) void {
+    const f = d.fileOf(c, n) orelse return;
+    if (f.diags.len != 0) return;
+    const x = n.data.index_sig;
+    const one = "An index signature must have exactly one parameter.";
+    if (x.params.len == 0) return err(c, n, 1096, one);
+    const p = x.params[0];
+    const param = p.data.param;
+    if (x.params.len != 1) return err(c, param.name, 1096, one);
+    if (param.dotdotdot) {
+        const at: u32 = @intCast(std.mem.indexOfPos(u8, f.src, p.start, "...") orelse p.start);
+        return d.reportSpan(c, p, at, at + 3, 1017, "An index signature cannot have a rest parameter.");
+    }
+    if (@as(u16, @bitCast(p.mods)) != 0) return err(c, param.name, 1018, "An index signature parameter cannot have an accessibility modifier.");
+    if (param.question) {
+        const at = expr.skipTrivia(f.src, param.name.end);
+        return d.reportSpan(c, p, at, at + 1, 1019, "An index signature parameter cannot have a question mark.");
+    }
+    if (param.init != null) return err(c, param.name, 1020, "An index signature parameter cannot have an initializer.");
+    const tn = param.type orelse return err(c, param.name, 1022, "An index signature parameter must have a type annotation.");
+    const t = d.typeFromNode(c, tn);
+    if (someLiteralKey(t) or d.isGeneric(c, t)) {
+        return err(c, param.name, 1337, "An index signature parameter type cannot be a literal type or generic type. Consider using a mapped object type instead.");
+    }
+    const parts: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
+    for (parts) |k| if (!validIndexKey(c, k)) {
+        return err(c, param.name, 1268, "An index signature parameter type must be 'string', 'number', 'symbol', or a template literal type.");
+    };
+    if (x.type == null) err(c, n, 1021, "An index signature must have a type annotation.");
+}
+
+fn someLiteralKey(t: *Type) bool {
+    const parts: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
+    for (parts) |k| switch (k.data) {
+        .str_lit, .num_lit, .unique, .enum_lit => return true,
+        else => {},
+    };
+    return false;
+}
+
+/// tsc's `isValidIndexKeyType`; a non-generic template or string mapping is a pattern literal.
+fn validIndexKey(c: *Checker, t: *Type) bool {
+    return switch (t.data) {
+        .string, .number, .symbol => true,
+        .tmpl, .strmap => !t.vars,
+        .inter => |xs| blk: {
+            if (d.isGeneric(c, t)) break :blk false;
+            for (xs) |m| if (validIndexKey(c, m)) break :blk true;
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+/// tsc's `checkParameter`, for every parameter, including those of signatures in types.
+fn checkParameter(c: *Checker, p: *Node) void {
+    const fnode = p.parent orelse return;
+    const x = p.data.param;
+    const m = p.mods;
+    const property = m.public or m.private or m.protected or m.readonly or m.override;
+    const init_msg = "A parameter initializer is only allowed in a function or constructor implementation.";
+    if (fnode.data == .index_sig) {
+        if (property) err(c, p, 2369, "A parameter property is only allowed in a constructor implementation.");
+        if (x.init != null) err(c, p, 2371, init_msg);
+        return;
+    }
+    if (fnode.data != .func) return;
+    const f = fnode.data.func;
+    if (x.init != null and f.body == null) err(c, p, 2371, init_msg);
+    const name: []const u8 = if (x.name.data == .identifier) x.name.data.identifier else "";
+    if (property) {
+        if (f.kind != .ctor or f.body == null) err(c, p, 2369, "A parameter property is only allowed in a constructor implementation.");
+        if (f.kind == .ctor and std.mem.eql(u8, name, "constructor")) err(c, x.name, 2398, "'constructor' cannot be used as a parameter property name.");
+    }
+    if (x.init == null and x.question and x.name.data != .identifier and f.body != null) {
+        err(c, p, 2463, "A binding pattern parameter cannot be optional in an implementation signature.");
+    }
+    if (std.mem.eql(u8, name, "this")) {
+        // tsc's parser keeps modifiers and decorators on a `this` parameter but starts a new one after `...`.
+        const start = if (x.dotdotdot) x.name.start else p.start;
+        if (f.params[0] != p) d.reportSpan(c, p, start, p.end, 2680, "A 'this' parameter must be the first parameter.");
+        switch (f.kind) {
+            .ctor, .construct_sig, .constructor_type => d.reportSpan(c, p, start, p.end, 2681, "A constructor cannot have a 'this' parameter."),
+            .arrow => d.reportSpan(c, p, start, p.end, 2730, "An arrow function cannot have a 'this' parameter."),
+            .getter, .setter, .getter_sig, .setter_sig => d.reportSpan(c, p, start, p.end, 2784, "'get' and 'set' accessors cannot declare 'this' parameters."),
+            else => {},
+        }
+        return;
+    }
+    // A rest binding pattern is already a grammar error.
+    if (x.dotdotdot and x.name.data == .identifier) {
+        const t = d.typeOfParam(c, p);
+        // `X extends any[] ? X : any[]` fits through tsc's substitution types, which the
+        // relation does not model, so only a bare type parameter is judged when generic.
+        if (t.vars and t.data != .param) return;
+        if (!relate.isAssignable(c, t, d.readonlyArrayOf(c, c.t_any))) err(c, p, 2370, "A rest parameter must be of an array type.");
+    }
+}
+
+// ---- strict mode, which TypeScript 7 code is always in: tsc's binder checks ----
+
+const future_reserved = std.StaticStringMap(void).initComptime(.{
+    .{"implements"}, .{"interface"}, .{"let"}, .{"package"}, .{"private"}, .{"protected"}, .{"public"}, .{"static"}, .{"yield"},
+});
+
+fn checkStrictMode(c: *Checker, n: *Node) void {
+    switch (n.data) {
+        .identifier => |name| if (future_reserved.has(name) or std.mem.eql(u8, name, "await")) reservedWord(c, n, name),
+        .func => |f| if (f.kind == .decl or f.kind == .expr) if (f.name) |x| if (!isAmbient(c, n)) evalOrArguments(c, n, x),
+        .param => |x| if (!isAmbient(c, n)) evalOrArguments(c, n, x.name),
+        .var_decl => |x| evalOrArguments(c, n, x.name),
+        .binding_elem => |x| evalOrArguments(c, n, x.name),
+        .binary => |x| if (x.op.isAssignment()) evalOrArguments(c, n, x.left),
+        .prefix => |x| if (x.op == .plus2 or x.op == .minus2) evalOrArguments(c, n, x.expr),
+        .postfix => |x| evalOrArguments(c, n, x.expr),
+        // A missing operand is already a syntax error.
+        .delete_expr => |x| if (x.expr.data == .identifier and x.expr.data.identifier.len > 0) {
+            err(c, x.expr, 1102, "'delete' cannot be called on an identifier in strict mode.");
+        },
+        .with_stmt => if (!isAmbient(c, n)) d.reportSpan(c, n, n.start, n.start + 4, 1101, "'with' statements are not allowed in strict mode."),
+        .labeled => |x| if (isDeclarationStatement(x.stmt)) err(c, x.label, 1344, "A label is not allowed here."),
+        else => {},
+    }
+}
+
+fn evalOrArguments(c: *Checker, context: *Node, name: *Node) void {
+    if (name.data != .identifier) return;
+    const text = name.data.identifier;
+    if (!std.mem.eql(u8, text, "eval") and !std.mem.eql(u8, text, "arguments")) return;
+    if (containingClass(context)) {
+        err(c, name, 1210, c.fmt("Code contained in a class is evaluated in JavaScript's strict mode which does not allow this use of '{s}'. For more information, see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Strict_mode.", .{text}));
+    } else if (inModule(c, name)) {
+        err(c, name, 1215, c.fmt("Invalid use of '{s}'. Modules are automatically in strict mode.", .{text}));
+    } else {
+        err(c, name, 1100, c.fmt("Invalid use of '{s}' in strict mode.", .{text}));
+    }
+}
+
+/// tsc's `checkContextualIdentifier`, which keeps quiet in a file that does not parse.
+fn reservedWord(c: *Checker, n: *Node, name: []const u8) void {
+    const f = d.fileOf(c, n) orelse return;
+    if (f.diags.len != 0 or f.bad_body or isIdentifierName(n) or isAmbient(c, n)) return;
+    if (std.mem.eql(u8, name, "await")) {
+        if (f.is_module and inTopLevelContext(n)) err(c, n, 1262, "Identifier expected. 'await' is a reserved word at the top-level of a module.");
+        return;
+    }
+    if (containingClass(n)) {
+        err(c, n, 1213, c.fmt("Identifier expected. '{s}' is a reserved word in strict mode. Class definitions are automatically in strict mode.", .{name}));
+    } else if (f.is_module) {
+        err(c, n, 1214, c.fmt("Identifier expected. '{s}' is a reserved word in strict mode. Modules are automatically in strict mode.", .{name}));
+    } else {
+        err(c, n, 1212, c.fmt("Identifier expected. '{s}' is a reserved word in strict mode.", .{name}));
+    }
+}
+
+/// Names that are not bindings or references: property names, and what JSX and exports spell out.
+fn isIdentifierName(n: *Node) bool {
+    const p = n.parent orelse return false;
+    return switch (p.data) {
+        .property_decl => |x| x.name == n,
+        .property_sig => |x| x.name == n,
+        .enum_member => |x| x.name == n,
+        .property_assign => |x| x.name == n,
+        .prop_access => |x| x.name == n,
+        .qualified_name => |x| x.right == n,
+        .binding_elem => |x| x.prop_name == n,
+        .import_spec => |x| x.prop_name == n,
+        .func => |x| x.name == n and switch (x.kind) {
+            .method, .method_sig, .getter, .setter, .getter_sig, .setter_sig => true,
+            else => false,
+        },
+        .export_spec, .jsx_attr, .jsx_self_closing, .jsx_opening, .jsx_closing => true,
+        else => false,
+    };
+}
+
+pub fn isAmbient(c: *Checker, n: *Node) bool {
+    if (d.fileOf(c, n)) |f| if (f.is_dts) return true;
+    var x: ?*Node = n;
+    while (x) |y| : (x = y.parent) if (y.mods.declare and !notAmbientMember(y)) return true;
+    return false;
+}
+
+/// tsc's parser makes `declare` ambient only on fields and methods; constructors and accessors are
+/// parsed before it looks.
+fn notAmbientMember(n: *Node) bool {
+    if (n.data != .func) return false;
+    const k = n.data.func.kind;
+    return k == .ctor or k == .getter or k == .setter;
+}
+
+fn inModule(c: *Checker, n: *Node) bool {
+    const f = d.fileOf(c, n) orelse return false;
+    return f.is_module;
+}
+
+fn containingClass(n: *Node) bool {
+    var x = n.parent;
+    while (x) |y| : (x = y.parent) if (y.data == .class) return true;
+    return false;
+}
+
+/// tsc's `isInTopLevelContext`: no function, class property, static block or namespace between
+/// `n` and its file.
+fn inTopLevelContext(n0: *Node) bool {
+    var n = n0;
+    if (n.parent) |p| switch (p.data) {
+        .func => |x| if (x.kind == .decl and x.name == n) {
+            n = p;
+        },
+        .class => |x| if (!x.is_expr and x.name == n) {
+            n = p;
+        },
+        else => {},
+    };
+    var x = n.parent;
+    while (x) |y| {
+        x = y.parent;
+        switch (y.data) {
+            .func, .property_decl, .static_block, .module_decl => return false,
+            // tsc's `getThisContainer`: a computed name belongs to the scope around its member.
+            .computed_name => if (x) |member| {
+                x = member.parent;
+            },
+            else => {},
+        }
+    }
+    return true;
+}
+
+fn isDeclarationStatement(n: *Node) bool {
+    return switch (n.data) {
+        .func => |x| x.kind == .decl,
+        .class => |x| !x.is_expr,
+        .var_stmt, .interface, .type_alias, .enum_decl, .module_decl, .import_equals, .namespace_export_decl => true,
+        else => false,
+    };
 }
 
 fn isAsConst(n: *Node) bool {
@@ -1006,6 +2131,8 @@ pub fn checkFile(c: *Checker, f: *ast.File) void {
     checkBlock(c, f.root.data.source_file.stmts);
     drainDeferred(c);
     walkTypes(c, f.root);
+    if (std.mem.indexOfScalar(u8, f.src, '@') != null) checkDecorators(c, f.root);
+    unused.checkFile(c, f);
     forgetBodies(c);
 }
 
@@ -1019,6 +2146,7 @@ fn forgetBodies(c: *Checker) void {
     c.effects.clearRetainingCapacity();
     c.flow_cache.clearRetainingCapacity();
     c.reach_cache.clearRetainingCapacity();
+    c.post_super.clearRetainingCapacity();
     c.ref_answers.clearRetainingCapacity();
     c.const_keys.clearRetainingCapacity();
     c.constant_refs.clearRetainingCapacity();
@@ -1124,6 +2252,7 @@ pub fn checkProgram(a: std.mem.Allocator, p: *project.Program) []Diag {
     for (p.files.items) |sf| {
         if (sf.is_lib or sf.read_failed) continue;
         if (sf.file.is_dts and skip_lib) continue;
+        if (p.cfg.options.semantics(sf.file) == .none) continue;
         files.append(a, sf.file) catch oom();
     }
     if (files.items.len == 0) return &.{};

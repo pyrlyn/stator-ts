@@ -361,6 +361,12 @@ fn structured(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
     }
     if (s.data == .inter) {
         for (s.data.inter) |m| if (related(c, m, t, rel)) return true;
+        // `object` asks what the members may be, not the wrapper interfaces primitives read through:
+        // `T & 0` is a number.
+        if (t.data == .nonprim) {
+            const k = d.baseConstraint(c, s);
+            return k != s and !k.vars and related(c, k, t, rel);
+        }
         // A generic member's constraint may be what supplies the target's shape.
         const ap = d.getApparent(c, s);
         if (ap != s and (ap.data != .never or !hasFreeMember(c, s)) and related(c, ap, t, rel)) return true;
@@ -755,7 +761,12 @@ pub fn hasCommonProp(c: *Checker, s: *Type, t: *Type) bool {
     }
     const props = d.propsOf(c, s);
     if (props.len == 0) return true;
-    for (props) |p| if (d.ownProp(c, t, p.name) != null) return true;
+    const jsx = isJsxAttributes(s);
+    for (props) |p| {
+        if (d.ownProp(c, t, p.name) != null) return true;
+        // Hyphenated attributes are known to every element, so they count as shared.
+        if (jsx and std.mem.indexOfScalar(u8, p.name, '-') != null) return true;
+    }
     return false;
 }
 
@@ -816,6 +827,12 @@ fn propsRelated(c: *Checker, s: *Type, t: *Type, rel: Relation) bool {
             return false;
         };
         if (sp == tp) continue;
+        if (tp.name.len > 0 and tp.name[0] == '#' and sp.decl != tp.decl) {
+            // tsc keys a private name by its class: a source has this one only by inheriting it,
+            // and a subclass's own `#x` merely hides it in the member table.
+            if (validOverride(c, sp, tp)) continue;
+            return false;
+        }
         if (tp.private or tp.protected or sp.private or sp.protected) {
             if (tp.private or sp.private) {
                 if (tp.decl != sp.decl) return false;
@@ -1040,6 +1057,22 @@ fn sigRel(c: *Checker, s0: *Sig, t: *Sig, rel: Relation, mode: SigMode) bool {
     if (s0 == t) return true;
     var s = s0;
     if (s.tparams.len > 0 and s.tparams.ptr != t.tparams.ptr) s = sigInContext(c, s, t);
+    if (!paramsRel(c, s, t, rel, mode)) return false;
+    return returnsRel(c, s, t, rel, mode);
+}
+
+/// tsc's `isImplementationCompatibleWithOverload`: the return types relate either way, then the
+/// parameters do, all with type parameters erased.
+pub fn implementationFits(c: *Checker, impl: *Sig, overload: *Sig) bool {
+    const s = erased(c, impl);
+    const t = erased(c, overload);
+    const sr = if (s.ret_resolving) c.t_any else d.returnOf(c, s);
+    const tr = if (t.ret_resolving) c.t_any else d.returnOf(c, t);
+    if (tr.data != .void and !isAssignable(c, tr, sr) and !isAssignable(c, sr, tr)) return false;
+    return paramsRel(c, s, t, .assignable, .normal);
+}
+
+fn paramsRel(c: *Checker, s: *Sig, t: *Sig, rel: Relation, mode: SigMode) bool {
     const sa = arityOf(c, s);
     const ta = arityOf(c, t);
     if (sa.min > (ta.max orelse std.math.maxInt(u32))) return false;
@@ -1061,6 +1094,10 @@ fn sigRel(c: *Checker, s0: *Sig, t: *Sig, rel: Relation, mode: SigMode) bool {
         if (mode == .normal and !strict and related(c, x, y, rel)) continue;
         return false;
     }
+    return true;
+}
+
+fn returnsRel(c: *Checker, s: *Sig, t: *Sig, rel: Relation, mode: SigMode) bool {
     const tr = if (t.ret_resolving) c.t_any else d.returnOf(c, t);
     if (tr.data == .void or T.isAny(tr)) return true;
     const sr = if (s.ret_resolving) c.t_any else d.returnOf(c, s);
@@ -1304,10 +1341,22 @@ fn isObjectGlobal(c: *Checker, t: *Type) bool {
 pub fn excessProp(c: *Checker, s: *Type, t: *Type) ?*Prop {
     if (s.data != .obj or !s.data.obj.lit or s.data.obj.open or s.data.obj.spread) return null;
     if (!excessTarget(c, t)) return null;
+    const jsx = isJsxAttributes(s);
     for (d.membersOf(c, s).props.values()) |p| {
+        // tsc's `isKnownProperty`: `data-*` and other hyphenated attributes are always allowed.
+        if (jsx and std.mem.indexOfScalar(u8, p.name, '-') != null) continue;
+        // tsc's `shouldCheckAsExcessProperty`: only what was written on this element, not what a
+        // spread brought in.
+        if (jsx and (p.decl == null or p.decl.?.parent != s.data.obj.literal)) continue;
         if (!isKnown(c, t, p.name)) return p;
     }
     return null;
+}
+
+pub fn isJsxAttributes(s: *Type) bool {
+    if (s.data != .obj) return false;
+    const n = s.data.obj.literal orelse return false;
+    return n.data == .jsx_opening or n.data == .jsx_self_closing;
 }
 
 pub fn missingProps(c: *Checker, s: *Type, t: *Type) []const []const u8 {

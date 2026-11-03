@@ -428,10 +428,7 @@ const Emitter = struct {
     }
 
     fn numText(e: *Emitter, v: f64) []const u8 {
-        if (std.math.isNan(v)) return "NaN";
-        if (std.math.isInf(v)) return if (v > 0) "Infinity" else "-Infinity";
-        if (v == @trunc(v) and @abs(v) < 1e15) return e.fmt("{d}", .{@as(i64, @intFromFloat(v))});
-        return e.fmt("{d}", .{v});
+        return numberText(e.a, v);
     }
 
     /// `var X;` is skipped when another declaration in this file already introduces the name.
@@ -1032,7 +1029,59 @@ fn toI32(v: f64) i32 {
     return @bitCast(@as(u32, @intFromFloat(m)));
 }
 
+/// ECMAScript's Number::toString: the shortest digits that read back as `v`, written out in full
+/// from 1e-6 up to 1e21 and in exponent form outside that range.
+pub fn numberText(a: std.mem.Allocator, v: f64) []const u8 {
+    if (std.math.isNan(v)) return "NaN";
+    if (std.math.isInf(v)) return if (v > 0) "Infinity" else "-Infinity";
+    if (v == 0) return "0";
+    if (v == @trunc(v) and @abs(v) < 1e15) return std.fmt.allocPrint(a, "{d}", .{@as(i64, @intFromFloat(v))}) catch oom();
+    var buf: [64]u8 = undefined;
+    const sci = std.fmt.bufPrint(&buf, "{e}", .{@abs(v)}) catch unreachable;
+    const e_at = std.mem.indexOfScalar(u8, sci, 'e').?;
+    var digits_buf: [32]u8 = undefined;
+    var k: usize = 0;
+    for (sci[0..e_at]) |ch| if (ch != '.') {
+        digits_buf[k] = ch;
+        k += 1;
+    };
+    while (k > 1 and digits_buf[k - 1] == '0') k -= 1;
+    const digits = digits_buf[0..k];
+    const n = (std.fmt.parseInt(i32, sci[e_at + 1 ..], 10) catch unreachable) + 1;
+    var out: std.ArrayList(u8) = .empty;
+    if (v < 0) out.append(a, '-') catch oom();
+    const kk: i32 = @intCast(k);
+    if (kk <= n and n <= 21) {
+        out.appendSlice(a, digits) catch oom();
+        out.appendNTimes(a, '0', @intCast(n - kk)) catch oom();
+    } else if (0 < n and n <= 21) {
+        const at: usize = @intCast(n);
+        out.appendSlice(a, digits[0..at]) catch oom();
+        out.append(a, '.') catch oom();
+        out.appendSlice(a, digits[at..]) catch oom();
+    } else if (-6 < n and n <= 0) {
+        out.appendSlice(a, "0.") catch oom();
+        out.appendNTimes(a, '0', @intCast(-n)) catch oom();
+        out.appendSlice(a, digits) catch oom();
+    } else {
+        out.append(a, digits[0]) catch oom();
+        if (k > 1) {
+            out.append(a, '.') catch oom();
+            out.appendSlice(a, digits[1..]) catch oom();
+        }
+        out.appendSlice(a, if (n - 1 >= 0) "e+" else "e-") catch oom();
+        out.print(a, "{d}", .{@abs(n - 1)}) catch oom();
+    }
+    return out.items;
+}
+
 pub fn parseNumber(raw: []const u8) ?f64 {
+    if (raw.len > 2 and raw[0] == '0') switch (raw[1]) {
+        'x', 'X' => return parseRadix(raw[2..], 16),
+        'o', 'O' => return parseRadix(raw[2..], 8),
+        'b', 'B' => return parseRadix(raw[2..], 2),
+        else => {},
+    };
     var buf: [64]u8 = undefined;
     var n: usize = 0;
     for (raw) |c| {
@@ -1041,17 +1090,16 @@ pub fn parseNumber(raw: []const u8) ?f64 {
         buf[n] = c;
         n += 1;
     }
-    const s = buf[0..n];
-    if (s.len > 2 and s[0] == '0') {
-        const base: u8 = switch (s[1]) {
-            'x', 'X' => 16,
-            'o', 'O' => 8,
-            'b', 'B' => 2,
-            else => 0,
-        };
-        if (base != 0) return if (std.fmt.parseInt(u64, s[2..], base)) |v| @floatFromInt(v) else |_| null;
-    }
-    return std.fmt.parseFloat(f64, s) catch null;
+    return std.fmt.parseFloat(f64, buf[0..n]) catch null;
+}
+
+/// Past 64 bits tsgo reads the digits as a big integer and rounds once to the nearest double.
+fn parseRadix(digits: []const u8, base: u8) ?f64 {
+    if (std.fmt.parseInt(u64, digits, base)) |v| return @floatFromInt(v) else |e| if (e == error.InvalidCharacter) return null;
+    var m = std.math.big.int.Managed.init(std.heap.page_allocator) catch return null;
+    defer m.deinit();
+    m.setString(base, digits) catch return null;
+    return m.toFloat(f64, .nearest_even)[0];
 }
 
 fn enumKey(n: *Node) ?[]const u8 {

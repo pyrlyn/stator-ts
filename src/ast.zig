@@ -19,7 +19,8 @@ pub const Mods = packed struct(u16) {
     accessor: bool = false,
     in: bool = false,
     out: bool = false,
-    _pad: u1 = 0,
+    /// Decorators were written on a declaration that has nowhere to keep them.
+    decorated: bool = false,
 };
 
 pub const Span = struct { start: u32 = 0, end: u32 = 0 };
@@ -61,6 +62,8 @@ pub const Func = struct {
     ret_span: Span = .{},
     ret: ?*Node = null,
     body: ?*Node = null,
+    /// The body's `{` is missing; tsc still gives such a function an (empty) body.
+    body_missing: bool = false,
     /// Null when control cannot fall off the end; set by the binder.
     end_flow: ?*binder.FlowNode = null,
 };
@@ -262,7 +265,7 @@ pub const Data = union(enum) {
     decorator: struct { expr: *Node },
     property_decl: *Property,
     index_sig: struct { params: []*Node, type: ?*Node },
-    static_block: struct { body: *Node },
+    static_block: struct { body: *Node, end_flow: ?*binder.FlowNode = null },
     semicolon_member,
     computed_name: struct { expr: *Node },
 
@@ -428,6 +431,9 @@ pub fn isBlockBody(n: *const Node) bool {
     return n.data == .block or n.data == .lazy_body;
 }
 
+/// Which `exports` condition a module specifier resolves through.
+pub const ResolutionMode = enum { import, require };
+
 /// `ty` as the source wrote it on `decl`, null for one a JSDoc comment gave it: a comment's type
 /// starts before what it describes.
 pub fn writtenType(decl: *const Node, ty: ?*Node) ?*Node {
@@ -443,7 +449,6 @@ pub fn isJsFile(name: []const u8) bool {
 /// A type name a JSDoc tag declares: `@typedef`, `@callback` and `@import` for the whole program,
 /// `@template` for `scope` in its own file.
 pub const JsdocName = struct { text: []const u8, scope: ?Span };
-
 pub const File = struct {
     path: []const u8,
     src: []const u8,
@@ -454,6 +459,8 @@ pub const File = struct {
     directives: []lexer.Lexer.TsDirective,
     is_dts: bool,
     is_module: bool,
+    /// Under Node's module modes, the file's format is CommonJS.
+    implied_cjs: bool = false,
     /// A JavaScript file a `require` or an `exports` assignment makes a module.
     is_commonjs: bool = false,
     references: []Reference,
@@ -463,6 +470,8 @@ pub const File = struct {
     jsdoc_names: []const JsdocName = &.{},
     symbol: ?*binder.Symbol = null,
     bind_diags: []lexer.Diag = &.{},
+    /// Executable statements no path reaches, from the binder.
+    dead: []*Node = &.{},
     /// String literals naming other modules, in binding order.
     module_specs: []*Node = &.{},
     ambient_modules: []*binder.Symbol = &.{},
@@ -474,7 +483,7 @@ pub const File = struct {
     /// Position among the program's files, which is the order their declarations merge in.
     order: u32 = 0,
 
-    pub const Reference = struct { kind: enum { path, lib, types }, value: []const u8 };
+    pub const Reference = struct { kind: enum { path, lib, types }, value: []const u8, mode: ?ResolutionMode = null };
 
     pub fn lineCol(f: *const File, pos: u32) struct { line: u32, col: u32 } {
         var line: u32 = 1;

@@ -164,14 +164,14 @@ fn report(a: Allocator, io: Io, o: Options, p: *Program, w: *Io.Writer) !?u8 {
     const syntax_only = (all.items.len > 0 or count > 0) and !o.all_diagnostics;
     if (!syntax_only) {
         const skip_lib = o.cfg.options.skipLibCheck orelse false;
-        const check_js = o.cfg.options.checkJs;
+        const opts = o.cfg.options;
         for (p.files.items) |sf| {
             if (sf.is_lib or (sf.file.is_dts and skip_lib)) continue;
-            for (sf.file.bind_diags) |d| if (reportsSemantic(check_js, sf.file, d.code)) all.append(a, .{ .file = sf.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
+            for (sf.file.bind_diags) |d| if (keepSemantic(opts, sf.file, d.code)) all.append(a, .{ .file = sf.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
         }
         const skip_default = o.cfg.options.skipDefaultLibCheck orelse false;
-        for (p.diags.items) |d| if (!(d.file.is_dts and skip_lib) and !(skip_default and p.sourceOf(d.file).?.is_lib) and reportsSemantic(check_js, d.file, d.code)) all.append(a, .{ .file = d.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
-        for (checker.checkProgram(a, p)) |d| if (reportsSemantic(check_js, d.file, d.code)) all.append(a, .{ .file = d.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
+        for (p.diags.items) |d| if (!(d.file.is_dts and skip_lib) and !(skip_default and p.sourceOf(d.file).?.is_lib) and keepSemantic(opts, d.file, d.code)) all.append(a, .{ .file = d.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
+        for (checker.checkProgram(a, p)) |d| if (keepSemantic(opts, d.file, d.code)) all.append(a, .{ .file = d.file, .start = d.start, .len = d.len, .code = d.code, .msg = d.msg }) catch oom();
         if (p.body_failed.load(.monotonic)) return null;
     }
 
@@ -205,29 +205,15 @@ fn report(a: Allocator, io: Io, o: Options, p: *Program, w: *Io.Writer) !?u8 {
     return if (count > 0) 2 else 0;
 }
 
-/// tsc's `plainJSErrors`: the binder, grammar and checker errors a JavaScript file still reports
-/// when neither `checkJs` nor `// @ts-check` asks for the rest.
-const plain_js_codes = [_]u32{
-    1005,  1009,  1013,  1014,  1029,  1030,  1031,  1042,  1044,  1048,  1049,  1053,  1054,  1089,
-    1090,  1091,  1097,  1100,  1101,  1102,  1104,  1105,  1106,  1107,  1111,  1113,  1114,  1115,
-    1116,  1123,  1155,  1156,  1162,  1171,  1172,  1174,  1182,  1184,  1186,  1188,  1189,  1190,
-    1191,  1193,  1197,  1200,  1210,  1211,  1214,  1215,  1248,  1255,  1258,  1262,  1308,  1312,
-    1325,  1341,  1344,  1358,  1359,  1368,  1450,  1451,  1473,  1474,  2451,  2462,  2480,  2492,
-    2501,  2528,  2566,  2633,  2752,  2753,  2803,  2839,  2852,  5076,  17000, 17001, 17012, 18006,
-    18007, 18012, 18013, 18016, 18036, 18038, 18041, 18061, 18111, 18112, 18113, 18114, 18115, 18117,
-};
-
-/// Whether tsc keeps a binder, program or checker error with `code` in `f`. `// @ts-nocheck` drops
-/// them all; a JavaScript file keeps them under `checkJs` or `// @ts-check`, none when `checkJs` is
-/// false, and only `plain_js_codes` when nothing says.
-pub fn reportsSemantic(check_js: ?bool, f: *const ast.File, code: u32) bool {
-    if (f.check_directive == false) return false;
-    if (!ast.isJsFile(f.path)) return true;
-    if (f.check_directive orelse check_js) |on| return on;
-    return std.mem.indexOfScalar(u32, &plain_js_codes, code) != null;
+/// `@ts-ignore` silences the next line; `@ts-expect-error` does too.
+fn keepSemantic(o: project.Options, f: *const ast.File, code: u32) bool {
+    return switch (o.semantics(f)) {
+        .all => true,
+        .plain => project.plainJsError(code),
+        .none => false,
+    };
 }
 
-/// `@ts-ignore` silences the next line; `@ts-expect-error` does too.
 pub fn filteredByDirective(d: Printed) bool {
     if (d.syntax) return false;
     const src = d.file.src;

@@ -310,9 +310,9 @@ const St = struct {
         const c = st.c;
         const n = f.node orelse return null;
         if (matchingRef(c, st.ref, n)) {
+            // tsc never works out what `x += 1` or `x++` stores: `x` stays what it was, widened.
+            if (expr.isCompound(n)) return expr.baseOfLiteral(c, st.go(f.antecedent orelse return st.initial));
             if (isAuto(c, st.declared)) {
-                // `x += 1` keeps what `x` already was.
-                if (expr.isCompound(n)) return null;
                 // A chain of `a = f(a)` reads every earlier link, so each is worked out once.
                 const k = st.cacheKey(f);
                 if (st.recall(k, f)) |t| return t;
@@ -798,6 +798,8 @@ const St = struct {
                 }
                 if (st.discriminant(l, cur)) |name| return st.discEq(cur, name, op, right, assume);
                 if (st.discriminant(r, cur)) |name| return st.discEq(cur, name, op, left, assume);
+                if (isConstructorOf(c, st.ref, l)) return byConstructor(c, cur, op, right, assume);
+                if (isConstructorOf(c, st.ref, r)) return byConstructor(c, cur, op, left, assume);
                 return cur;
             },
             .kw_instanceof => {
@@ -1464,6 +1466,50 @@ pub fn narrowedType(c: *Checker, t: *Type, candidate: *Type, assume: bool, check
     return c.getIntersection(&.{ t, candidate });
 }
 
+/// `ref.constructor` or `ref["constructor"]`.
+fn isConstructorOf(c: *Checker, ref: *Node, n: *Node) bool {
+    const object, const key = switch (n.data) {
+        .prop_access => |x| .{ x.expr, x.name },
+        .elem_access => |x| .{ x.expr, x.index },
+        else => return false,
+    };
+    const name = switch (key.data) {
+        .identifier => |x| if (n.data == .prop_access) x else return false,
+        .string_lit, .no_subst_template => |x| if (n.data == .elem_access) x else return false,
+        else => return false,
+    };
+    return std.mem.eql(u8, name, "constructor") and matchingRef(c, ref, object);
+}
+
+fn symbolOfObj(t: *Type) ?*binder.Symbol {
+    if (t.data != .obj) return null;
+    return (t.data.obj.target orelse t).data.obj.sym;
+}
+
+fn isClassObj(t: *Type) bool {
+    return t.data == .obj and (t.data.obj.target orelse t).data.obj.is_class;
+}
+
+/// `x.constructor === C` keeps what `C` constructs; tsc matches a class only by its own symbol,
+/// so a derived class is not constructed by its base.
+fn byConstructor(c: *Checker, t: *Type, op: @import("lexer.zig").Tok, ctor: *Node, assume: bool) *Type {
+    // Only the branch where the two are equal says anything.
+    if (assume != (op == .eq2 or op == .eq3)) return t;
+    const r = operand(c, ctor);
+    if (d.callSigs(c, r).len == 0 and d.ctorSigs(c, r).len == 0) return t;
+    const p = d.getProp(c, r, "prototype") orelse return t;
+    const k = d.propType(c, p);
+    if (T.isAny(k) or k == d.globalType(c, "Object") or k == d.globalType(c, "Function")) return t;
+    if (T.isAny(t)) return k;
+    const members: []const *Type = if (t.data == .union_) t.data.union_ else &.{t};
+    var parts = c.newList(*Type);
+    for (members) |m| {
+        const kept = if (isClassObj(m) or isClassObj(k)) symbolOfObj(m) == symbolOfObj(k) else relate.isSubtype(c, m, k);
+        if (kept) parts.append(c.a, m) catch oom();
+    }
+    return c.getUnion(parts.items);
+}
+
 fn byInstanceof(c: *Checker, t: *Type, right: *Node, assume: bool) *Type {
     const r = operand(c, right);
     if (T.isAny(r)) return t;
@@ -1594,6 +1640,33 @@ fn isFalseExpr(n0: *Node) bool {
         },
         else => false,
     };
+}
+
+/// tsc's `isPostSuperFlowNode`: every path to here has called `super()`. Unreachable code counts
+/// as past it, which keeps it quiet; a loop is judged by the path into it.
+pub fn isPostSuper(c: *Checker, f0: *FlowNode) bool {
+    var f = f0;
+    while (true) {
+        switch (f.kind) {
+            .start => return false,
+            .unreachable_end => return true,
+            .assign, .true_cond, .false_cond, .switch_clause, .array_mutation => f = f.antecedent orelse return false,
+            .call => {
+                if (f.node) |n| if (n.data == .call and n.data.call.callee.data == .super_expr) return true;
+                f = f.antecedent orelse return false;
+            },
+            .loop => f = if (f.antecedents.len > 0) f.antecedents[0] else return false,
+            // Past a `finally` only its own exits count, as in `isReachable`.
+            .reduce, .branch => {
+                if (c.post_super.get(f)) |v| return v;
+                const r = for (f.antecedents) |a| {
+                    if (!isPostSuper(c, a)) break false;
+                } else true;
+                c.post_super.put(c.a, f, r) catch oom();
+                return r;
+            },
+        }
+    }
 }
 
 pub fn isReachable(c: *Checker, f0: ?*FlowNode) bool {
